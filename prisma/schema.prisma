@@ -1,0 +1,69 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../lib/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Conversation {
+  id            String    @id @default(cuid())
+  sessionId     String    @unique
+  userId        String?
+  channel       String    @default("web")
+  status        String    @default("active")
+  satisfaction  Int?
+  messageCount  Int       @default(0)
+  resolved      Boolean   @default(false)
+  topic         String?
+  language      String    @default("en")
+  startedAt     DateTime  @default(now())
+  endedAt       DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  messages      Message[]
+  evaluation    Evaluation?
+}
+
+model Message {
+  id             String       @id @default(cuid())
+  conversationId String
+  role           String
+  content        String
+  tokenCount     Int          @default(0)
+  latencyMs      Int?
+  createdAt      DateTime     @default(now())
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId])
+}
+
+model Evaluation {
+  id             String       @id @default(cuid())
+  conversationId String       @unique
+  accuracy       Float
+  relevance      Float
+  coherence      Float
+  helpfulness    Float
+  toxicity       Float        @default(0)
+  groundedness   Float
+  latencyP50     Int
+  latencyP95     Int
+  createdAt      DateTime     @default(now())
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+}
+
+model DailyMetrics {
+  id                 String   @id @default(cuid())
+  date               DateTime @unique
+  totalConversations Int      @default(0)
+  totalMessages      Int      @default(0)
+  avgSatisfaction    Float    @default(0)
+  resolutionRate     Float    @default(0)
+  avgResponseTimeMs  Int      @default(0)
+  avgTokensPerMsg    Float    @default(0)
+  uniqueUsers        Int      @default(0)
+  createdAt          DateTime @default(now())
+}
