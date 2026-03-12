@@ -8,62 +8,360 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model Conversation {
-  id            String    @id @default(cuid())
-  sessionId     String    @unique
-  userId        String?
-  channel       String    @default("web")
-  status        String    @default("active")
-  satisfaction  Int?
-  messageCount  Int       @default(0)
-  resolved      Boolean   @default(false)
-  topic         String?
-  language      String    @default("en")
-  startedAt     DateTime  @default(now())
-  endedAt       DateTime?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
-  messages      Message[]
-  evaluation    Evaluation?
+enum ImportStatus {
+  DRAFT
+  APPROVED
 }
 
-model Message {
+enum SeatSourceType {
+  ROSTER
+  MANUAL
+}
+
+enum CurrencyCode {
+  DKK
+  EUR
+  USD
+}
+
+enum MappingCodeType {
+  COST_CENTER
+  DEPARTMENT_CODE
+}
+
+model TrackingYear {
+  id                  String                 @id @default(cuid())
+  year                Int                    @unique
+  label               String?
+  isActive            Boolean                @default(false)
+  createdAt           DateTime               @default(now())
+  updatedAt           DateTime               @updatedAt
+  budgetAreas         BudgetArea[]
+  budgetMovementBatches BudgetMovementBatch[]
+  budgetMovements     BudgetMovement[]
+  costAssumptions     CostAssumption[]
+  departmentMappings  DepartmentMapping[]
+  externalActualEntries ExternalActualEntry[]
+  externalActualImports ExternalActualImport[]
+  exchangeRates       ExchangeRate[]
+  statusDefinitions   StatusDefinition[]
+  rosterImports       RosterImport[]
+  rosterPeople        RosterPerson[]
+  trackerSeats        TrackerSeat[]
+  auditLogs           AuditLog[]
+}
+
+model AuditLog {
   id             String       @id @default(cuid())
-  conversationId String
-  role           String
-  content        String
-  tokenCount     Int          @default(0)
-  latencyMs      Int?
+  trackingYearId String?
+  entityType     String
+  entityId       String?
+  action         String
+  field          String
+  oldValue       String?
+  newValue       String?
+  actorName      String?
+  actorEmail     String?
   createdAt      DateTime     @default(now())
-  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  trackingYear   TrackingYear? @relation(fields: [trackingYearId], references: [id], onDelete: SetNull)
 
-  @@index([conversationId])
+  @@index([trackingYearId, createdAt])
+  @@index([actorEmail, createdAt])
+  @@index([entityType, entityId, createdAt])
 }
 
-model Evaluation {
+model StatusDefinition {
   id             String       @id @default(cuid())
-  conversationId String       @unique
-  accuracy       Float
-  relevance      Float
-  coherence      Float
-  helpfulness    Float
-  toxicity       Float        @default(0)
-  groundedness   Float
-  latencyP50     Int
-  latencyP95     Int
+  trackingYearId String
+  label          String
+  isActiveStatus Boolean      @default(false)
+  sortOrder      Int          @default(0)
   createdAt      DateTime     @default(now())
-  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  updatedAt      DateTime     @updatedAt
+  trackingYear   TrackingYear @relation(fields: [trackingYearId], references: [id], onDelete: Cascade)
+
+  @@unique([trackingYearId, label])
+  @@index([trackingYearId, sortOrder])
 }
 
-model DailyMetrics {
-  id                 String   @id @default(cuid())
-  date               DateTime @unique
-  totalConversations Int      @default(0)
-  totalMessages      Int      @default(0)
-  avgSatisfaction    Float    @default(0)
-  resolutionRate     Float    @default(0)
-  avgResponseTimeMs  Int      @default(0)
-  avgTokensPerMsg    Float    @default(0)
-  uniqueUsers        Int      @default(0)
-  createdAt          DateTime @default(now())
+model BudgetArea {
+  id              String         @id @default(cuid())
+  trackingYearId  String
+  domain          String?
+  subDomain       String?
+  funding         String?
+  pillar          String?
+  costCenter      String
+  projectCode     String
+  displayName     String?
+  notes           String?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  trackingYear    TrackingYear   @relation(fields: [trackingYearId], references: [id], onDelete: Cascade)
+  budgetMovements BudgetMovement[]
+  trackerSeats    TrackerSeat[]
+
+  @@unique([trackingYearId, costCenter, projectCode])
+  @@index([trackingYearId, pillar])
+}
+
+model DepartmentMapping {
+  id             String          @id @default(cuid())
+  trackingYearId String
+  codeType       MappingCodeType
+  sourceCode     String
+  domain         String
+  subDomain      String
+  notes          String?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  trackingYear   TrackingYear    @relation(fields: [trackingYearId], references: [id], onDelete: Cascade)
+
+  @@unique([trackingYearId, codeType, sourceCode])
+  @@index([trackingYearId, sourceCode])
+}
+
+model BudgetMovementBatch {
+  id             String           @id @default(cuid())
+  trackingYearId String
+  fileName       String
+  importedAt     DateTime         @default(now())
+  rowCount       Int              @default(0)
+  trackingYear   TrackingYear     @relation(fields: [trackingYearId], references: [id], onDelete: Cascade)
+  movements      BudgetMovement[]
+
+  @@index([trackingYearId, importedAt])
+}
+
+model BudgetMovement {
+  id                   String              @id @default(cuid())
+  trackingYearId       String
+  batchId              String
+  budgetAreaId         String?
+  givingFunding        String?
+  givingPillar         String?
+  amountGiven          Float               @default(0)
+  receivingCostCenter  String
+  receivingProjectCode String
+  notes                String?
+  effectiveDate        DateTime?
+  category             String?
+  fbpValidation        String?
+  financeViewAmount    Float?
+  capexTarget          Float?
+  createdAt            DateTime            @default(now())
+  trackingYear         TrackingYear        @relation(fields: [trackingYearId], references: [id], onDelete: Cascade)
+  batch                BudgetMovementBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  budgetArea           BudgetArea?         @relation(fields: [budgetAreaId], references: [id], onDelete: SetNull)
+
+  @@index([trackingYearId, budgetAreaId])
+  @@index([batchId])
+}
+
+model RosterImport {
+  id             String       @id @default(cuid())
+  trackingYearId String
+  fileName       String
+  status         ImportStatus @default(APPROVED)
+  importedAt     DateTime     @default(now())
+  importedByName String?
+  importedByEmail String?
+  approvedAt     DateTime?
+  rowCount       Int          @default(0)
+  trackingYear   TrackingYear @relation(fields: [trackingYearId], references: [id], onDelete: Cascade)
+  people         RosterPerson[]
+
+  @@index([trackingYearId, importedAt])
+}
+
+model RosterPerson {
+  id                   String       @id @default(cuid())
+  trackingYearId       String
+  importId             String
+  seatId               String
+  domain               String?
+  productLine          String?
+  importError          String?
+  teamName             String?
+  band                 String?
+  peoplePortalPositionId String?
+  resourceName         String?
+  email                String?
+  roleCategory         String?
+  specificRole         String?
+  title                String?
+  status               String?
+  allocation           Float?
+  resourceType         String?
+  vendor               String?
+  dailyRate            Float?
+  lineManager          String?
+  location             String?
+  expectedFunding      String?
+  expectedFunding2025  String?
+  expectedStartDate    DateTime?
+  expectedEndDate      DateTime?
+  fundingType          String?
+  hourlyRate           Float?
+  createdAt            DateTime     @default(now())
+  trackingYear         TrackingYear @relation(fields: [trackingYearId], references: [id], onDelete: Cascade)
+  import               RosterImport @relation(fields: [importId], references: [id], onDelete: Cascade)
+  trackerSeat          TrackerSeat?
+
+  @@unique([importId, seatId])
+  @@index([trackingYearId, seatId])
+}
+
+model CostAssumption {
+  id             String       @id @default(cuid())
+  trackingYearId String
+  band           String
+  location       String
+  yearlyCost     Float
+  notes          String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  trackingYear   TrackingYear @relation(fields: [trackingYearId], references: [id], onDelete: Cascade)
+
+  @@unique([trackingYearId, band, location])
+}
+
+model ExchangeRate {
+  id             String       @id @default(cuid())
+  trackingYearId String
+  currency       CurrencyCode
+  rateToDkk      Float
+  effectiveDate  DateTime
+  notes          String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  trackingYear   TrackingYear @relation(fields: [trackingYearId], references: [id], onDelete: Cascade)
+
+  @@index([trackingYearId, currency, effectiveDate])
+  @@unique([trackingYearId, currency, effectiveDate])
+}
+
+model ExternalActualImport {
+  id             String               @id @default(cuid())
+  trackingYearId String
+  fileName       String
+  importedAt     DateTime             @default(now())
+  importedByName String?
+  importedByEmail String?
+  rowCount       Int                  @default(0)
+  entryCount     Int                  @default(0)
+  trackingYear   TrackingYear         @relation(fields: [trackingYearId], references: [id], onDelete: Cascade)
+  entries        ExternalActualEntry[]
+
+  @@index([trackingYearId, importedAt])
+  @@index([importedByEmail, importedAt])
+}
+
+model ExternalActualEntry {
+  id              String               @id @default(cuid())
+  trackingYearId  String
+  importId        String
+  trackerSeatId   String?
+  seatId          String
+  team            String?
+  inSeat          String?
+  description     String?
+  monthIndex      Int
+  monthLabel      String
+  amount          Float
+  createdAt       DateTime             @default(now())
+  trackingYear    TrackingYear         @relation(fields: [trackingYearId], references: [id], onDelete: Cascade)
+  import          ExternalActualImport @relation(fields: [importId], references: [id], onDelete: Cascade)
+  trackerSeat     TrackerSeat?         @relation(fields: [trackerSeatId], references: [id], onDelete: SetNull)
+
+  @@index([trackingYearId, createdAt])
+  @@index([importId, seatId, monthIndex])
+  @@index([trackerSeatId, monthIndex])
+}
+
+model TrackerSeat {
+  id             String          @id @default(cuid())
+  trackingYearId String
+  budgetAreaId   String?
+  rosterPersonId String?         @unique
+  sourceType     SeatSourceType  @default(ROSTER)
+  seatId         String
+  sourceKey      String
+  isActive       Boolean         @default(true)
+  domain         String?
+  subDomain      String?
+  funding        String?
+  pillar         String?
+  costCenter     String?
+  projectCode    String?
+  resourceType   String?
+  team           String?
+  inSeat         String?
+  description    String?
+  band           String?
+  ppid           String?
+  location       String?
+  vendor         String?
+  dailyRate      Float?
+  ritm           String?
+  sow            String?
+  spendPlanId    String?
+  status         String?
+  allocation     Float           @default(0)
+  startDate      DateTime?
+  endDate        DateTime?
+  notes          String?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  trackingYear   TrackingYear    @relation(fields: [trackingYearId], references: [id], onDelete: Cascade)
+  budgetArea     BudgetArea?     @relation(fields: [budgetAreaId], references: [id], onDelete: SetNull)
+  rosterPerson   RosterPerson?   @relation(fields: [rosterPersonId], references: [id], onDelete: SetNull)
+  externalActualEntries ExternalActualEntry[]
+  months         SeatMonth[]
+  override       TrackerOverride?
+
+  @@unique([trackingYearId, sourceKey])
+  @@index([trackingYearId, budgetAreaId])
+  @@index([trackingYearId, seatId])
+}
+
+model SeatMonth {
+  id               String      @id @default(cuid())
+  trackerSeatId    String
+  monthIndex       Int
+  actualAmount     Float       @default(0)
+  actualAmountRaw  Float?
+  actualCurrency   CurrencyCode @default(DKK)
+  exchangeRateUsed Float?
+  forecastIncluded Boolean     @default(true)
+  notes            String?
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+  trackerSeat      TrackerSeat @relation(fields: [trackerSeatId], references: [id], onDelete: Cascade)
+
+  @@unique([trackerSeatId, monthIndex])
+}
+
+model TrackerOverride {
+  id             String      @id @default(cuid())
+  trackerSeatId  String      @unique
+  domain         String?
+  subDomain      String?
+  funding        String?
+  pillar         String?
+  budgetAreaId   String?
+  costCenter     String?
+  projectCode    String?
+  resourceType   String?
+  ritm           String?
+  sow            String?
+  spendPlanId    String?
+  status         String?
+  allocation     Float?
+  startDate      DateTime?
+  endDate        DateTime?
+  notes          String?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+  trackerSeat    TrackerSeat @relation(fields: [trackerSeatId], references: [id], onDelete: Cascade)
 }

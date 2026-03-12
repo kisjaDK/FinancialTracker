@@ -21,11 +21,11 @@ export default function LoginPage() {
 
         <div className="relative z-10 max-w-sm">
           <p className="text-[22px] font-medium leading-snug tracking-tight text-background/90">
-            Understand every conversation. Improve every interaction.
+            Track budgets, staffing, and forecast movement across D&A.
           </p>
           <p className="mt-3 text-sm leading-relaxed text-background/40">
-            AI-powered analytics for conversational systems — monitor quality,
-            track evaluations, and surface insights at scale.
+            Import the roster, maintain internal cost assumptions, and manage
+            actuals and overrides in one protected workspace.
           </p>
         </div>
 
@@ -61,14 +61,14 @@ export default function LoginPage() {
           <div className="space-y-1.5">
             <h1 className="text-lg font-semibold tracking-tight">Sign in</h1>
             <p className="text-[13px] text-muted-foreground">
-              Use your organization account to continue
+              Use your organization account to access the financial tracker
             </p>
           </div>
 
           <form
             action={async () => {
               "use server"
-              await signIn("microsoft-entra-id", { redirectTo: "/dashboard" })
+              await signIn("microsoft-entra-id", { redirectTo: "/welcome" })
             }}
             className="mt-6"
           >

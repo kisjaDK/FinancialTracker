@@ -1,0 +1,189 @@
+import type {
+  BudgetArea,
+  CostAssumption,
+  CurrencyCode,
+  SeatMonth,
+  StatusDefinition,
+  TrackerOverride,
+  TrackerSeat,
+} from "@/lib/generated/prisma/client"
+
+export type SeatWithRelations = TrackerSeat & {
+  months: SeatMonth[]
+  override: TrackerOverride | null
+  budgetArea: BudgetArea | null
+}
+
+export type BudgetAreaSummary = {
+  id: string
+  domain: string | null
+  subDomain: string | null
+  funding: string | null
+  pillar: string | null
+  costCenter: string | null
+  projectCode: string | null
+  displayName: string
+  budget: number
+  amountGivenBudget: number
+  financeViewBudget: number
+  spentToDate: number
+  remainingBudget: number
+  totalForecast: number
+  forecastRemaining: number
+  permTarget: number
+  permForecast: number
+  extForecast: number
+  cloudCostTarget: number
+  cloudCostForecast: number
+  seatCount: number
+  activeSeatCount: number
+  openSeatCount: number
+}
+
+export type SeatDerivedMetrics = {
+  totalSpent: number
+  totalForecast: number
+  yearlyCostInternal: number
+  yearlyCostExternal: number
+  permFte: number
+  extFte: number
+  permForecast: number
+  extForecast: number
+  cloudCostForecast: number
+  quarterlyForecast: [number, number, number, number]
+  monthlyForecast: number[]
+}
+
+export type CostAssumptionLookup = Record<string, CostAssumption>
+export type StatusDefinitionView = StatusDefinition
+
+export type LatestExchangeRate = {
+  currency: CurrencyCode
+  rateToDkk: number
+  effectiveDate: Date
+  notes: string | null
+}
+
+export type DepartmentMappingView = {
+  id: string
+  sourceCode: string
+  domain: string
+  subDomain: string
+  notes: string | null
+}
+
+export type SeatMonthView = {
+  monthIndex: number
+  actualAmountDkk: number
+  actualAmountRaw: number | null
+  actualCurrency: CurrencyCode
+  exchangeRateUsed: number | null
+  forecastIncluded: boolean
+  notes: string | null
+}
+
+export type BudgetMovementFilters = {
+  search: string
+  category: string
+  receivingFunding: string
+  givingPillar: string
+}
+
+export type BudgetMovementFilterOption = {
+  value: string
+  label: string
+}
+
+export type BudgetMovementView = {
+  id: string
+  batchFileName: string
+  effectiveDate: Date | null
+  category: string | null
+  givingFunding: string | null
+  givingPillar: string | null
+  receivingFunding: string
+  receivingProjectCode: string
+  receivingDomainCode: string
+  amountGiven: number
+  financeViewAmount: number | null
+  capexTarget: number | null
+  notes: string | null
+  areaDisplayName: string | null
+  areaDomain: string | null
+  areaSubDomain: string | null
+}
+
+export type PeopleRosterFilters = {
+  seatIds: string[]
+  names: string[]
+  emails: string[]
+  teams: string[]
+  subDomains: string[]
+  vendors: string[]
+  locations: string[]
+  statuses: string[]
+  roles: string[]
+  bands: string[]
+  validation: string
+}
+
+export type PeopleRosterView = {
+  id: string
+  importFileName: string
+  seatId: string
+  departmentCode: string | null
+  domain: string | null
+  name: string | null
+  email: string | null
+  team: string | null
+  subDomain: string | null
+  mappedSubDomain: string | null
+  vendor: string | null
+  dailyRate: number | null
+  location: string | null
+  band: string | null
+  role: string | null
+  resourceType: string | null
+  status: string | null
+  manager: string | null
+  fte: number | null
+  startDate: Date | null
+  endDate: Date | null
+  importError: string | null
+}
+
+export type ExternalActualImportFilters = {
+  user: string
+  fileName: string
+  seatId: string
+  team: string
+  importedFrom: string
+  importedTo: string
+}
+
+export type ExternalActualImportView = {
+  id: string
+  importedAt: Date
+  fileName: string
+  importedByName: string | null
+  importedByEmail: string | null
+  seatId: string
+  team: string | null
+  inSeat: string | null
+  description: string | null
+  monthLabel: string
+  amount: number
+  matchedTrackerSeatId: string | null
+}
+
+export type ExternalActualImportBatchView = {
+  id: string
+  importedAt: Date
+  fileName: string
+  importedByName: string | null
+  importedByEmail: string | null
+  rowCount: number
+  entryCount: number
+  amount: number
+  matchedCount: number
+}

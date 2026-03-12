@@ -1,0 +1,2502 @@
+import type { CurrencyCode, ExchangeRate } from "@/lib/generated/prisma/client"
+import {
+  ALLOWED_SEAT_STATUSES,
+  CLOUD_CATEGORY,
+  DEFAULT_ACTIVE_SEAT_STATUSES,
+  MONTH_NAMES,
+  WORK_DAYS_PER_YEAR,
+} from "@/lib/finance/constants"
+import type { AuditActor } from "@/lib/finance/audit"
+import { buildAuditChanges, writeAuditLog } from "@/lib/finance/audit"
+import { buildExchangeRateLookup, convertAmountToDkk } from "@/lib/finance/currency"
+import {
+  buildCostAssumptionLookup,
+  deriveSeatMetrics,
+  getEffectiveSeat,
+  isTrackerCancelledSeat,
+  isExternalSeat,
+  monthLabel,
+} from "@/lib/finance/derive"
+import type {
+  BudgetAreaSummary,
+  ExternalActualImportBatchView,
+  ExternalActualImportFilters,
+  ExternalActualImportView,
+  BudgetMovementFilters,
+  BudgetMovementFilterOption,
+  BudgetMovementView,
+  DepartmentMappingView,
+  LatestExchangeRate,
+  PeopleRosterFilters,
+  PeopleRosterView,
+  SeatMonthView,
+  SeatWithRelations,
+  StatusDefinitionView,
+} from "@/lib/finance/types"
+import { prisma } from "@/lib/prisma"
+
+function normalizeValue(value: string | null | undefined) {
+  return value?.trim().toLowerCase() ?? ""
+}
+
+function normalizeDomainLabel(value: string | null | undefined) {
+  const trimmed = value?.trim()
+  if (!trimmed) {
+    return null
+  }
+
+  return normalizeValue(trimmed) === "data and analytics"
+    ? "Data & Analytics"
+    : trimmed
+}
+
+function normalizeSubDomainLabel(value: string | null | undefined) {
+  const trimmed = value?.trim()
+  if (!trimmed) {
+    return null
+  }
+
+  return normalizeValue(trimmed) === "engineering"
+    ? "Architecture & Engineering"
+    : trimmed
+}
+
+function normalizeCostBandLabel(value: string | null | undefined) {
+  const trimmed = value?.trim()
+  if (!trimmed) {
+    return ""
+  }
+
+  return normalizeValue(trimmed).startsWith("band ")
+    ? trimmed.slice(5).trim()
+    : trimmed
+}
+
+function buildSourceKey(seatId: string) {
+  return `roster:${seatId}`
+}
+
+function normalizeAllocation(value: number | null | undefined) {
+  if (!value) {
+    return 0
+  }
+
+  return value > 1 ? value / 100 : value
+}
+
+function computeAreaDisplayName(area: {
+  displayName: string | null
+  subDomain?: string | null
+  pillar: string | null
+  projectCode: string
+  costCenter: string
+}) {
+  return (
+    area.displayName ||
+    `${area.subDomain || area.pillar || area.projectCode} · ${area.costCenter}`
+  )
+}
+
+function buildDepartmentCodeKey(sourceCode: string | null | undefined) {
+  return normalizeValue(sourceCode)
+}
+
+function buildDepartmentMappingLookup(
+  mappings: {
+    sourceCode: string
+    domain: string
+    subDomain: string
+  }[]
+) {
+  return mappings.reduce<Record<string, { domain: string; subDomain: string }>>(
+    (accumulator, mapping) => {
+      accumulator[buildDepartmentCodeKey(mapping.sourceCode)] = {
+        domain: normalizeDomainLabel(mapping.domain) || mapping.domain,
+        subDomain: normalizeSubDomainLabel(mapping.subDomain) || mapping.subDomain,
+      }
+
+      return accumulator
+    },
+    {}
+  )
+}
+
+function buildSummaryKey(subDomain: string | null | undefined) {
+  return subDomain?.trim() || "Unmapped"
+}
+
+function parseSummaryKey(summaryKey: string) {
+  return {
+    subDomain: summaryKey === "Unmapped" ? null : summaryKey,
+  }
+}
+
+async function getOrCreateTrackingYear(year: number) {
+  return prisma.trackingYear.upsert({
+    where: { year },
+    update: {},
+    create: {
+      year,
+      label: String(year),
+      isActive: true,
+    },
+  })
+}
+
+async function ensureStatusDefinitions(year: number) {
+  const trackingYear = await getOrCreateTrackingYear(year)
+
+  await Promise.all(
+    ALLOWED_SEAT_STATUSES.map((label, index) =>
+      prisma.statusDefinition.upsert({
+        where: {
+          trackingYearId_label: {
+            trackingYearId: trackingYear.id,
+            label,
+          },
+        },
+        update: {
+          sortOrder: index,
+        },
+        create: {
+          trackingYearId: trackingYear.id,
+          label,
+          sortOrder: index,
+          isActiveStatus: DEFAULT_ACTIVE_SEAT_STATUSES.some(
+            (status) => status === label
+          ),
+        },
+      })
+    )
+  )
+
+  return prisma.statusDefinition.findMany({
+    where: { trackingYearId: trackingYear.id },
+    orderBy: [{ sortOrder: "asc" }, { label: "asc" }],
+  })
+}
+
+function buildActiveStatusLookup(statusDefinitions: StatusDefinitionView[]) {
+  return new Set(
+    statusDefinitions
+      .filter((status) => status.isActiveStatus)
+      .map((status) => normalizeValue(status.label))
+  )
+}
+
+async function ensureFreshTrackerDerivation(year: number) {
+  const trackingYear = await getOrCreateTrackingYear(year)
+  const staleSeat = await prisma.trackerSeat.findFirst({
+    where: {
+      trackingYearId: trackingYear.id,
+      sourceType: "ROSTER",
+      isActive: true,
+      budgetAreaId: null,
+      rosterPerson: {
+        productLine: {
+          not: null,
+        },
+      },
+    },
+    select: { id: true },
+  })
+
+  if (staleSeat) {
+    await deriveTrackerSeatsForYear(year)
+  }
+}
+
+async function ensureSeatMonths(trackerSeatId: string) {
+  const existingMonths = await prisma.seatMonth.findMany({
+    where: { trackerSeatId },
+    select: { monthIndex: true },
+  })
+  const existing = new Set(existingMonths.map((month) => month.monthIndex))
+
+  const missing = Array.from({ length: 12 }, (_, index) => index).filter(
+    (monthIndex) => !existing.has(monthIndex)
+  )
+
+  if (missing.length === 0) {
+    return
+  }
+
+  await prisma.seatMonth.createMany({
+    data: missing.map((monthIndex) => ({
+      trackerSeatId,
+      monthIndex,
+    })),
+  })
+}
+
+function collectSortedValues(values: (string | null | undefined)[]) {
+  return Array.from(
+    new Set(
+      values.map((value) => value?.trim()).filter((value): value is string => Boolean(value))
+    )
+  ).sort((left, right) => left.localeCompare(right))
+}
+
+function normalizeValues(values: string[]) {
+  return new Set(values.map((value) => normalizeValue(value)).filter(Boolean))
+}
+
+function findMatchingBudgetArea(
+  budgetAreas: {
+    id: string
+    domain: string | null
+    subDomain: string | null
+    displayName?: string | null
+    funding: string | null
+    pillar: string | null
+    costCenter: string
+    projectCode: string
+  }[],
+  productLine: string | null,
+  fundingType: string | null
+) {
+  const normalizedProductLine = normalizeValue(productLine)
+  const normalizedFunding = normalizeValue(fundingType)
+
+  const exactSubDomain = budgetAreas.find(
+    (area) => normalizeValue(area.subDomain) === normalizedProductLine
+  )
+
+  if (exactSubDomain) {
+    return exactSubDomain
+  }
+
+  const subDomainContains = budgetAreas.find((area) =>
+    normalizeValue(area.subDomain).includes(normalizedProductLine)
+  )
+
+  if (subDomainContains) {
+    return subDomainContains
+  }
+
+  const displayNameContains = budgetAreas.find((area) =>
+    normalizeValue(area.displayName).includes(normalizedProductLine)
+  )
+
+  if (displayNameContains) {
+    return displayNameContains
+  }
+
+  const exactPillar = budgetAreas.find(
+    (area) => normalizeValue(area.pillar) === normalizedProductLine
+  )
+
+  if (exactPillar) {
+    return exactPillar
+  }
+
+  const pillarContains = budgetAreas.find((area) =>
+    normalizeValue(area.pillar).includes(normalizedProductLine)
+  )
+
+  if (pillarContains) {
+    return pillarContains
+  }
+
+  return budgetAreas.find(
+    (area) =>
+      normalizedFunding.length > 0 &&
+      normalizeValue(area.funding) === normalizedFunding
+  )
+}
+
+export async function deriveTrackerSeatsForYear(year: number) {
+  const trackingYear = await getOrCreateTrackingYear(year)
+  const rosterPeople = await prisma.rosterPerson.findMany({
+    where: {
+      trackingYearId: trackingYear.id,
+      import: {
+        status: "APPROVED",
+      },
+    },
+    include: {
+      import: true,
+    },
+    orderBy: [{ import: { importedAt: "desc" } }, { createdAt: "desc" }],
+  })
+  const latestPeopleBySeatId = Array.from(
+    rosterPeople
+      .reduce<Map<string, (typeof rosterPeople)[number]>>((latestPeople, person) => {
+        if (!latestPeople.has(person.seatId)) {
+          latestPeople.set(person.seatId, person)
+        }
+
+        return latestPeople
+      }, new Map())
+      .values()
+  )
+
+  const [budgetAreas, departmentMappings] = await Promise.all([
+    prisma.budgetArea.findMany({
+      where: { trackingYearId: trackingYear.id },
+    }),
+    prisma.departmentMapping.findMany({
+      where: {
+        trackingYearId: trackingYear.id,
+        codeType: "DEPARTMENT_CODE",
+      },
+    }),
+  ])
+  const mappingLookup = buildDepartmentMappingLookup(departmentMappings)
+
+  await prisma.trackerSeat.updateMany({
+    where: {
+      trackingYearId: trackingYear.id,
+      sourceType: "ROSTER",
+    },
+    data: {
+      isActive: false,
+    },
+  })
+
+  if (latestPeopleBySeatId.length === 0) {
+    return
+  }
+
+  for (const person of latestPeopleBySeatId) {
+    const budgetArea = findMatchingBudgetArea(
+      budgetAreas,
+      person.productLine,
+      person.fundingType
+    )
+    const mappedHierarchy =
+      mappingLookup[buildDepartmentCodeKey(person.domain)] ||
+      mappingLookup[buildDepartmentCodeKey(budgetArea?.costCenter)]
+
+    const trackerSeat = await prisma.trackerSeat.upsert({
+      where: {
+        trackingYearId_sourceKey: {
+          trackingYearId: trackingYear.id,
+          sourceKey: buildSourceKey(person.seatId),
+        },
+      },
+      update: {
+        rosterPersonId: person.id,
+        budgetAreaId: budgetArea?.id ?? null,
+        isActive: true,
+        domain: normalizeDomainLabel(
+          mappedHierarchy?.domain || budgetArea?.domain || person.domain || null
+        ),
+        subDomain: normalizeSubDomainLabel(
+          mappedHierarchy?.subDomain ||
+            budgetArea?.subDomain ||
+            person.productLine ||
+            null
+        ),
+        funding: person.fundingType || budgetArea?.funding || null,
+        pillar: person.productLine || budgetArea?.pillar || null,
+        costCenter: budgetArea?.costCenter || null,
+        projectCode: budgetArea?.projectCode || null,
+        resourceType: person.resourceType,
+        team: person.teamName,
+        inSeat: person.resourceName,
+        description: person.title,
+        band: person.band,
+        ppid: person.peoplePortalPositionId,
+        location: person.location,
+        vendor: person.vendor,
+        dailyRate: person.dailyRate,
+        status: person.status,
+        allocation: normalizeAllocation(person.allocation),
+        startDate: person.expectedStartDate,
+        endDate: person.expectedEndDate,
+      },
+      create: {
+        trackingYearId: trackingYear.id,
+        rosterPersonId: person.id,
+        budgetAreaId: budgetArea?.id ?? null,
+        sourceType: "ROSTER",
+        seatId: person.seatId,
+        sourceKey: buildSourceKey(person.seatId),
+        isActive: true,
+        domain: normalizeDomainLabel(
+          mappedHierarchy?.domain || budgetArea?.domain || person.domain || null
+        ),
+        subDomain: normalizeSubDomainLabel(
+          mappedHierarchy?.subDomain ||
+            budgetArea?.subDomain ||
+            person.productLine ||
+            null
+        ),
+        funding: person.fundingType || budgetArea?.funding || null,
+        pillar: person.productLine || budgetArea?.pillar || null,
+        costCenter: budgetArea?.costCenter || null,
+        projectCode: budgetArea?.projectCode || null,
+        resourceType: person.resourceType,
+        team: person.teamName,
+        inSeat: person.resourceName,
+        description: person.title,
+        band: person.band,
+        ppid: person.peoplePortalPositionId,
+        location: person.location,
+        vendor: person.vendor,
+        dailyRate: person.dailyRate,
+        status: person.status,
+        allocation: normalizeAllocation(person.allocation),
+        startDate: person.expectedStartDate,
+        endDate: person.expectedEndDate,
+      },
+    })
+
+    await ensureSeatMonths(trackerSeat.id)
+  }
+}
+
+export async function getFinanceWorkspaceData(
+  year?: number,
+  budgetAreaId?: string,
+  trackerTeams?: string[],
+  missingActualMonths?: string[]
+) {
+  const trackingYears = await prisma.trackingYear.findMany({
+    orderBy: { year: "asc" },
+  })
+
+  const activeYear =
+    year ??
+    trackingYears.find((trackingYear) => trackingYear.isActive)?.year ??
+    trackingYears.at(-1)?.year ??
+    new Date().getFullYear()
+
+  await getOrCreateTrackingYear(activeYear)
+  await ensureFreshTrackerDerivation(activeYear)
+  const statusDefinitions = await ensureStatusDefinitions(activeYear)
+
+  const [
+    summary,
+    budgetAreas,
+    selectedAreaId,
+    costAssumptions,
+    exchangeRates,
+    departmentMappings,
+    importBatches,
+  ] =
+    await Promise.all([
+      getBudgetAreaSummary(activeYear, statusDefinitions),
+      prisma.budgetArea.findMany({
+        where: { trackingYear: { year: activeYear } },
+        orderBy: [{ domain: "asc" }, { subDomain: "asc" }, { costCenter: "asc" }],
+      }),
+      Promise.resolve(budgetAreaId),
+      prisma.costAssumption.findMany({
+        where: { trackingYear: { year: activeYear } },
+        orderBy: [{ band: "asc" }, { location: "asc" }],
+      }),
+      getLatestExchangeRates(activeYear),
+      getDepartmentMappings(activeYear),
+      prisma.trackingYear.findUnique({
+        where: { year: activeYear },
+        include: {
+          rosterImports: {
+            orderBy: { importedAt: "desc" },
+            take: 5,
+          },
+          budgetMovementBatches: {
+            orderBy: { importedAt: "desc" },
+            take: 5,
+          },
+        },
+      }),
+    ])
+
+  const effectiveAreaId = selectedAreaId ?? summary[0]?.id ?? null
+  const allSeats = effectiveAreaId
+    ? await getTrackerDetail(activeYear, effectiveAreaId)
+    : []
+  const teamFilter = normalizeValues(trackerTeams ?? [])
+  const monthFilter = new Set(
+    (missingActualMonths ?? [])
+      .map((month) => MONTH_NAMES.findIndex((candidate) => candidate === month))
+      .filter((index) => index >= 0)
+  )
+  const seats = allSeats.filter((seat) => {
+    if (teamFilter.size > 0 && !teamFilter.has(normalizeValue(seat.team))) {
+      return false
+    }
+
+    if (monthFilter.size > 0) {
+      if (normalizeValue(seat.status) === normalizeValue("Open")) {
+        return false
+      }
+
+      const seatStartMonthIndex = seat.startDate
+        ? seat.startDate.getFullYear() > activeYear
+          ? Number.POSITIVE_INFINITY
+          : seat.startDate.getFullYear() < activeYear
+            ? 0
+            : seat.startDate.getMonth()
+        : null
+
+      const eligibleMonthIndexes = Array.from(monthFilter).filter(
+        (monthIndex) => seatStartMonthIndex === null || monthIndex >= seatStartMonthIndex
+      )
+
+      if (eligibleMonthIndexes.length === 0) {
+        return false
+      }
+
+      const hasMissingActualInSelectedMonth = eligibleMonthIndexes.some((monthIndex) => {
+        const month = seat.months.find((entry) => entry.monthIndex === monthIndex)
+        const actualAmount = month?.actualAmountRaw ?? month?.actualAmountDkk ?? 0
+
+        return actualAmount <= 0
+      })
+
+      if (!hasMissingActualInSelectedMonth) {
+        return false
+      }
+    }
+
+    return true
+  })
+
+  return {
+    activeYear,
+    trackingYears,
+    summary,
+    seats,
+    budgetAreas,
+    selectedAreaId: effectiveAreaId,
+    costAssumptions,
+    exchangeRates,
+    statusDefinitions,
+    departmentMappings,
+    rosterImports: importBatches?.rosterImports ?? [],
+    budgetMovementBatches: importBatches?.budgetMovementBatches ?? [],
+    trackerTeamFilters: trackerTeams ?? [],
+    trackerTeamOptions: collectSortedValues(allSeats.map((seat) => seat.team)),
+    missingActualMonthFilters: missingActualMonths ?? [],
+    missingActualMonthOptions: MONTH_NAMES,
+  }
+}
+
+export async function getBudgetMovementsPageData(input?: {
+  year?: number
+  search?: string
+  category?: string
+  receivingFunding?: string
+  givingPillar?: string
+}) {
+  const trackingYears = await prisma.trackingYear.findMany({
+    orderBy: { year: "asc" },
+  })
+
+  const activeYear =
+    input?.year ??
+    trackingYears.find((trackingYear) => trackingYear.isActive)?.year ??
+    trackingYears.at(-1)?.year ??
+    new Date().getFullYear()
+
+  const trackingYear = await getOrCreateTrackingYear(activeYear)
+  const filters: BudgetMovementFilters = {
+    search: input?.search?.trim() ?? "",
+    category: input?.category?.trim() ?? "",
+    receivingFunding: input?.receivingFunding?.trim() ?? "",
+    givingPillar: input?.givingPillar?.trim() ?? "",
+  }
+
+  const [budgetMovements, departmentMappings] = await Promise.all([
+    prisma.budgetMovement.findMany({
+      where: { trackingYearId: trackingYear.id },
+      include: {
+        batch: true,
+        budgetArea: true,
+      },
+      orderBy: [{ effectiveDate: "desc" }, { createdAt: "desc" }],
+    }),
+    prisma.departmentMapping.findMany({
+      where: {
+        trackingYearId: trackingYear.id,
+        codeType: "DEPARTMENT_CODE",
+      },
+    }),
+  ])
+  const mappingLookup = buildDepartmentMappingLookup(departmentMappings)
+
+  const movementViews: BudgetMovementView[] = budgetMovements.map((movement) => {
+    const mappedHierarchy =
+      mappingLookup[buildDepartmentCodeKey(movement.receivingCostCenter)]
+
+    return {
+      id: movement.id,
+      batchFileName: movement.batch.fileName,
+      effectiveDate: movement.effectiveDate,
+      category: movement.category,
+      givingFunding: movement.givingFunding,
+      givingPillar: movement.givingPillar,
+      receivingFunding: movement.receivingCostCenter,
+      receivingProjectCode: movement.receivingProjectCode,
+      receivingDomainCode: movement.receivingCostCenter,
+      amountGiven: movement.amountGiven,
+      financeViewAmount: movement.financeViewAmount,
+      capexTarget: movement.capexTarget,
+      notes: movement.notes,
+      areaDisplayName: movement.budgetArea
+        ? computeAreaDisplayName(movement.budgetArea)
+        : mappedHierarchy?.subDomain || null,
+      areaDomain: normalizeDomainLabel(
+        mappedHierarchy?.domain ?? movement.budgetArea?.domain ?? null
+      ),
+      areaSubDomain:
+        mappedHierarchy?.subDomain ?? movement.budgetArea?.subDomain ?? null,
+    }
+  })
+
+  const normalizedSearch = normalizeValue(filters.search)
+  const filteredMovements = movementViews.filter((movement) => {
+    if (
+      normalizedSearch &&
+      !normalizeValue(movement.notes).includes(normalizedSearch)
+    ) {
+      return false
+    }
+
+    if (
+      filters.category &&
+      normalizeValue(movement.category) !== normalizeValue(filters.category)
+    ) {
+      return false
+    }
+
+    if (
+      filters.receivingFunding &&
+      normalizeValue(movement.receivingFunding) !==
+        normalizeValue(filters.receivingFunding)
+    ) {
+      return false
+    }
+
+    if (
+      filters.givingPillar &&
+      normalizeValue(movement.givingPillar) !== normalizeValue(filters.givingPillar)
+    ) {
+      return false
+    }
+
+    return true
+  })
+
+  return {
+    activeYear,
+    trackingYears,
+    filters,
+    movements: filteredMovements,
+    filterOptions: {
+      categories: collectSortedValues(movementViews.map((movement) => movement.category)),
+      receivingFunding: Array.from(
+        new Map(
+          movementViews.map((movement) => [
+            movement.receivingFunding,
+            {
+              value: movement.receivingFunding,
+              label: movement.areaSubDomain
+                ? `${movement.receivingFunding} · ${movement.areaSubDomain}`
+                : movement.receivingFunding,
+            } satisfies BudgetMovementFilterOption,
+          ])
+        ).values()
+      ).sort((left, right) => left.label.localeCompare(right.label)),
+      givingPillars: collectSortedValues(
+        movementViews.map((movement) => movement.givingPillar)
+      ),
+    },
+    totals: {
+      movementCount: filteredMovements.length,
+      financeViewAmount: filteredMovements.reduce(
+        (sum, movement) => sum + (movement.financeViewAmount ?? movement.amountGiven),
+        0
+      ),
+      amountGiven: filteredMovements.reduce(
+        (sum, movement) => sum + movement.amountGiven,
+        0
+      ),
+    },
+  }
+}
+
+export async function getExternalActualImportsPageData(input?: {
+  year?: number
+  user?: string
+  fileName?: string
+  seatId?: string
+  team?: string
+  importedFrom?: string
+  importedTo?: string
+}) {
+  const trackingYears = await prisma.trackingYear.findMany({
+    orderBy: { year: "asc" },
+  })
+
+  const activeYear =
+    input?.year ??
+    trackingYears.find((trackingYear) => trackingYear.isActive)?.year ??
+    trackingYears.at(-1)?.year ??
+    new Date().getFullYear()
+
+  const trackingYear = await getOrCreateTrackingYear(activeYear)
+  const filters: ExternalActualImportFilters = {
+    user: input?.user?.trim() ?? "",
+    fileName: input?.fileName?.trim() ?? "",
+    seatId: input?.seatId?.trim() ?? "",
+    team: input?.team?.trim() ?? "",
+    importedFrom: input?.importedFrom?.trim() ?? "",
+    importedTo: input?.importedTo?.trim() ?? "",
+  }
+
+  const importedFrom = filters.importedFrom ? new Date(filters.importedFrom) : null
+  const importedTo = filters.importedTo ? new Date(filters.importedTo) : null
+
+  const imports = await prisma.externalActualImport.findMany({
+    where: { trackingYearId: trackingYear.id },
+    include: {
+      entries: true,
+    },
+    orderBy: [{ importedAt: "desc" }],
+  })
+
+  const normalizedUser = normalizeValue(filters.user)
+  const normalizedFileName = normalizeValue(filters.fileName)
+  const normalizedSeatId = normalizeValue(filters.seatId)
+  const normalizedTeam = normalizeValue(filters.team)
+
+  const filteredImports = imports.filter((importBatch) => {
+    const normalizedActor = `${normalizeValue(importBatch.importedByName)} ${normalizeValue(importBatch.importedByEmail)}`.trim()
+
+      if (normalizedUser && !normalizedActor.includes(normalizedUser)) {
+        return false
+      }
+
+      if (normalizedFileName && !normalizeValue(importBatch.fileName).includes(normalizedFileName)) {
+        return false
+      }
+
+      if (importedFrom && importBatch.importedAt < importedFrom) {
+        return false
+      }
+
+      if (importedTo && importBatch.importedAt > importedTo) {
+        return false
+      }
+
+      return true
+    })
+
+  const importViews: ExternalActualImportBatchView[] = filteredImports.map((importBatch) => ({
+    id: importBatch.id,
+    importedAt: importBatch.importedAt,
+    fileName: importBatch.fileName,
+    importedByName: importBatch.importedByName,
+    importedByEmail: importBatch.importedByEmail,
+    rowCount: importBatch.rowCount,
+    entryCount: importBatch.entryCount,
+    amount: importBatch.entries.reduce((sum, entry) => sum + entry.amount, 0),
+    matchedCount: importBatch.entries.filter((entry) => Boolean(entry.trackerSeatId)).length,
+  }))
+
+  const views: ExternalActualImportView[] = filteredImports.flatMap((importBatch) =>
+    importBatch.entries
+      .slice()
+      .sort((left, right) => {
+        if (left.seatId !== right.seatId) {
+          return left.seatId.localeCompare(right.seatId)
+        }
+
+        return left.monthIndex - right.monthIndex
+      })
+      .map((entry) => ({
+        id: entry.id,
+        importedAt: importBatch.importedAt,
+        fileName: importBatch.fileName,
+        importedByName: importBatch.importedByName,
+        importedByEmail: importBatch.importedByEmail,
+        seatId: entry.seatId,
+        team: entry.team,
+        inSeat: entry.inSeat,
+        description: entry.description,
+        monthLabel: entry.monthLabel,
+        amount: entry.amount,
+        matchedTrackerSeatId: entry.trackerSeatId,
+      }))
+      .filter((entry) => {
+        if (normalizedSeatId && !normalizeValue(entry.seatId).includes(normalizedSeatId)) {
+          return false
+        }
+
+        if (normalizedTeam && !normalizeValue(entry.team).includes(normalizedTeam)) {
+          return false
+        }
+
+        return true
+      })
+  )
+
+  return {
+    activeYear,
+    trackingYears,
+    filters,
+    imports: importViews,
+    entries: views,
+    filterOptions: {
+      users: collectSortedValues(
+        views.flatMap((entry) => [entry.importedByName, entry.importedByEmail])
+      ),
+      fileNames: collectSortedValues(views.map((entry) => entry.fileName)),
+      seatIds: collectSortedValues(views.map((entry) => entry.seatId)),
+      teams: collectSortedValues(views.map((entry) => entry.team)),
+    },
+    totals: {
+      entryCount: views.length,
+      amount: views.reduce((sum, entry) => sum + entry.amount, 0),
+      matchedCount: views.filter((entry) => entry.matchedTrackerSeatId).length,
+    },
+  }
+}
+
+export async function getPeopleRosterPageData(input?: {
+  year?: number
+  seatIds?: string[]
+  names?: string[]
+  emails?: string[]
+  teams?: string[]
+  subDomains?: string[]
+  vendors?: string[]
+  locations?: string[]
+  statuses?: string[]
+  roles?: string[]
+  bands?: string[]
+  validation?: string
+}) {
+  const trackingYears = await prisma.trackingYear.findMany({
+    orderBy: { year: "asc" },
+  })
+
+  const activeYear =
+    input?.year ??
+    trackingYears.find((trackingYear) => trackingYear.isActive)?.year ??
+    trackingYears.at(-1)?.year ??
+    new Date().getFullYear()
+
+  const trackingYear = await getOrCreateTrackingYear(activeYear)
+  const filters: PeopleRosterFilters = {
+    seatIds: input?.seatIds ?? [],
+    names: input?.names ?? [],
+    emails: input?.emails ?? [],
+    teams: input?.teams ?? [],
+    subDomains: input?.subDomains ?? [],
+    vendors: input?.vendors ?? [],
+    locations: input?.locations ?? [],
+    statuses: input?.statuses ?? [],
+    roles: input?.roles ?? [],
+    bands: input?.bands ?? [],
+    validation: input?.validation?.trim() ?? "",
+  }
+
+  const [people, departmentMappings, rosterImports] = await Promise.all([
+    prisma.rosterPerson.findMany({
+      where: {
+        trackingYearId: trackingYear.id,
+        import: {
+          status: "APPROVED",
+        },
+      },
+      include: {
+        import: true,
+      },
+      orderBy: [{ import: { importedAt: "desc" } }, { teamName: "asc" }, { seatId: "asc" }],
+    }),
+    prisma.departmentMapping.findMany({
+      where: {
+        trackingYearId: trackingYear.id,
+        codeType: "DEPARTMENT_CODE",
+      },
+    }),
+    prisma.rosterImport.findMany({
+      where: {
+        trackingYearId: trackingYear.id,
+        status: "APPROVED",
+      },
+      orderBy: [{ importedAt: "desc" }],
+      take: 20,
+    }),
+  ])
+
+  const latestPeople = Array.from(
+    people
+      .reduce<Map<string, (typeof people)[number]>>((latestBySeat, person) => {
+        if (!latestBySeat.has(person.seatId)) {
+          latestBySeat.set(person.seatId, person)
+        }
+
+        return latestBySeat
+      }, new Map())
+      .values()
+  )
+  const mappingLookup = buildDepartmentMappingLookup(departmentMappings)
+  const rosterViews: PeopleRosterView[] = latestPeople.map((person) => {
+    const mappedHierarchy = mappingLookup[buildDepartmentCodeKey(person.domain)]
+
+    return {
+      id: person.id,
+      importFileName: person.import.fileName,
+      seatId: person.seatId,
+      departmentCode: person.domain,
+      domain: normalizeDomainLabel(person.domain),
+      name: person.resourceName,
+      email: person.email,
+      team: person.teamName,
+      subDomain: normalizeSubDomainLabel(person.productLine),
+      mappedSubDomain: normalizeSubDomainLabel(mappedHierarchy?.subDomain || null),
+      vendor: person.vendor,
+      dailyRate: person.dailyRate,
+      location: person.location,
+      band: person.band,
+      role: person.title,
+      resourceType: person.resourceType,
+      status: person.status,
+      manager: person.lineManager,
+      fte: person.allocation,
+      startDate: person.expectedStartDate,
+      endDate: person.expectedEndDate,
+      importError: person.importError,
+    }
+  })
+
+  const seatIdFilter = normalizeValues(filters.seatIds)
+  const nameFilter = normalizeValues(filters.names)
+  const emailFilter = normalizeValues(filters.emails)
+  const teamFilter = normalizeValues(filters.teams)
+  const subDomainFilter = normalizeValues(filters.subDomains)
+  const vendorFilter = normalizeValues(filters.vendors)
+  const locationFilter = normalizeValues(filters.locations)
+  const statusFilter = normalizeValues(filters.statuses)
+  const roleFilter = normalizeValues(filters.roles)
+  const bandFilter = normalizeValues(filters.bands)
+
+  const filteredPeople = rosterViews.filter((person) => {
+    if (seatIdFilter.size > 0 && !seatIdFilter.has(normalizeValue(person.seatId))) {
+      return false
+    }
+
+    if (nameFilter.size > 0 && !nameFilter.has(normalizeValue(person.name))) {
+      return false
+    }
+
+    if (emailFilter.size > 0 && !emailFilter.has(normalizeValue(person.email))) {
+      return false
+    }
+
+    if (teamFilter.size > 0 && !teamFilter.has(normalizeValue(person.team))) {
+      return false
+    }
+
+    if (
+      subDomainFilter.size > 0 &&
+      !subDomainFilter.has(normalizeValue(person.subDomain))
+    ) {
+      return false
+    }
+
+    if (vendorFilter.size > 0 && !vendorFilter.has(normalizeValue(person.vendor))) {
+      return false
+    }
+
+    if (
+      locationFilter.size > 0 &&
+      !locationFilter.has(normalizeValue(person.location))
+    ) {
+      return false
+    }
+
+    if (statusFilter.size > 0 && !statusFilter.has(normalizeValue(person.status))) {
+      return false
+    }
+
+    if (roleFilter.size > 0 && !roleFilter.has(normalizeValue(person.role))) {
+      return false
+    }
+
+    if (bandFilter.size > 0 && !bandFilter.has(normalizeValue(person.band))) {
+      return false
+    }
+
+    if (filters.validation === "error" && !person.importError) {
+      return false
+    }
+
+    if (filters.validation === "ok" && person.importError) {
+      return false
+    }
+
+    return true
+  })
+
+  return {
+    activeYear,
+    trackingYears,
+    filters,
+    people: filteredPeople,
+    filterOptions: {
+      seatIds: collectSortedValues(rosterViews.map((person) => person.seatId)),
+      names: collectSortedValues(rosterViews.map((person) => person.name)),
+      emails: collectSortedValues(rosterViews.map((person) => person.email)),
+      teams: collectSortedValues(rosterViews.map((person) => person.team)),
+      subDomains: collectSortedValues(rosterViews.map((person) => person.subDomain)),
+      vendors: collectSortedValues(rosterViews.map((person) => person.vendor)),
+      locations: collectSortedValues(rosterViews.map((person) => person.location)),
+      statuses: collectSortedValues(rosterViews.map((person) => person.status)),
+      roles: collectSortedValues(rosterViews.map((person) => person.role)),
+      bands: collectSortedValues(rosterViews.map((person) => person.band)),
+    },
+    totals: {
+      rowCount: filteredPeople.length,
+      uniqueTeams: new Set(
+        filteredPeople.map((person) => normalizeValue(person.team)).filter(Boolean)
+      ).size,
+      externalCount: filteredPeople.filter(
+        (person) => normalizeValue(person.resourceType) === "external"
+      ).length,
+      errorCount: filteredPeople.filter((person) => Boolean(person.importError)).length,
+    },
+    rosterImports,
+  }
+}
+
+export async function getInternalCostsPageData(year?: number) {
+  const trackingYears = await prisma.trackingYear.findMany({
+    orderBy: { year: "asc" },
+  })
+
+  const activeYear =
+    year ??
+    trackingYears.find((trackingYear) => trackingYear.isActive)?.year ??
+    trackingYears.at(-1)?.year ??
+    new Date().getFullYear()
+
+  const trackingYear = await getOrCreateTrackingYear(activeYear)
+  const assumptions = await prisma.costAssumption.findMany({
+    where: { trackingYearId: trackingYear.id },
+    orderBy: [{ location: "asc" }, { band: "asc" }],
+  })
+
+  return {
+    activeYear,
+    trackingYears,
+    assumptions: assumptions.map((assumption) => ({
+      ...assumption,
+      dailyCost: assumption.yearlyCost / WORK_DAYS_PER_YEAR,
+    })),
+  }
+}
+
+export async function getStatusesPageData(year?: number) {
+  const trackingYears = await prisma.trackingYear.findMany({
+    orderBy: { year: "asc" },
+  })
+
+  const activeYear =
+    year ??
+    trackingYears.find((trackingYear) => trackingYear.isActive)?.year ??
+    trackingYears.at(-1)?.year ??
+    new Date().getFullYear()
+
+  const statuses = await ensureStatusDefinitions(activeYear)
+
+  return {
+    activeYear,
+    trackingYears,
+    statuses,
+  }
+}
+
+export async function getAuditPageData(input?: {
+  year?: number
+  search?: string
+  user?: string
+  from?: string
+  to?: string
+}) {
+  const trackingYears = await prisma.trackingYear.findMany({
+    orderBy: { year: "asc" },
+  })
+
+  const activeYear =
+    input?.year ??
+    trackingYears.find((trackingYear) => trackingYear.isActive)?.year ??
+    trackingYears.at(-1)?.year ??
+    new Date().getFullYear()
+
+  const trackingYear = await getOrCreateTrackingYear(activeYear)
+  const normalizedSearch = normalizeValue(input?.search)
+  const normalizedUser = normalizeValue(input?.user)
+  const fromDate = input?.from ? new Date(input.from) : null
+  const toDate = input?.to ? new Date(input.to) : null
+
+  const logs = await prisma.auditLog.findMany({
+    where: {
+      trackingYearId: trackingYear.id,
+      createdAt: {
+        gte: fromDate ?? undefined,
+        lte: toDate ?? undefined,
+      },
+    },
+    orderBy: { createdAt: "desc" },
+    take: 500,
+  })
+
+  const filteredLogs = logs.filter((log) => {
+    if (
+      normalizedSearch &&
+      ![
+        log.entityType,
+        log.entityId,
+        log.action,
+        log.field,
+        log.oldValue,
+        log.newValue,
+      ]
+        .map((value) => normalizeValue(value))
+        .some((value) => value.includes(normalizedSearch))
+    ) {
+      return false
+    }
+
+    if (
+      normalizedUser &&
+      ![log.actorName, log.actorEmail]
+        .map((value) => normalizeValue(value))
+        .some((value) => value.includes(normalizedUser))
+    ) {
+      return false
+    }
+
+    return true
+  })
+
+  return {
+    activeYear,
+    trackingYears,
+    filters: {
+      search: input?.search ?? "",
+      user: input?.user ?? "",
+      from: input?.from ?? "",
+      to: input?.to ?? "",
+    },
+    logs: filteredLogs,
+  }
+}
+
+export async function upsertStatusDefinition(input: {
+  year: number
+  label: string
+  isActiveStatus: boolean
+}, actor?: AuditActor) {
+  const allowedLabel = ALLOWED_SEAT_STATUSES.find(
+    (status) => normalizeValue(status) === normalizeValue(input.label)
+  )
+
+  if (!allowedLabel) {
+    throw new Error("Status is not in the allowed list.")
+  }
+
+  const trackingYear = await getOrCreateTrackingYear(input.year)
+  const existing = await ensureStatusDefinitions(input.year)
+  const existingDefinition = existing.find((status) => status.label === allowedLabel)
+
+  const before = await prisma.statusDefinition.findUnique({
+    where: {
+      trackingYearId_label: {
+        trackingYearId: trackingYear.id,
+        label: allowedLabel,
+      },
+    },
+  })
+
+  const statusDefinition = await prisma.statusDefinition.upsert({
+    where: {
+      trackingYearId_label: {
+        trackingYearId: trackingYear.id,
+        label: allowedLabel,
+      },
+    },
+    update: {
+      isActiveStatus: input.isActiveStatus,
+    },
+    create: {
+      trackingYearId: trackingYear.id,
+      label: allowedLabel,
+      isActiveStatus: input.isActiveStatus,
+      sortOrder:
+        existingDefinition?.sortOrder ??
+        ALLOWED_SEAT_STATUSES.indexOf(allowedLabel),
+    },
+  })
+
+  await writeAuditLog({
+    trackingYearId: trackingYear.id,
+    entityType: "StatusDefinition",
+    entityId: statusDefinition.id,
+    action: before ? "UPDATE" : "CREATE",
+    actor,
+    changes: buildAuditChanges(before, statusDefinition, [
+      "label",
+      "isActiveStatus",
+      "sortOrder",
+    ]),
+  })
+
+  return statusDefinition
+}
+
+export async function getBudgetAreaSummary(
+  year: number,
+  existingStatusDefinitions?: StatusDefinitionView[]
+): Promise<BudgetAreaSummary[]> {
+  const trackingYear = await getOrCreateTrackingYear(year)
+  const statusDefinitions =
+    existingStatusDefinitions ?? (await ensureStatusDefinitions(year))
+
+  const [budgetAreas, budgetMovements, seats, assumptions, exchangeRates, departmentMappings] =
+    await Promise.all([
+      prisma.budgetArea.findMany({
+        where: { trackingYearId: trackingYear.id },
+        orderBy: [{ domain: "asc" }, { subDomain: "asc" }, { costCenter: "asc" }],
+      }),
+      prisma.budgetMovement.findMany({
+        where: { trackingYearId: trackingYear.id },
+      }),
+      prisma.trackerSeat.findMany({
+        where: {
+          trackingYearId: trackingYear.id,
+          isActive: true,
+        },
+        include: {
+          months: {
+            orderBy: { monthIndex: "asc" },
+          },
+          override: true,
+          budgetArea: true,
+        },
+      }),
+      prisma.costAssumption.findMany({
+        where: { trackingYearId: trackingYear.id },
+      }),
+      prisma.exchangeRate.findMany({
+        where: { trackingYearId: trackingYear.id },
+        orderBy: { effectiveDate: "desc" },
+      }),
+      prisma.departmentMapping.findMany({
+        where: {
+          trackingYearId: trackingYear.id,
+          codeType: "DEPARTMENT_CODE",
+        },
+      }),
+    ])
+
+  const assumptionLookup = buildCostAssumptionLookup(assumptions)
+  const activeStatuses = buildActiveStatusLookup(statusDefinitions)
+  const mappingLookup = buildDepartmentMappingLookup(departmentMappings)
+  const budgetAreasById = new Map(budgetAreas.map((area) => [area.id, area]))
+  const summaryMap = new Map<string, BudgetAreaSummary>()
+
+  for (const area of budgetAreas) {
+    const mappedHierarchy =
+      mappingLookup[buildDepartmentCodeKey(area.costCenter)]
+    const domain = normalizeDomainLabel(mappedHierarchy?.domain || area.domain || null)
+    const subDomain = normalizeSubDomainLabel(
+      mappedHierarchy?.subDomain || area.subDomain || null
+    )
+    const summaryKey = buildSummaryKey(subDomain)
+    const existing = summaryMap.get(summaryKey)
+
+    summaryMap.set(summaryKey, {
+      id: summaryKey,
+      domain,
+      subDomain,
+      funding: area.funding,
+      pillar: area.pillar,
+      costCenter: existing?.costCenter || area.costCenter,
+      projectCode: existing?.projectCode || area.projectCode,
+      displayName: subDomain || domain || "Unmapped",
+      budget: existing?.budget || 0,
+      amountGivenBudget: existing?.amountGivenBudget || 0,
+      financeViewBudget: existing?.financeViewBudget || 0,
+      spentToDate: existing?.spentToDate || 0,
+      remainingBudget: 0,
+      totalForecast: existing?.totalForecast || 0,
+      forecastRemaining: 0,
+      permTarget: existing?.permTarget || 0,
+      permForecast: existing?.permForecast || 0,
+      extForecast: existing?.extForecast || 0,
+      cloudCostTarget: existing?.cloudCostTarget || 0,
+      cloudCostForecast: existing?.cloudCostForecast || 0,
+      seatCount: existing?.seatCount || 0,
+      activeSeatCount: existing?.activeSeatCount || 0,
+      openSeatCount: existing?.openSeatCount || 0,
+    })
+  }
+
+  for (const movement of budgetMovements) {
+    const budgetArea = movement.budgetAreaId
+      ? budgetAreasById.get(movement.budgetAreaId)
+      : null
+    const mappedHierarchy =
+      mappingLookup[buildDepartmentCodeKey(movement.receivingCostCenter)] || {
+        domain: normalizeDomainLabel(budgetArea?.domain || null),
+        subDomain: normalizeSubDomainLabel(budgetArea?.subDomain || null),
+      }
+    const summaryKey = buildSummaryKey(mappedHierarchy?.subDomain || null)
+    const summary =
+      summaryMap.get(summaryKey) ||
+      {
+        id: summaryKey,
+        domain: normalizeDomainLabel(mappedHierarchy?.domain || null),
+        subDomain: normalizeSubDomainLabel(mappedHierarchy?.subDomain || null),
+        funding: null,
+        pillar: null,
+        costCenter: movement.receivingCostCenter,
+        projectCode: movement.receivingProjectCode,
+        displayName:
+          mappedHierarchy?.subDomain || mappedHierarchy?.domain || "Unmapped",
+        budget: 0,
+        amountGivenBudget: 0,
+        financeViewBudget: 0,
+        spentToDate: 0,
+        remainingBudget: 0,
+        totalForecast: 0,
+        forecastRemaining: 0,
+        permTarget: 0,
+        permForecast: 0,
+        extForecast: 0,
+        cloudCostTarget: 0,
+        cloudCostForecast: 0,
+        seatCount: 0,
+        activeSeatCount: 0,
+        openSeatCount: 0,
+      }
+    summaryMap.set(summaryKey, summary)
+
+    const financeValue = movement.financeViewAmount ?? movement.amountGiven
+    summary.amountGivenBudget += movement.amountGiven
+    summary.financeViewBudget += financeValue
+    summary.budget += financeValue
+
+    if (normalizeValue(movement.category).includes(CLOUD_CATEGORY)) {
+      summary.cloudCostTarget += financeValue
+    }
+  }
+
+  for (const rawSeat of seats as SeatWithRelations[]) {
+    const effectiveSeat = getEffectiveSeat(rawSeat)
+    const metrics = deriveSeatMetrics(
+      rawSeat,
+      assumptionLookup,
+      exchangeRates,
+      year
+    )
+    const summaryKey = buildSummaryKey(effectiveSeat.subDomain)
+    const summary =
+      summaryMap.get(summaryKey) ||
+      {
+        id: summaryKey,
+        domain: normalizeDomainLabel(effectiveSeat.domain || null),
+        subDomain: effectiveSeat.subDomain || null,
+        funding: effectiveSeat.funding || null,
+        pillar: effectiveSeat.pillar || null,
+        costCenter: effectiveSeat.costCenter || null,
+        projectCode: effectiveSeat.projectCode || null,
+        displayName:
+          effectiveSeat.subDomain || effectiveSeat.domain || "Unmapped",
+        budget: 0,
+        amountGivenBudget: 0,
+        financeViewBudget: 0,
+        spentToDate: 0,
+        remainingBudget: 0,
+        totalForecast: 0,
+        forecastRemaining: 0,
+        permTarget: 0,
+        permForecast: 0,
+        extForecast: 0,
+        cloudCostTarget: 0,
+        cloudCostForecast: 0,
+        seatCount: 0,
+        activeSeatCount: 0,
+        openSeatCount: 0,
+      }
+    summaryMap.set(summaryKey, summary)
+
+    summary.seatCount += 1
+    const normalizedStatus = normalizeValue(effectiveSeat.status)
+    const normalizedInSeat = normalizeValue(effectiveSeat.inSeat)
+
+    if (normalizedStatus === normalizeValue("Open")) {
+      summary.openSeatCount += 1
+    }
+
+    if (
+      activeStatuses.has(normalizedStatus) ||
+      (normalizedStatus.length === 0 &&
+        normalizedInSeat.length > 0 &&
+        normalizedInSeat !== "vacant")
+    ) {
+      summary.activeSeatCount += 1
+    }
+    summary.domain =
+      normalizeDomainLabel(summary.domain) ||
+      normalizeDomainLabel(effectiveSeat.domain) ||
+      null
+    summary.subDomain =
+      normalizeSubDomainLabel(summary.subDomain) ||
+      normalizeSubDomainLabel(effectiveSeat.subDomain) ||
+      null
+    summary.spentToDate += metrics.totalSpent
+    summary.totalForecast += metrics.totalForecast
+    summary.permTarget += metrics.permFte
+    summary.permForecast += metrics.permForecast
+    summary.extForecast += metrics.extForecast
+    summary.cloudCostForecast += metrics.cloudCostForecast
+  }
+
+  return Array.from(summaryMap.values())
+    .map((summary) => ({
+      ...summary,
+      remainingBudget: summary.budget - summary.spentToDate,
+      forecastRemaining: summary.budget - summary.totalForecast,
+    }))
+    .sort((left, right) => left.displayName.localeCompare(right.displayName))
+}
+
+export async function getTrackerDetail(year: number, budgetAreaId: string) {
+  const trackingYear = await getOrCreateTrackingYear(year)
+  const selectedSummary = parseSummaryKey(budgetAreaId)
+  const [seats, assumptions, exchangeRates] = await Promise.all([
+    prisma.trackerSeat.findMany({
+      where: {
+        trackingYearId: trackingYear.id,
+        isActive: true,
+      },
+      include: {
+        months: {
+          orderBy: { monthIndex: "asc" },
+        },
+        override: true,
+        budgetArea: true,
+      },
+      orderBy: [{ team: "asc" }, { inSeat: "asc" }],
+    }),
+    prisma.costAssumption.findMany({
+      where: {
+        trackingYearId: trackingYear.id,
+      },
+    }),
+    prisma.exchangeRate.findMany({
+      where: { trackingYearId: trackingYear.id },
+      orderBy: { effectiveDate: "desc" },
+    }),
+  ])
+
+  const assumptionLookup = buildCostAssumptionLookup(assumptions)
+  const exchangeRateLookup = buildExchangeRateLookup(exchangeRates)
+
+  return (seats as SeatWithRelations[])
+    .map((seat) => {
+      const effectiveSeat = getEffectiveSeat(seat)
+      return { seat, effectiveSeat }
+    })
+    .filter(({ effectiveSeat }) => {
+      return normalizeValue(effectiveSeat.subDomain) ===
+        normalizeValue(selectedSummary.subDomain)
+    })
+    .map(({ seat, effectiveSeat }) => {
+      const metrics = deriveSeatMetrics(
+        seat,
+        assumptionLookup,
+        exchangeRates,
+        year
+      )
+      const cancelled = isTrackerCancelledSeat(seat, effectiveSeat, exchangeRates)
+      const months: SeatMonthView[] = seat.months.map((month) => {
+        const converted =
+          month.actualAmountRaw !== null && month.actualAmountRaw !== undefined
+            ? convertAmountToDkk(
+                month.actualAmountRaw,
+                month.actualCurrency,
+                exchangeRateLookup
+              )
+            : {
+                amountDkk: month.actualAmount,
+                exchangeRateUsed: month.exchangeRateUsed,
+              }
+
+        return {
+          monthIndex: month.monthIndex,
+          actualAmountDkk: cancelled ? 0 : (converted.amountDkk ?? 0),
+          actualAmountRaw: cancelled ? null : month.actualAmountRaw,
+          actualCurrency: month.actualCurrency,
+          exchangeRateUsed: converted.exchangeRateUsed ?? null,
+          forecastIncluded: month.forecastIncluded,
+          notes: month.notes,
+        }
+      })
+
+      return {
+        ...effectiveSeat,
+        months,
+        totalSpent: metrics.totalSpent,
+        totalForecast: metrics.totalForecast,
+        yearlyCostInternal: metrics.yearlyCostInternal,
+        yearlyCostExternal: metrics.yearlyCostExternal,
+        permFte: metrics.permFte,
+        extFte: metrics.extFte,
+        quarterlyForecast: metrics.quarterlyForecast,
+        monthlyForecast: metrics.monthlyForecast,
+      }
+    })
+}
+
+export async function rollbackRosterImport(
+  input: {
+    importId: string
+  },
+  actor?: AuditActor
+) {
+  const batch = await prisma.rosterImport.findUniqueOrThrow({
+    where: { id: input.importId },
+  })
+
+  const latestBatch = await prisma.rosterImport.findFirst({
+    where: {
+      trackingYearId: batch.trackingYearId,
+      status: "APPROVED",
+    },
+    orderBy: [{ importedAt: "desc" }],
+  })
+
+  if (!latestBatch || latestBatch.id !== batch.id) {
+    throw new Error("Only the latest roster import can be rolled back.")
+  }
+
+  await prisma.rosterImport.delete({
+    where: { id: batch.id },
+  })
+
+  const trackingYear = await prisma.trackingYear.findUniqueOrThrow({
+    where: { id: batch.trackingYearId },
+    select: { year: true },
+  })
+
+  await deriveTrackerSeatsForYear(trackingYear.year)
+
+  await writeAuditLog({
+    trackingYearId: batch.trackingYearId,
+    entityType: "RosterImport",
+    entityId: batch.id,
+    action: "ROLLBACK",
+    actor,
+    changes: [
+      {
+        field: "rosterImport",
+        oldValue: JSON.stringify({
+          fileName: batch.fileName,
+          importedByName: batch.importedByName,
+          importedByEmail: batch.importedByEmail,
+          importedAt: batch.importedAt,
+          rowCount: batch.rowCount,
+        }),
+        newValue: null,
+      },
+    ],
+  })
+
+  return {
+    id: batch.id,
+    fileName: batch.fileName,
+  }
+}
+
+export async function upsertCostAssumption(input: {
+  year: number
+  band: string
+  location: string
+  yearlyCost: number
+  notes?: string
+}, actor?: AuditActor) {
+  const trackingYear = await getOrCreateTrackingYear(input.year)
+  const band = normalizeCostBandLabel(input.band)
+  const before = await prisma.costAssumption.findUnique({
+    where: {
+      trackingYearId_band_location: {
+        trackingYearId: trackingYear.id,
+        band,
+        location: input.location,
+      },
+    },
+  })
+
+  const assumption = await prisma.costAssumption.upsert({
+    where: {
+      trackingYearId_band_location: {
+        trackingYearId: trackingYear.id,
+        band,
+        location: input.location,
+      },
+    },
+    update: {
+      yearlyCost: input.yearlyCost,
+      notes: input.notes || null,
+    },
+    create: {
+      trackingYearId: trackingYear.id,
+      band,
+      location: input.location,
+      yearlyCost: input.yearlyCost,
+      notes: input.notes || null,
+    },
+  })
+
+  await writeAuditLog({
+    trackingYearId: trackingYear.id,
+    entityType: "CostAssumption",
+    entityId: assumption.id,
+    action: before ? "UPDATE" : "CREATE",
+    actor,
+    changes: buildAuditChanges(before, assumption, [
+      "band",
+      "location",
+      "yearlyCost",
+      "notes",
+    ]),
+  })
+
+  return assumption
+}
+
+export async function deleteCostAssumption(input: {
+  year: number
+  band: string
+  location: string
+}, actor?: AuditActor) {
+  const trackingYear = await getOrCreateTrackingYear(input.year)
+  const band = normalizeCostBandLabel(input.band)
+  const location = input.location.trim()
+
+  const seats = await prisma.trackerSeat.findMany({
+    where: {
+      trackingYearId: trackingYear.id,
+      isActive: true,
+      location,
+    },
+    include: {
+      months: true,
+      override: true,
+      budgetArea: true,
+    },
+  })
+
+  const matchingSeat = seats.find((seat) => {
+    const effectiveSeat = getEffectiveSeat(seat as SeatWithRelations)
+    return (
+      !isExternalSeat(effectiveSeat) &&
+      normalizeCostBandLabel(effectiveSeat.band) === band &&
+      normalizeValue(effectiveSeat.location) === normalizeValue(location)
+    )
+  })
+
+  if (matchingSeat) {
+    throw new Error(
+      `Cannot delete ${location} band ${band} because it is used by active tracker seat ${matchingSeat.seatId}.`
+    )
+  }
+
+  const before = await prisma.costAssumption.findUniqueOrThrow({
+    where: {
+      trackingYearId_band_location: {
+        trackingYearId: trackingYear.id,
+        band,
+        location,
+      },
+    },
+  })
+
+  const deleted = await prisma.costAssumption.delete({
+    where: {
+      trackingYearId_band_location: {
+        trackingYearId: trackingYear.id,
+        band,
+        location,
+      },
+    },
+  })
+
+  await writeAuditLog({
+    trackingYearId: trackingYear.id,
+    entityType: "CostAssumption",
+    entityId: deleted.id,
+    action: "DELETE",
+    actor,
+    changes: buildAuditChanges(before, null, [
+      "band",
+      "location",
+      "yearlyCost",
+      "notes",
+    ]),
+  })
+
+  return deleted
+}
+
+export async function getLatestExchangeRates(year: number): Promise<LatestExchangeRate[]> {
+  const trackingYear = await getOrCreateTrackingYear(year)
+  const rates = await prisma.exchangeRate.findMany({
+    where: { trackingYearId: trackingYear.id },
+    orderBy: [{ currency: "asc" }, { effectiveDate: "desc" }],
+  })
+
+  const latestByCurrency = new Map<string, ExchangeRate>()
+  for (const rate of rates) {
+    if (!latestByCurrency.has(rate.currency)) {
+      latestByCurrency.set(rate.currency, rate)
+    }
+  }
+
+  return Array.from(latestByCurrency.values()).map((rate) => ({
+    currency: rate.currency,
+    rateToDkk: rate.rateToDkk,
+    effectiveDate: rate.effectiveDate,
+    notes: rate.notes,
+  }))
+}
+
+export async function getDepartmentMappings(
+  year: number
+): Promise<DepartmentMappingView[]> {
+  const trackingYear = await getOrCreateTrackingYear(year)
+  const mappings = await prisma.departmentMapping.findMany({
+    where: {
+      trackingYearId: trackingYear.id,
+      codeType: "DEPARTMENT_CODE",
+    },
+    orderBy: [{ sourceCode: "asc" }],
+  })
+
+  return mappings.map((mapping) => ({
+    id: mapping.id,
+    sourceCode: mapping.sourceCode,
+    domain: mapping.domain,
+    subDomain: mapping.subDomain,
+    notes: mapping.notes,
+  }))
+}
+
+export async function upsertExchangeRate(input: {
+  year: number
+  currency: CurrencyCode
+  rateToDkk: number
+  effectiveDate: Date
+  notes?: string
+}, actor?: AuditActor) {
+  const trackingYear = await getOrCreateTrackingYear(input.year)
+  const before = await prisma.exchangeRate.findUnique({
+    where: {
+      trackingYearId_currency_effectiveDate: {
+        trackingYearId: trackingYear.id,
+        currency: input.currency,
+        effectiveDate: input.effectiveDate,
+      },
+    },
+  })
+
+  const exchangeRate = await prisma.exchangeRate.upsert({
+    where: {
+      trackingYearId_currency_effectiveDate: {
+        trackingYearId: trackingYear.id,
+        currency: input.currency,
+        effectiveDate: input.effectiveDate,
+      },
+    },
+    update: {
+      rateToDkk: input.rateToDkk,
+      notes: input.notes || null,
+    },
+    create: {
+      trackingYearId: trackingYear.id,
+      currency: input.currency,
+      rateToDkk: input.rateToDkk,
+      effectiveDate: input.effectiveDate,
+      notes: input.notes || null,
+    },
+  })
+
+  await writeAuditLog({
+    trackingYearId: trackingYear.id,
+    entityType: "ExchangeRate",
+    entityId: exchangeRate.id,
+    action: before ? "UPDATE" : "CREATE",
+    actor,
+    changes: buildAuditChanges(before, exchangeRate, [
+      "currency",
+      "rateToDkk",
+      "effectiveDate",
+      "notes",
+    ]),
+  })
+
+  return exchangeRate
+}
+
+export async function upsertBudgetArea(input: {
+  year: number
+  domain?: string
+  subDomain?: string
+  funding?: string
+  pillar?: string
+  costCenter: string
+  projectCode: string
+  displayName?: string
+  notes?: string
+}, actor?: AuditActor) {
+  const trackingYear = await getOrCreateTrackingYear(input.year)
+  const before = await prisma.budgetArea.findUnique({
+    where: {
+      trackingYearId_costCenter_projectCode: {
+        trackingYearId: trackingYear.id,
+        costCenter: input.costCenter,
+        projectCode: input.projectCode,
+      },
+    },
+  })
+
+  const budgetArea = await prisma.budgetArea.upsert({
+    where: {
+      trackingYearId_costCenter_projectCode: {
+        trackingYearId: trackingYear.id,
+        costCenter: input.costCenter,
+        projectCode: input.projectCode,
+      },
+    },
+    update: {
+      domain: normalizeDomainLabel(input.domain) || null,
+      subDomain: input.subDomain || null,
+      funding: input.funding || null,
+      pillar: input.pillar || null,
+      displayName: input.displayName || null,
+      notes: input.notes || null,
+    },
+    create: {
+      trackingYearId: trackingYear.id,
+      domain: normalizeDomainLabel(input.domain) || null,
+      subDomain: input.subDomain || null,
+      funding: input.funding || null,
+      pillar: input.pillar || null,
+      costCenter: input.costCenter,
+      projectCode: input.projectCode,
+      displayName: input.displayName || null,
+      notes: input.notes || null,
+    },
+  })
+
+  await writeAuditLog({
+    trackingYearId: trackingYear.id,
+    entityType: "BudgetArea",
+    entityId: budgetArea.id,
+    action: before ? "UPDATE" : "CREATE",
+    actor,
+    changes: buildAuditChanges(before, budgetArea, [
+      "domain",
+      "subDomain",
+      "funding",
+      "pillar",
+      "costCenter",
+      "projectCode",
+      "displayName",
+      "notes",
+    ]),
+  })
+
+  return budgetArea
+}
+
+export async function upsertDepartmentMapping(input: {
+  year: number
+  sourceCode: string
+  domain: string
+  subDomain: string
+  notes?: string
+}, actor?: AuditActor) {
+  const trackingYear = await getOrCreateTrackingYear(input.year)
+  const before = await prisma.departmentMapping.findUnique({
+    where: {
+      trackingYearId_codeType_sourceCode: {
+        trackingYearId: trackingYear.id,
+        codeType: "DEPARTMENT_CODE",
+        sourceCode: input.sourceCode,
+      },
+    },
+  })
+
+  const mapping = await prisma.departmentMapping.upsert({
+    where: {
+      trackingYearId_codeType_sourceCode: {
+        trackingYearId: trackingYear.id,
+        codeType: "DEPARTMENT_CODE",
+        sourceCode: input.sourceCode,
+      },
+    },
+    update: {
+      domain: normalizeDomainLabel(input.domain) || input.domain,
+      subDomain: input.subDomain,
+      notes: input.notes || null,
+    },
+    create: {
+      trackingYearId: trackingYear.id,
+      codeType: "DEPARTMENT_CODE",
+      sourceCode: input.sourceCode,
+      domain: normalizeDomainLabel(input.domain) || input.domain,
+      subDomain: input.subDomain,
+      notes: input.notes || null,
+    },
+  })
+
+  await prisma.budgetArea.updateMany({
+    where: {
+      trackingYearId: trackingYear.id,
+      costCenter: input.sourceCode,
+    },
+    data: {
+      domain: normalizeDomainLabel(input.domain) || input.domain,
+      subDomain: input.subDomain,
+    },
+  })
+
+  await deriveTrackerSeatsForYear(input.year)
+
+  const relatedBudgetAreas = await prisma.trackerSeat.findMany({
+    where: {
+      trackingYearId: trackingYear.id,
+      budgetAreaId: { not: null },
+      OR: [
+        {
+          rosterPerson: {
+            domain: input.sourceCode,
+          },
+        },
+        {
+          costCenter: input.sourceCode,
+        },
+      ],
+    },
+    select: {
+      budgetAreaId: true,
+    },
+    distinct: ["budgetAreaId"],
+  })
+
+  const budgetAreaIds = relatedBudgetAreas
+    .map((seat) => seat.budgetAreaId)
+    .filter((value): value is string => Boolean(value))
+
+  if (budgetAreaIds.length > 0) {
+    await prisma.budgetArea.updateMany({
+      where: {
+        trackingYearId: trackingYear.id,
+        id: { in: budgetAreaIds },
+      },
+      data: {
+        domain: normalizeDomainLabel(input.domain) || input.domain,
+        subDomain: input.subDomain,
+      },
+    })
+  }
+
+  await writeAuditLog({
+    trackingYearId: trackingYear.id,
+    entityType: "DepartmentMapping",
+    entityId: mapping.id,
+    action: before ? "UPDATE" : "CREATE",
+    actor,
+    changes: buildAuditChanges(before, mapping, [
+      "sourceCode",
+      "domain",
+      "subDomain",
+      "notes",
+    ]),
+  })
+
+  return mapping
+}
+
+export async function updateTrackerSeat(
+  seatId: string,
+  payload: {
+    monthIndex?: number
+    actualAmount?: number
+    actualCurrency?: CurrencyCode
+    forecastIncluded?: boolean
+    notes?: string
+    override?: {
+      domain?: string | null
+      subDomain?: string | null
+      budgetAreaId?: string | null
+      funding?: string | null
+      pillar?: string | null
+      costCenter?: string | null
+      projectCode?: string | null
+      resourceType?: string | null
+      ritm?: string | null
+      sow?: string | null
+      spendPlanId?: string | null
+      status?: string | null
+      allocation?: number | null
+      startDate?: Date | null
+      endDate?: Date | null
+      notes?: string | null
+    }
+  },
+  actor?: AuditActor
+) {
+  const seat = await prisma.trackerSeat.findUniqueOrThrow({
+    where: { id: seatId },
+  })
+
+  if (payload.monthIndex !== undefined) {
+    const beforeMonth = await prisma.seatMonth.findUnique({
+      where: {
+        trackerSeatId_monthIndex: {
+          trackerSeatId: seat.id,
+          monthIndex: payload.monthIndex,
+        },
+      },
+    })
+    const exchangeRates = buildExchangeRateLookup(
+      await prisma.exchangeRate.findMany({
+        where: { trackingYearId: seat.trackingYearId },
+        orderBy: { effectiveDate: "desc" },
+      })
+    )
+    const currency = payload.actualCurrency ?? "DKK"
+    const rawAmount = payload.actualAmount ?? 0
+    const isClearingActual = rawAmount <= 0
+    const converted = isClearingActual
+      ? {
+          amountDkk: 0,
+          exchangeRateUsed: null,
+        }
+      : convertAmountToDkk(rawAmount, currency, exchangeRates)
+
+    const month = await prisma.seatMonth.upsert({
+      where: {
+        trackerSeatId_monthIndex: {
+          trackerSeatId: seat.id,
+          monthIndex: payload.monthIndex,
+        },
+      },
+      update: {
+        actualAmount: converted.amountDkk,
+        actualAmountRaw: isClearingActual ? null : rawAmount,
+        actualCurrency: currency,
+        exchangeRateUsed: converted.exchangeRateUsed,
+        forecastIncluded: isClearingActual
+          ? true
+          : (payload.forecastIncluded ?? true),
+        notes: payload.notes ?? null,
+      },
+      create: {
+        trackerSeatId: seat.id,
+        monthIndex: payload.monthIndex,
+        actualAmount: converted.amountDkk,
+        actualAmountRaw: isClearingActual ? null : rawAmount,
+        actualCurrency: currency,
+        exchangeRateUsed: converted.exchangeRateUsed,
+        forecastIncluded: isClearingActual
+          ? true
+          : (payload.forecastIncluded ?? true),
+        notes: payload.notes ?? null,
+      },
+    })
+
+    await writeAuditLog({
+      trackingYearId: seat.trackingYearId,
+      entityType: "SeatMonth",
+      entityId: month.id,
+      action: beforeMonth ? "UPDATE" : "CREATE",
+      actor,
+      changes: buildAuditChanges(beforeMonth, month, [
+        "monthIndex",
+        "actualAmount",
+        "actualAmountRaw",
+        "actualCurrency",
+        "exchangeRateUsed",
+        "forecastIncluded",
+        "notes",
+      ]),
+    })
+  }
+
+  if (payload.override) {
+    const beforeOverride = await prisma.trackerOverride.findUnique({
+      where: { trackerSeatId: seat.id },
+    })
+    const override = await prisma.trackerOverride.upsert({
+      where: { trackerSeatId: seat.id },
+      update: payload.override,
+      create: {
+        trackerSeatId: seat.id,
+        ...payload.override,
+      },
+    })
+
+    await writeAuditLog({
+      trackingYearId: seat.trackingYearId,
+      entityType: "TrackerOverride",
+      entityId: override.id,
+      action: beforeOverride ? "UPDATE" : "CREATE",
+      actor,
+      changes: buildAuditChanges(beforeOverride, override, [
+        "domain",
+        "subDomain",
+        "funding",
+        "pillar",
+        "budgetAreaId",
+        "costCenter",
+        "projectCode",
+        "resourceType",
+        "ritm",
+        "sow",
+        "spendPlanId",
+        "status",
+        "allocation",
+        "startDate",
+        "endDate",
+        "notes",
+      ]),
+    })
+  }
+
+  return prisma.trackerSeat.findUnique({
+    where: { id: seat.id },
+    include: {
+      months: {
+        orderBy: { monthIndex: "asc" },
+      },
+      override: true,
+      budgetArea: true,
+    },
+  })
+}
+
+async function getInternalForecastCopyCandidates(input: {
+  year: number
+  budgetAreaId: string
+  monthIndex: number
+}) {
+  const trackingYear = await getOrCreateTrackingYear(input.year)
+  const selectedSummary = parseSummaryKey(input.budgetAreaId)
+  const [seats, assumptions, exchangeRates] = await Promise.all([
+    prisma.trackerSeat.findMany({
+      where: {
+        trackingYearId: trackingYear.id,
+        isActive: true,
+      },
+      include: {
+        months: {
+          orderBy: { monthIndex: "asc" },
+        },
+        override: true,
+        budgetArea: true,
+      },
+    }),
+    prisma.costAssumption.findMany({
+      where: { trackingYearId: trackingYear.id },
+    }),
+    prisma.exchangeRate.findMany({
+      where: { trackingYearId: trackingYear.id },
+      orderBy: { effectiveDate: "desc" },
+    }),
+  ])
+
+  const assumptionLookup = buildCostAssumptionLookup(assumptions)
+  const internalSeats = (seats as SeatWithRelations[])
+    .map((seat) => {
+      const effectiveSeat = getEffectiveSeat(seat)
+      return { seat, effectiveSeat }
+    })
+    .filter(
+      ({ effectiveSeat }) =>
+        normalizeValue(effectiveSeat.subDomain) ===
+          normalizeValue(selectedSummary.subDomain) &&
+        !isExternalSeat(effectiveSeat)
+    )
+
+  return internalSeats
+    .map(({ seat, effectiveSeat }) => {
+      const metrics = deriveSeatMetrics(
+        seat,
+        assumptionLookup,
+        exchangeRates,
+        input.year
+      )
+      const monthForecast = metrics.monthlyForecast[input.monthIndex] ?? 0
+
+      if (monthForecast <= 0) {
+        return null
+      }
+
+      return {
+        trackerSeatId: seat.id,
+        seatId: seat.seatId,
+        inSeat: effectiveSeat.inSeat,
+        team: effectiveSeat.team,
+        status: effectiveSeat.status,
+        amount: Math.round(monthForecast),
+      }
+    })
+    .filter(
+      (
+        seat
+      ): seat is {
+        trackerSeatId: string
+        seatId: string
+        inSeat: string | null
+        team: string | null
+        status: string | null
+        amount: number
+      } => Boolean(seat)
+    )
+}
+
+export async function previewForecastCopyToActualsForSubDomain(input: {
+  year: number
+  budgetAreaId: string
+  monthIndex: number
+}) {
+  const selectedSummary = parseSummaryKey(input.budgetAreaId)
+  const seats = await getInternalForecastCopyCandidates(input)
+
+  return {
+    monthIndex: input.monthIndex,
+    monthLabel: monthLabel(input.year, input.monthIndex),
+    subDomain: selectedSummary.subDomain,
+    seats,
+  }
+}
+
+export async function applyForecastCopyToActualsForSubDomain(input: {
+  year: number
+  budgetAreaId: string
+  monthIndex: number
+  overrides?: {
+    trackerSeatId: string
+    amount: number
+  }[]
+}, actor?: AuditActor) {
+  const trackingYear = await getOrCreateTrackingYear(input.year)
+  const candidates = await getInternalForecastCopyCandidates(input)
+  const overrideLookup = new Map(
+    (input.overrides ?? []).map((override) => [override.trackerSeatId, override.amount])
+  )
+
+  const updates = candidates.map((candidate) => {
+    const amount = Math.round(
+      overrideLookup.get(candidate.trackerSeatId) ?? candidate.amount
+    )
+
+    return prisma.seatMonth.upsert({
+      where: {
+        trackerSeatId_monthIndex: {
+          trackerSeatId: candidate.trackerSeatId,
+          monthIndex: input.monthIndex,
+        },
+      },
+      update: {
+        actualAmount: amount <= 0 ? 0 : amount,
+        actualAmountRaw: amount,
+        actualCurrency: "DKK",
+        exchangeRateUsed: amount <= 0 ? null : 1,
+        forecastIncluded: false,
+      },
+      create: {
+        trackerSeatId: candidate.trackerSeatId,
+        monthIndex: input.monthIndex,
+        actualAmount: amount <= 0 ? 0 : amount,
+        actualAmountRaw: amount,
+        actualCurrency: "DKK",
+        exchangeRateUsed: amount <= 0 ? null : 1,
+        forecastIncluded: false,
+      },
+    })
+  })
+
+  if (updates.length === 0) {
+    return { updatedCount: 0 }
+  }
+
+  await prisma.$transaction(updates)
+
+  await writeAuditLog({
+    trackingYearId: trackingYear.id,
+    entityType: "BulkForecastCopy",
+    entityId: input.budgetAreaId,
+    action: "BULK_APPLY",
+    actor,
+    changes: [
+      {
+        field: "bulkForecastCopy",
+        oldValue: null,
+        newValue: JSON.stringify({
+          budgetAreaId: input.budgetAreaId,
+          monthIndex: input.monthIndex,
+          updatedCount: updates.length,
+        }),
+      },
+    ],
+  })
+
+  return { updatedCount: updates.length }
+}
+
+export async function rollbackExternalActualImport(
+  input: {
+    importId: string
+  },
+  actor?: AuditActor
+) {
+  const batch = await prisma.externalActualImport.findUniqueOrThrow({
+    where: { id: input.importId },
+    include: {
+      entries: true,
+    },
+  })
+
+  const actorEmail = normalizeValue(actor?.email)
+  if (!actorEmail || actorEmail !== normalizeValue(batch.importedByEmail)) {
+    throw new Error("Only the user who created this import can roll it back.")
+  }
+
+  const impactedKeys = Array.from(
+    new Set(
+      batch.entries
+        .filter((entry) => Boolean(entry.trackerSeatId))
+        .map((entry) => `${entry.trackerSeatId}:${entry.monthIndex}`)
+    )
+  ).map((key) => {
+    const [trackerSeatId, monthIndex] = key.split(":")
+
+    return {
+      trackerSeatId,
+      monthIndex: Number(monthIndex),
+    }
+  })
+
+  await prisma.$transaction(async (transaction) => {
+    await transaction.externalActualImport.delete({
+      where: { id: batch.id },
+    })
+
+    for (const impacted of impactedKeys) {
+      const currentMonth = await transaction.seatMonth.findUnique({
+        where: {
+          trackerSeatId_monthIndex: {
+            trackerSeatId: impacted.trackerSeatId,
+            monthIndex: impacted.monthIndex,
+          },
+        },
+      })
+
+      if (
+        currentMonth &&
+        !currentMonth.notes?.includes("Imported from external actuals:")
+      ) {
+        continue
+      }
+
+      const replacement = await transaction.externalActualEntry.findFirst({
+        where: {
+          trackerSeatId: impacted.trackerSeatId,
+          monthIndex: impacted.monthIndex,
+        },
+        include: {
+          import: true,
+        },
+        orderBy: [{ import: { importedAt: "desc" } }, { createdAt: "desc" }],
+      })
+
+      await transaction.seatMonth.upsert({
+        where: {
+          trackerSeatId_monthIndex: {
+            trackerSeatId: impacted.trackerSeatId,
+            monthIndex: impacted.monthIndex,
+          },
+        },
+        update: replacement
+          ? {
+              actualAmount: replacement.amount <= 0 ? 0 : replacement.amount,
+              actualAmountRaw: replacement.amount,
+              actualCurrency: "DKK",
+              exchangeRateUsed: replacement.amount <= 0 ? null : 1,
+              forecastIncluded: replacement.amount <= 0,
+              notes: `Imported from external actuals: ${replacement.import.fileName} (${replacement.import.id})`,
+            }
+          : {
+              actualAmount: 0,
+              actualAmountRaw: null,
+              actualCurrency: "DKK",
+              exchangeRateUsed: null,
+              forecastIncluded: true,
+              notes: null,
+            },
+        create: replacement
+          ? {
+              trackerSeatId: impacted.trackerSeatId,
+              monthIndex: impacted.monthIndex,
+              actualAmount: replacement.amount <= 0 ? 0 : replacement.amount,
+              actualAmountRaw: replacement.amount,
+              actualCurrency: "DKK",
+              exchangeRateUsed: replacement.amount <= 0 ? null : 1,
+              forecastIncluded: replacement.amount <= 0,
+              notes: `Imported from external actuals: ${replacement.import.fileName} (${replacement.import.id})`,
+            }
+          : {
+              trackerSeatId: impacted.trackerSeatId,
+              monthIndex: impacted.monthIndex,
+              actualAmount: 0,
+              actualAmountRaw: null,
+              actualCurrency: "DKK",
+              exchangeRateUsed: null,
+              forecastIncluded: true,
+              notes: null,
+            },
+      })
+    }
+  })
+
+  await writeAuditLog({
+    trackingYearId: batch.trackingYearId,
+    entityType: "ExternalActualImport",
+    entityId: batch.id,
+    action: "ROLLBACK",
+    actor,
+    changes: [
+      {
+        field: "externalActualImport",
+        oldValue: JSON.stringify({
+          fileName: batch.fileName,
+          importedByName: batch.importedByName,
+          importedByEmail: batch.importedByEmail,
+          rowCount: batch.rowCount,
+          entryCount: batch.entryCount,
+        }),
+        newValue: null,
+      },
+    ],
+  })
+
+  return {
+    id: batch.id,
+    fileName: batch.fileName,
+    entryCount: batch.entryCount,
+  }
+}

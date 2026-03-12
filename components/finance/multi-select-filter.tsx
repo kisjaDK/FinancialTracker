@@ -1,0 +1,123 @@
+"use client"
+
+import { useMemo, useState } from "react"
+import { ChevronDownIcon, XIcon } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+
+type MultiSelectFilterProps = {
+  label: string
+  name: string
+  options: readonly string[]
+  selectedValues: string[]
+}
+
+export function MultiSelectFilter({
+  label,
+  name,
+  options,
+  selectedValues,
+}: MultiSelectFilterProps) {
+  const [search, setSearch] = useState("")
+  const [isOpen, setIsOpen] = useState(false)
+  const [selected, setSelected] = useState(new Set(selectedValues))
+
+  const filteredOptions = useMemo(() => {
+    const normalizedSearch = search.trim().toLowerCase()
+    return options.filter((option) =>
+      option.toLowerCase().includes(normalizedSearch)
+    )
+  }, [options, search])
+
+  function toggleValue(value: string) {
+    setSelected((current) => {
+      const next = new Set(current)
+      if (next.has(value)) {
+        next.delete(value)
+      } else {
+        next.add(value)
+      }
+      return next
+    })
+  }
+
+  function clearFilter(event: React.MouseEvent<HTMLButtonElement>) {
+    event.preventDefault()
+    const form = event.currentTarget.closest("form")
+    setSearch("")
+    setSelected(new Set())
+    setIsOpen(false)
+    requestAnimationFrame(() => {
+      form?.requestSubmit()
+    })
+  }
+
+  return (
+    <div className="space-y-2">
+      <Label>{label}</Label>
+      <div className="relative">
+        <Input
+          value={search}
+          onChange={(event) => {
+            setSearch(event.target.value)
+            setIsOpen(true)
+          }}
+          onFocus={() => setIsOpen(true)}
+          placeholder={`Search ${label.toLowerCase()}`}
+          className={search || selected.size > 0 ? "pr-10" : undefined}
+        />
+        {search || selected.size > 0 ? (
+          <button
+            type="button"
+            aria-label={`Clear ${label.toLowerCase()} filter`}
+            className="absolute top-1/2 right-2 inline-flex size-5 -translate-y-1/2 items-center justify-center rounded-full border border-border bg-background text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            onClick={clearFilter}
+          >
+            <XIcon className="size-3" />
+          </button>
+        ) : null}
+      </div>
+      <div className="relative">
+        <Button
+          type="button"
+          variant="outline"
+          className="w-full justify-between"
+          onClick={() => setIsOpen((current) => !current)}
+        >
+          <span className="truncate">
+            {selected.size > 0 ? `${selected.size} selected` : `Choose ${label.toLowerCase()}`}
+          </span>
+          <ChevronDownIcon className="size-4" />
+        </Button>
+
+        {isOpen ? (
+          <div className="absolute z-20 mt-2 max-h-64 w-full overflow-y-auto rounded-md border border-border bg-background p-2 shadow-lg">
+            {filteredOptions.length === 0 ? (
+              <div className="px-2 py-3 text-sm text-muted-foreground">
+                No matches
+              </div>
+            ) : null}
+            {filteredOptions.map((option) => (
+              <label
+                key={option}
+                className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent"
+              >
+                <Checkbox
+                  checked={selected.has(option)}
+                  onCheckedChange={() => toggleValue(option)}
+                />
+                <span className="truncate">{option}</span>
+              </label>
+            ))}
+          </div>
+        ) : null}
+      </div>
+
+      {Array.from(selected).map((value) => (
+        <input key={value} type="hidden" name={name} value={value} />
+      ))}
+    </div>
+  )
+}

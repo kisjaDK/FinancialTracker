@@ -1,0 +1,35 @@
+import { NextResponse } from "next/server"
+import { auth } from "@/auth"
+import { importBudgetMovementsCsv } from "@/lib/finance/imports"
+
+export async function POST(request: Request) {
+  const session = await auth()
+  if (!session?.user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  }
+
+  try {
+    const formData = await request.formData()
+    const file = formData.get("file")
+    const year = Number(formData.get("year"))
+
+    if (!(file instanceof File)) {
+      return NextResponse.json({ error: "File is required" }, { status: 400 })
+    }
+
+    if (!Number.isInteger(year)) {
+      return NextResponse.json({ error: "Year is required" }, { status: 400 })
+    }
+
+    const content = await file.text()
+    const batch = await importBudgetMovementsCsv(year, file.name, content, {
+      name: session.user.name,
+      email: session.user.email,
+    })
+
+    return NextResponse.json({ batch })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Import failed"
+    return NextResponse.json({ error: message }, { status: 400 })
+  }
+}

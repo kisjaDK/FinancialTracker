@@ -15,8 +15,8 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   callbacks: {
     authorized({ auth, request: { nextUrl } }) {
       const isLoggedIn = !!auth?.user
-      const isOnDashboard = nextUrl.pathname.startsWith("/dashboard")
-      if (isOnDashboard) {
+      const isOnWelcome = nextUrl.pathname.startsWith("/welcome")
+      if (isOnWelcome) {
         return isLoggedIn
       }
       return true
