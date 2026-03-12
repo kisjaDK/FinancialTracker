@@ -33,10 +33,26 @@ import type {
   SeatWithRelations,
   StatusDefinitionView,
 } from "@/lib/finance/types"
+import { filterByScopes, hasScopeRestrictions, type AppViewer } from "@/lib/authz"
 import { prisma } from "@/lib/prisma"
 
 function normalizeValue(value: string | null | undefined) {
   return value?.trim().toLowerCase() ?? ""
+}
+
+function filterScopedItems<T>(
+  items: T[],
+  viewer: Pick<AppViewer, "role" | "scopes"> | undefined,
+  getScope: (item: T) => {
+    domain: string | null | undefined
+    subDomain: string | null | undefined
+  }
+) {
+  if (!viewer) {
+    return items
+  }
+
+  return filterByScopes(items, viewer, getScope)
 }
 
 function normalizeDomainLabel(value: string | null | undefined) {
@@ -451,7 +467,8 @@ export async function getFinanceWorkspaceData(
   year?: number,
   budgetAreaId?: string,
   trackerTeams?: string[],
-  missingActualMonths?: string[]
+  missingActualMonths?: string[],
+  viewer?: Pick<AppViewer, "role" | "scopes">
 ) {
   const trackingYears = await prisma.trackingYear.findMany({
     orderBy: { year: "asc" },
@@ -477,7 +494,7 @@ export async function getFinanceWorkspaceData(
     importBatches,
   ] =
     await Promise.all([
-      getBudgetAreaSummary(activeYear, statusDefinitions),
+      getBudgetAreaSummary(activeYear, statusDefinitions, viewer),
       prisma.budgetArea.findMany({
         where: { trackingYear: { year: activeYear } },
         orderBy: [{ domain: "asc" }, { subDomain: "asc" }, { costCenter: "asc" }],
@@ -504,9 +521,18 @@ export async function getFinanceWorkspaceData(
       }),
     ])
 
-  const effectiveAreaId = selectedAreaId ?? summary[0]?.id ?? null
+  const scopedBudgetAreas = filterScopedItems(
+    budgetAreas,
+    viewer,
+    (area) => ({ domain: area.domain, subDomain: area.subDomain })
+  )
+  const availableAreaIds = new Set(summary.map((entry) => entry.id))
+  const effectiveAreaId =
+    selectedAreaId && availableAreaIds.has(selectedAreaId)
+      ? selectedAreaId
+      : summary[0]?.id ?? null
   const allSeats = effectiveAreaId
-    ? await getTrackerDetail(activeYear, effectiveAreaId)
+    ? await getTrackerDetail(activeYear, effectiveAreaId, viewer)
     : []
   const teamFilter = normalizeValues(trackerTeams ?? [])
   const monthFilter = new Set(
@@ -560,7 +586,7 @@ export async function getFinanceWorkspaceData(
     trackingYears,
     summary,
     seats,
-    budgetAreas,
+    budgetAreas: scopedBudgetAreas,
     selectedAreaId: effectiveAreaId,
     costAssumptions,
     exchangeRates,
@@ -581,7 +607,7 @@ export async function getBudgetMovementsPageData(input?: {
   category?: string
   receivingFunding?: string
   givingPillar?: string
-}) {
+}, viewer?: Pick<AppViewer, "role" | "scopes">) {
   const trackingYears = await prisma.trackingYear.findMany({
     orderBy: { year: "asc" },
   })
@@ -648,7 +674,15 @@ export async function getBudgetMovementsPageData(input?: {
   })
 
   const normalizedSearch = normalizeValue(filters.search)
-  const filteredMovements = movementViews.filter((movement) => {
+  const scopedMovements = filterScopedItems(
+    movementViews,
+    viewer,
+    (movement) => ({
+      domain: movement.areaDomain,
+      subDomain: movement.areaSubDomain,
+    })
+  )
+  const filteredMovements = scopedMovements.filter((movement) => {
     if (
       normalizedSearch &&
       !normalizeValue(movement.notes).includes(normalizedSearch)
@@ -687,10 +721,10 @@ export async function getBudgetMovementsPageData(input?: {
     filters,
     movements: filteredMovements,
     filterOptions: {
-      categories: collectSortedValues(movementViews.map((movement) => movement.category)),
+      categories: collectSortedValues(scopedMovements.map((movement) => movement.category)),
       receivingFunding: Array.from(
         new Map(
-          movementViews.map((movement) => [
+          scopedMovements.map((movement) => [
             movement.receivingFunding,
             {
               value: movement.receivingFunding,
@@ -702,7 +736,7 @@ export async function getBudgetMovementsPageData(input?: {
         ).values()
       ).sort((left, right) => left.label.localeCompare(right.label)),
       givingPillars: collectSortedValues(
-        movementViews.map((movement) => movement.givingPillar)
+        scopedMovements.map((movement) => movement.givingPillar)
       ),
     },
     totals: {
@@ -727,7 +761,7 @@ export async function getExternalActualImportsPageData(input?: {
   team?: string
   importedFrom?: string
   importedTo?: string
-}) {
+}, viewer?: Pick<AppViewer, "role" | "scopes">) {
   const trackingYears = await prisma.trackingYear.findMany({
     orderBy: { year: "asc" },
   })
@@ -754,7 +788,11 @@ export async function getExternalActualImportsPageData(input?: {
   const imports = await prisma.externalActualImport.findMany({
     where: { trackingYearId: trackingYear.id },
     include: {
-      entries: true,
+      entries: {
+        include: {
+          trackerSeat: true,
+        },
+      },
     },
     orderBy: [{ importedAt: "desc" }],
   })
@@ -764,7 +802,21 @@ export async function getExternalActualImportsPageData(input?: {
   const normalizedSeatId = normalizeValue(filters.seatId)
   const normalizedTeam = normalizeValue(filters.team)
 
-  const filteredImports = imports.filter((importBatch) => {
+  const scopedImports = imports
+    .map((importBatch) => ({
+      ...importBatch,
+      entries: filterScopedItems(
+        importBatch.entries,
+        viewer,
+        (entry) => ({
+          domain: entry.trackerSeat?.domain,
+          subDomain: entry.trackerSeat?.subDomain,
+        })
+      ),
+    }))
+    .filter((importBatch) => importBatch.entries.length > 0 || !hasScopeRestrictions(viewer ?? { role: null, scopes: [] }))
+
+  const filteredImports = scopedImports.filter((importBatch) => {
     const normalizedActor = `${normalizeValue(importBatch.importedByName)} ${normalizeValue(importBatch.importedByEmail)}`.trim()
 
       if (normalizedUser && !normalizedActor.includes(normalizedUser)) {
@@ -870,7 +922,7 @@ export async function getPeopleRosterPageData(input?: {
   roles?: string[]
   bands?: string[]
   validation?: string
-}) {
+}, viewer?: Pick<AppViewer, "role" | "scopes">) {
   const trackingYears = await prisma.trackingYear.findMany({
     orderBy: { year: "asc" },
   })
@@ -966,6 +1018,14 @@ export async function getPeopleRosterPageData(input?: {
     }
   })
 
+  const scopedRosterViews = filterScopedItems(
+    rosterViews,
+    viewer,
+    (person) => ({
+      domain: person.domain,
+      subDomain: person.mappedSubDomain || person.subDomain,
+    })
+  )
   const seatIdFilter = normalizeValues(filters.seatIds)
   const nameFilter = normalizeValues(filters.names)
   const emailFilter = normalizeValues(filters.emails)
@@ -977,7 +1037,7 @@ export async function getPeopleRosterPageData(input?: {
   const roleFilter = normalizeValues(filters.roles)
   const bandFilter = normalizeValues(filters.bands)
 
-  const filteredPeople = rosterViews.filter((person) => {
+  const filteredPeople = scopedRosterViews.filter((person) => {
     if (seatIdFilter.size > 0 && !seatIdFilter.has(normalizeValue(person.seatId))) {
       return false
     }
@@ -1041,16 +1101,16 @@ export async function getPeopleRosterPageData(input?: {
     filters,
     people: filteredPeople,
     filterOptions: {
-      seatIds: collectSortedValues(rosterViews.map((person) => person.seatId)),
-      names: collectSortedValues(rosterViews.map((person) => person.name)),
-      emails: collectSortedValues(rosterViews.map((person) => person.email)),
-      teams: collectSortedValues(rosterViews.map((person) => person.team)),
-      subDomains: collectSortedValues(rosterViews.map((person) => person.subDomain)),
-      vendors: collectSortedValues(rosterViews.map((person) => person.vendor)),
-      locations: collectSortedValues(rosterViews.map((person) => person.location)),
-      statuses: collectSortedValues(rosterViews.map((person) => person.status)),
-      roles: collectSortedValues(rosterViews.map((person) => person.role)),
-      bands: collectSortedValues(rosterViews.map((person) => person.band)),
+      seatIds: collectSortedValues(scopedRosterViews.map((person) => person.seatId)),
+      names: collectSortedValues(scopedRosterViews.map((person) => person.name)),
+      emails: collectSortedValues(scopedRosterViews.map((person) => person.email)),
+      teams: collectSortedValues(scopedRosterViews.map((person) => person.team)),
+      subDomains: collectSortedValues(scopedRosterViews.map((person) => person.subDomain)),
+      vendors: collectSortedValues(scopedRosterViews.map((person) => person.vendor)),
+      locations: collectSortedValues(scopedRosterViews.map((person) => person.location)),
+      statuses: collectSortedValues(scopedRosterViews.map((person) => person.status)),
+      roles: collectSortedValues(scopedRosterViews.map((person) => person.role)),
+      bands: collectSortedValues(scopedRosterViews.map((person) => person.band)),
     },
     totals: {
       rowCount: filteredPeople.length,
@@ -1119,7 +1179,7 @@ export async function getAuditPageData(input?: {
   user?: string
   from?: string
   to?: string
-}) {
+}, viewer?: Pick<AppViewer, "role" | "scopes">) {
   const trackingYears = await prisma.trackingYear.findMany({
     orderBy: { year: "asc" },
   })
@@ -1148,7 +1208,29 @@ export async function getAuditPageData(input?: {
     take: 500,
   })
 
-  const filteredLogs = logs.filter((log) => {
+  const scopedLogs = !viewer || !hasScopeRestrictions(viewer)
+    ? logs
+    : logs.filter((log) =>
+        viewer.scopes.some((scope) => {
+          const domain = normalizeValue(scope.domain)
+          const subDomain = normalizeValue(scope.subDomain)
+          const haystack = [
+            log.entityType,
+            log.field,
+            log.oldValue,
+            log.newValue,
+          ]
+            .map((value) => normalizeValue(value))
+            .join(" ")
+
+          return Boolean(
+            (subDomain && haystack.includes(subDomain)) ||
+              (domain && haystack.includes(domain))
+          )
+        })
+      )
+
+  const filteredLogs = scopedLogs.filter((log) => {
     if (
       normalizedSearch &&
       ![
@@ -1254,7 +1336,8 @@ export async function upsertStatusDefinition(input: {
 
 export async function getBudgetAreaSummary(
   year: number,
-  existingStatusDefinitions?: StatusDefinitionView[]
+  existingStatusDefinitions?: StatusDefinitionView[],
+  viewer?: Pick<AppViewer, "role" | "scopes">
 ): Promise<BudgetAreaSummary[]> {
   const trackingYear = await getOrCreateTrackingYear(year)
   const statusDefinitions =
@@ -1461,16 +1544,24 @@ export async function getBudgetAreaSummary(
     summary.cloudCostForecast += metrics.cloudCostForecast
   }
 
-  return Array.from(summaryMap.values())
+  return filterScopedItems(
+    Array.from(summaryMap.values())
     .map((summary) => ({
       ...summary,
       remainingBudget: summary.budget - summary.spentToDate,
       forecastRemaining: summary.budget - summary.totalForecast,
     }))
-    .sort((left, right) => left.displayName.localeCompare(right.displayName))
+    .sort((left, right) => left.displayName.localeCompare(right.displayName)),
+    viewer,
+    (summary) => ({ domain: summary.domain, subDomain: summary.subDomain })
+  )
 }
 
-export async function getTrackerDetail(year: number, budgetAreaId: string) {
+export async function getTrackerDetail(
+  year: number,
+  budgetAreaId: string,
+  viewer?: Pick<AppViewer, "role" | "scopes">
+) {
   const trackingYear = await getOrCreateTrackingYear(year)
   const selectedSummary = parseSummaryKey(budgetAreaId)
   const [seats, assumptions, exchangeRates] = await Promise.all([
@@ -1502,7 +1593,8 @@ export async function getTrackerDetail(year: number, budgetAreaId: string) {
   const assumptionLookup = buildCostAssumptionLookup(assumptions)
   const exchangeRateLookup = buildExchangeRateLookup(exchangeRates)
 
-  return (seats as SeatWithRelations[])
+  return filterScopedItems(
+    (seats as SeatWithRelations[])
     .map((seat) => {
       const effectiveSeat = getEffectiveSeat(seat)
       return { seat, effectiveSeat }
@@ -1555,7 +1647,10 @@ export async function getTrackerDetail(year: number, budgetAreaId: string) {
         quarterlyForecast: metrics.quarterlyForecast,
         monthlyForecast: metrics.monthlyForecast,
       }
-    })
+    }),
+    viewer,
+    (seat) => ({ domain: seat.domain, subDomain: seat.subDomain })
+  )
 }
 
 export async function rollbackRosterImport(
@@ -2192,7 +2287,7 @@ async function getInternalForecastCopyCandidates(input: {
   year: number
   budgetAreaId: string
   monthIndex: number
-}) {
+}, viewer?: Pick<AppViewer, "role" | "scopes">) {
   const trackingYear = await getOrCreateTrackingYear(input.year)
   const selectedSummary = parseSummaryKey(input.budgetAreaId)
   const [seats, assumptions, exchangeRates] = await Promise.all([
@@ -2231,7 +2326,8 @@ async function getInternalForecastCopyCandidates(input: {
         !isExternalSeat(effectiveSeat)
     )
 
-  return internalSeats
+  return filterScopedItems(
+    internalSeats
     .map(({ seat, effectiveSeat }) => {
       const metrics = deriveSeatMetrics(
         seat,
@@ -2265,16 +2361,19 @@ async function getInternalForecastCopyCandidates(input: {
         status: string | null
         amount: number
       } => Boolean(seat)
-    )
+    ),
+    viewer,
+    () => ({ domain: null, subDomain: selectedSummary.subDomain })
+  )
 }
 
 export async function previewForecastCopyToActualsForSubDomain(input: {
   year: number
   budgetAreaId: string
   monthIndex: number
-}) {
+}, viewer?: Pick<AppViewer, "role" | "scopes">) {
   const selectedSummary = parseSummaryKey(input.budgetAreaId)
-  const seats = await getInternalForecastCopyCandidates(input)
+  const seats = await getInternalForecastCopyCandidates(input, viewer)
 
   return {
     monthIndex: input.monthIndex,
@@ -2292,9 +2391,9 @@ export async function applyForecastCopyToActualsForSubDomain(input: {
     trackerSeatId: string
     amount: number
   }[]
-}, actor?: AuditActor) {
+}, actor?: AuditActor, viewer?: Pick<AppViewer, "role" | "scopes">) {
   const trackingYear = await getOrCreateTrackingYear(input.year)
-  const candidates = await getInternalForecastCopyCandidates(input)
+  const candidates = await getInternalForecastCopyCandidates(input, viewer)
   const overrideLookup = new Map(
     (input.overrides ?? []).map((override) => [override.trackerSeatId, override.amount])
   )

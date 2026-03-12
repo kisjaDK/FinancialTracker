@@ -1,31 +1,22 @@
 import { signOut } from "@/auth"
-import { StatusesBrowser } from "@/components/finance/statuses-browser"
-import { getStatusesPageData } from "@/lib/finance/queries"
+import { UserAdminBrowser } from "@/components/finance/user-admin-browser"
 import { requirePageAccess } from "@/lib/authz"
+import { getUserAdminPageData } from "@/lib/user-admin"
 
-type PageProps = {
-  searchParams?: Promise<{
-    year?: string
-  }>
-}
-
-export default async function StatusesPage({ searchParams }: PageProps) {
+export default async function UserAdminPage() {
   const viewer = await requirePageAccess("ADMIN")
-  const resolvedSearchParams = await searchParams
-  const year = resolvedSearchParams?.year
-    ? Number(resolvedSearchParams.year)
-    : undefined
-  const data = await getStatusesPageData(year)
+  const data = await getUserAdminPageData(viewer)
 
   return (
     <>
-      <StatusesBrowser
+      <UserAdminBrowser
         userName={viewer.name}
         userEmail={viewer.email}
         userRole={viewer.role}
         activeYear={data.activeYear}
-        trackingYears={data.trackingYears}
-        statuses={data.statuses}
+        users={data.users}
+        scopeOptions={data.scopeOptions}
+        allowedRoles={data.allowedRoles}
       />
 
       <form

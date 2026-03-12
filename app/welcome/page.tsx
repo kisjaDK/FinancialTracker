@@ -1,7 +1,7 @@
-import { auth, signOut } from "@/auth"
-import { redirect } from "next/navigation"
+import { signOut } from "@/auth"
 import { FinanceWorkspace } from "@/components/finance/workspace"
 import { getFinanceWorkspaceData } from "@/lib/finance/queries"
+import { requirePageAccess } from "@/lib/authz"
 
 type SearchParamValue = string | string[] | undefined
 
@@ -25,12 +25,7 @@ function toArray(value: SearchParamValue) {
 }
 
 export default async function WelcomePage({ searchParams }: PageProps) {
-  const session = await auth()
-  if (!session?.user) {
-    redirect("/login")
-  }
-
-  const user = session?.user
+  const viewer = await requirePageAccess("GUEST")
   const resolvedSearchParams = await searchParams
   const selectedYear = resolvedSearchParams?.year
     ? Number(resolvedSearchParams.year)
@@ -39,14 +34,16 @@ export default async function WelcomePage({ searchParams }: PageProps) {
     selectedYear,
     resolvedSearchParams?.budgetAreaId,
     toArray(resolvedSearchParams?.team),
-    toArray(resolvedSearchParams?.missingActualMonth)
+    toArray(resolvedSearchParams?.missingActualMonth),
+    viewer
   )
 
   return (
     <>
       <FinanceWorkspace
-        userName={user?.name || "Pandora user"}
-        userEmail={user?.email || "Not available"}
+        userName={viewer.name}
+        userEmail={viewer.email}
+        userRole={viewer.role}
         activeYear={workspace.activeYear}
         trackingYears={workspace.trackingYears}
         summary={workspace.summary}

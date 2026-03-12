@@ -18,6 +18,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import type { AppRole } from "@/lib/roles"
 
 type TrackingYearOption = {
   id: string
@@ -35,6 +36,7 @@ type StatusDefinition = {
 type StatusesBrowserProps = {
   userName: string
   userEmail: string
+  userRole: AppRole
   activeYear: number
   trackingYears: TrackingYearOption[]
   statuses: StatusDefinition[]
@@ -54,6 +56,7 @@ async function fetchJson(input: RequestInfo, init?: RequestInit) {
 export function StatusesBrowser({
   userName,
   userEmail,
+  userRole,
   activeYear,
   trackingYears,
   statuses,
@@ -87,6 +90,7 @@ export function StatusesBrowser({
         subtitle="Maintain the allowed seat statuses and which of them count as active."
         userName={userName}
         userEmail={userEmail}
+        userRole={userRole}
         activeYear={activeYear}
         currentPath="/statuses"
       />

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import { requireApiAccess } from "@/lib/authz"
-import { deleteCostAssumption, upsertCostAssumption } from "@/lib/finance/queries"
+import { deleteUserAccess, saveUserAccess } from "@/lib/user-admin"
 
 export async function POST(request: Request) {
   const viewer = await requireApiAccess("ADMIN")
@@ -10,25 +10,30 @@ export async function POST(request: Request) {
 
   try {
     const body = await request.json()
-    const assumption = await upsertCostAssumption({
-      year: Number(body.year),
-      band: String(body.band || "").trim(),
-      location: String(body.location || "").trim(),
-      yearlyCost: Number(body.yearlyCost),
-      notes: body.notes ? String(body.notes) : undefined,
-    }, {
-      name: viewer.name,
-      email: viewer.email,
-    })
+    const user = await saveUserAccess(
+      {
+        role: viewer.role,
+        email: viewer.email,
+      },
+      {
+        email: String(body.email || "").trim(),
+        name: body.name ? String(body.name) : undefined,
+        role: body.role,
+        scopes: Array.isArray(body.scopes)
+          ? body.scopes.map((scope: { domain?: unknown; subDomain?: unknown }) => ({
+              domain: String(scope.domain || ""),
+              subDomain: scope.subDomain ? String(scope.subDomain) : null,
+            }))
+          : [],
+      }
+    )
 
-    return NextResponse.json({ assumption })
+    return NextResponse.json({ user })
   } catch (error) {
     const message = error instanceof Error ? error.message : "Save failed"
     return NextResponse.json({ error: message }, { status: 400 })
   }
 }
-
-export const PATCH = POST
 
 export async function DELETE(request: Request) {
   const viewer = await requireApiAccess("ADMIN")
@@ -38,16 +43,14 @@ export async function DELETE(request: Request) {
 
   try {
     const body = await request.json()
-    const assumption = await deleteCostAssumption({
-      year: Number(body.year),
-      band: String(body.band || "").trim(),
-      location: String(body.location || "").trim(),
-    }, {
-      name: viewer.name,
-      email: viewer.email,
-    })
+    const result = await deleteUserAccess(
+      {
+        role: viewer.role,
+      },
+      String(body.email || "").trim()
+    )
 
-    return NextResponse.json({ assumption })
+    return NextResponse.json({ result })
   } catch (error) {
     const message = error instanceof Error ? error.message : "Delete failed"
     return NextResponse.json({ error: message }, { status: 400 })

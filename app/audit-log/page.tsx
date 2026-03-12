@@ -1,7 +1,7 @@
-import { auth, signOut } from "@/auth"
-import { redirect } from "next/navigation"
+import { signOut } from "@/auth"
 import { AuditLogBrowser } from "@/components/finance/audit-log-browser"
 import { getAuditPageData } from "@/lib/finance/queries"
+import { requirePageAccess } from "@/lib/authz"
 
 type SearchParamValue = string | string[] | undefined
 
@@ -20,12 +20,7 @@ function firstValue(value: SearchParamValue) {
 }
 
 export default async function AuditLogPage({ searchParams }: PageProps) {
-  const session = await auth()
-  if (!session?.user) {
-    redirect("/login")
-  }
-
-  const user = session.user
+  const viewer = await requirePageAccess("MEMBER")
   const resolvedSearchParams = await searchParams
   const year = resolvedSearchParams?.year
     ? Number(resolvedSearchParams.year)
@@ -36,13 +31,14 @@ export default async function AuditLogPage({ searchParams }: PageProps) {
     user: firstValue(resolvedSearchParams?.user),
     from: resolvedSearchParams?.from,
     to: resolvedSearchParams?.to,
-  })
+  }, viewer)
 
   return (
     <>
       <AuditLogBrowser
-        userName={user?.name || "Pandora user"}
-        userEmail={user?.email || "Not available"}
+        userName={viewer.name}
+        userEmail={viewer.email}
+        userRole={viewer.role}
         activeYear={data.activeYear}
         trackingYears={data.trackingYears}
         filters={data.filters}

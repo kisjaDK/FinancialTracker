@@ -1,14 +1,14 @@
 import { NextResponse } from "next/server"
-import { auth } from "@/auth"
+import { requireApiAccess } from "@/lib/authz"
 import {
   applyForecastCopyToActualsForSubDomain,
   previewForecastCopyToActualsForSubDomain,
 } from "@/lib/finance/queries"
 
 export async function POST(request: Request) {
-  const session = await auth()
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  const viewer = await requireApiAccess("MEMBER")
+  if (viewer instanceof NextResponse) {
+    return viewer
   }
 
   try {
@@ -20,7 +20,7 @@ export async function POST(request: Request) {
     }
     const result =
       body.mode === "preview"
-        ? await previewForecastCopyToActualsForSubDomain(input)
+        ? await previewForecastCopyToActualsForSubDomain(input, viewer)
         : await applyForecastCopyToActualsForSubDomain({
             ...input,
             overrides: Array.isArray(body.overrides)
@@ -30,9 +30,9 @@ export async function POST(request: Request) {
                 }))
               : undefined,
           }, {
-            name: session.user.name,
-            email: session.user.email,
-          })
+            name: viewer.name,
+            email: viewer.email,
+          }, viewer)
 
     return NextResponse.json(result)
   } catch (error) {

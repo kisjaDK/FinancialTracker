@@ -24,6 +24,7 @@ import type {
   BudgetMovementFilterOption,
   BudgetMovementView,
 } from "@/lib/finance/types"
+import type { AppRole } from "@/lib/roles"
 
 type TrackingYearOption = {
   id: string
@@ -34,6 +35,7 @@ type TrackingYearOption = {
 type BudgetMovementsBrowserProps = {
   userName: string
   userEmail: string
+  userRole: AppRole
   activeYear: number
   trackingYears: TrackingYearOption[]
   filters: BudgetMovementFilters
@@ -65,6 +67,7 @@ function formatDate(value: Date | null) {
 export function BudgetMovementsBrowser({
   userName,
   userEmail,
+  userRole,
   activeYear,
   trackingYears,
   filters,
@@ -79,6 +82,7 @@ export function BudgetMovementsBrowser({
         subtitle="Review imported budget movement rows and filter them by notes, category, receiving funding, or giving pillar."
         userName={userName}
         userEmail={userEmail}
+        userRole={userRole}
         activeYear={activeYear}
         currentPath="/budget-movements"
       />

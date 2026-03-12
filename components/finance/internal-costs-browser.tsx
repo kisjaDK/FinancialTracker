@@ -33,6 +33,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { formatCurrency } from "@/lib/finance/format"
+import type { AppRole } from "@/lib/roles"
 
 type TrackingYearOption = {
   id: string
@@ -52,6 +53,7 @@ type CostAssumption = {
 type InternalCostsBrowserProps = {
   userName: string
   userEmail: string
+  userRole: AppRole
   activeYear: number
   trackingYears: TrackingYearOption[]
   assumptions: CostAssumption[]
@@ -71,6 +73,7 @@ async function fetchJson(input: RequestInfo, init?: RequestInit) {
 export function InternalCostsBrowser({
   userName,
   userEmail,
+  userRole,
   activeYear,
   trackingYears,
   assumptions,
@@ -137,6 +140,7 @@ export function InternalCostsBrowser({
         subtitle="Maintain yearly internal cost assumptions by location and band."
         userName={userName}
         userEmail={userEmail}
+        userRole={userRole}
         activeYear={activeYear}
         currentPath="/internal-costs"
       />

@@ -1,11 +1,11 @@
 import { NextResponse } from "next/server"
-import { auth } from "@/auth"
+import { requireApiAccess } from "@/lib/authz"
 import { getBudgetAreaSummary } from "@/lib/finance/queries"
 
 export async function GET(request: Request) {
-  const session = await auth()
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  const viewer = await requireApiAccess("GUEST")
+  if (viewer instanceof NextResponse) {
+    return viewer
   }
 
   const { searchParams } = new URL(request.url)
@@ -15,6 +15,6 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Year is required" }, { status: 400 })
   }
 
-  const summary = await getBudgetAreaSummary(year)
+  const summary = await getBudgetAreaSummary(year, undefined, viewer)
   return NextResponse.json({ summary })
 }

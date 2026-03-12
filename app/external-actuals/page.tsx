@@ -1,7 +1,7 @@
-import { auth, signOut } from "@/auth"
-import { redirect } from "next/navigation"
+import { signOut } from "@/auth"
 import { ExternalActualsBrowser } from "@/components/finance/external-actuals-browser"
 import { getExternalActualImportsPageData } from "@/lib/finance/queries"
+import { requirePageAccess } from "@/lib/authz"
 
 type PageProps = {
   searchParams?: Promise<{
@@ -16,12 +16,7 @@ type PageProps = {
 }
 
 export default async function ExternalActualsPage({ searchParams }: PageProps) {
-  const session = await auth()
-  if (!session?.user) {
-    redirect("/login")
-  }
-
-  const user = session.user
+  const viewer = await requirePageAccess("MEMBER")
   const resolvedSearchParams = await searchParams
   const year = resolvedSearchParams?.year
     ? Number(resolvedSearchParams.year)
@@ -34,13 +29,14 @@ export default async function ExternalActualsPage({ searchParams }: PageProps) {
     team: resolvedSearchParams?.team,
     importedFrom: resolvedSearchParams?.importedFrom,
     importedTo: resolvedSearchParams?.importedTo,
-  })
+  }, viewer)
 
   return (
     <>
       <ExternalActualsBrowser
-        userName={user?.name || "Pandora user"}
-        userEmail={user?.email || "Not available"}
+        userName={viewer.name}
+        userEmail={viewer.email}
+        userRole={viewer.role}
         activeYear={data.activeYear}
         trackingYears={data.trackingYears}
         filters={data.filters}

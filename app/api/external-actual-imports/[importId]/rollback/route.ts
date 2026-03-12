@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { auth } from "@/auth"
+import { requireApiAccess } from "@/lib/authz"
 import { rollbackExternalActualImport } from "@/lib/finance/queries"
 
 type RouteContext = {
@@ -9,9 +9,9 @@ type RouteContext = {
 }
 
 export async function POST(_request: Request, context: RouteContext) {
-  const session = await auth()
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  const viewer = await requireApiAccess("MEMBER")
+  if (viewer instanceof NextResponse) {
+    return viewer
   }
 
   try {
@@ -19,8 +19,8 @@ export async function POST(_request: Request, context: RouteContext) {
     const result = await rollbackExternalActualImport(
       { importId },
       {
-        name: session.user.name,
-        email: session.user.email,
+        name: viewer.name,
+        email: viewer.email,
       }
     )
 

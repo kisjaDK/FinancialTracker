@@ -28,6 +28,7 @@ import type {
   ExternalActualImportFilters,
   ExternalActualImportView,
 } from "@/lib/finance/types"
+import type { AppRole } from "@/lib/roles"
 
 type TrackingYearOption = {
   id: string
@@ -38,6 +39,7 @@ type TrackingYearOption = {
 type ExternalActualsBrowserProps = {
   userName: string
   userEmail: string
+  userRole: AppRole
   activeYear: number
   trackingYears: TrackingYearOption[]
   filters: ExternalActualImportFilters
@@ -69,6 +71,7 @@ function formatDateTime(value: Date) {
 export function ExternalActualsBrowser({
   userName,
   userEmail,
+  userRole,
   activeYear,
   trackingYears,
   filters,
@@ -147,6 +150,7 @@ export function ExternalActualsBrowser({
         subtitle="Import external spend by seat and month, then review imported actual rows."
         userName={userName}
         userEmail={userEmail}
+        userRole={userRole}
         activeYear={activeYear}
         currentPath="/external-actuals"
       />

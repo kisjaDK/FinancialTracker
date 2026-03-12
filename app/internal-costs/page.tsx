@@ -1,7 +1,7 @@
-import { auth, signOut } from "@/auth"
-import { redirect } from "next/navigation"
+import { signOut } from "@/auth"
 import { InternalCostsBrowser } from "@/components/finance/internal-costs-browser"
 import { getInternalCostsPageData } from "@/lib/finance/queries"
+import { requirePageAccess } from "@/lib/authz"
 
 type PageProps = {
   searchParams?: Promise<{
@@ -10,12 +10,7 @@ type PageProps = {
 }
 
 export default async function InternalCostsPage({ searchParams }: PageProps) {
-  const session = await auth()
-  if (!session?.user) {
-    redirect("/login")
-  }
-
-  const user = session.user
+  const viewer = await requirePageAccess("ADMIN")
   const resolvedSearchParams = await searchParams
   const year = resolvedSearchParams?.year
     ? Number(resolvedSearchParams.year)
@@ -25,8 +20,9 @@ export default async function InternalCostsPage({ searchParams }: PageProps) {
   return (
     <>
       <InternalCostsBrowser
-        userName={user?.name || "Pandora user"}
-        userEmail={user?.email || "Not available"}
+        userName={viewer.name}
+        userEmail={viewer.email}
+        userRole={viewer.role}
         activeYear={data.activeYear}
         trackingYears={data.trackingYears}
         assumptions={data.assumptions}

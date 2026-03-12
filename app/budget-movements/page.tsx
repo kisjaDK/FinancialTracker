@@ -1,7 +1,7 @@
-import { auth, signOut } from "@/auth"
-import { redirect } from "next/navigation"
+import { signOut } from "@/auth"
 import { BudgetMovementsBrowser } from "@/components/finance/budget-movements-browser"
 import { getBudgetMovementsPageData } from "@/lib/finance/queries"
+import { requirePageAccess } from "@/lib/authz"
 
 type PageProps = {
   searchParams?: Promise<{
@@ -14,12 +14,7 @@ type PageProps = {
 }
 
 export default async function BudgetMovementsPage({ searchParams }: PageProps) {
-  const session = await auth()
-  if (!session?.user) {
-    redirect("/login")
-  }
-
-  const user = session.user
+  const viewer = await requirePageAccess("ADMIN")
   const resolvedSearchParams = await searchParams
   const year = resolvedSearchParams?.year
     ? Number(resolvedSearchParams.year)
@@ -30,13 +25,14 @@ export default async function BudgetMovementsPage({ searchParams }: PageProps) {
     category: resolvedSearchParams?.category,
     receivingFunding: resolvedSearchParams?.receivingFunding,
     givingPillar: resolvedSearchParams?.givingPillar,
-  })
+  }, viewer)
 
   return (
     <>
       <BudgetMovementsBrowser
-        userName={user?.name || "Pandora user"}
-        userEmail={user?.email || "Not available"}
+        userName={viewer.name}
+        userEmail={viewer.email}
+        userRole={viewer.role}
         activeYear={data.activeYear}
         trackingYears={data.trackingYears}
         filters={data.filters}

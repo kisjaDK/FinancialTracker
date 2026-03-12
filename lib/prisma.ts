@@ -2,7 +2,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { PrismaClient } from "@/lib/generated/prisma/client"
 
-const PRISMA_SCHEMA_VERSION = "2026-03-11-roster-import-errors-v1"
+const PRISMA_SCHEMA_VERSION = "2026-03-12-authz-roles-v1"
 
 function resolveDatabaseUrl() {
   const databaseUrl = process.env.DATABASE_URL

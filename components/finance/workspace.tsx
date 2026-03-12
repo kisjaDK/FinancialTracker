@@ -35,6 +35,7 @@ import {
 } from "@/components/ui/table"
 import { formatCurrency, formatNumber, formatPercent } from "@/lib/finance/format"
 import { MONTH_NAMES, SUPPORTED_CURRENCIES } from "@/lib/finance/constants"
+import type { AppRole } from "@/lib/roles"
 
 type TrackingYearOption = {
   id: string
@@ -131,6 +132,7 @@ type ImportBatch = {
 type WorkspaceProps = {
   userName: string
   userEmail: string
+  userRole: AppRole
   activeYear: number
   trackingYears: TrackingYearOption[]
   summary: SummaryRow[]
@@ -248,6 +250,7 @@ function getQuarterlySpent(seat: SeatRow) {
 export function FinanceWorkspace({
   userName,
   userEmail,
+  userRole,
   activeYear,
   trackingYears,
   summary,
@@ -268,6 +271,9 @@ export function FinanceWorkspace({
 }: WorkspaceProps) {
   const router = useRouter()
   const searchParams = useSearchParams()
+  const canEditTracker = userRole !== "GUEST"
+  const canManageAdminData =
+    userRole === "ADMIN" || userRole === "SUPER_ADMIN"
   const [isPending, startTransition] = useTransition()
   const [selectedSeatId, setSelectedSeatId] = useState(seats[0]?.id ?? "")
   const [selectedMonth, setSelectedMonth] = useState("0")
@@ -553,6 +559,7 @@ export function FinanceWorkspace({
         subtitle="Imported budget movements, roster-derived seats, and manual finance assumptions."
         userName={userName}
         userEmail={userEmail}
+        userRole={userRole}
         activeYear={activeYear}
         currentPath="/welcome"
       />
@@ -1211,31 +1218,39 @@ export function FinanceWorkspace({
                   />
                   Keep forecast for this month
                 </label>
-                <Button
-                  type="button"
-                  disabled={!selectedSeatId}
-                  onClick={() => void saveSeatMonth()}
-                >
-                  Save Month
-                </Button>
-                <div className="rounded-xl border border-dashed border-border px-4 py-3 text-sm">
-                  <div className="font-medium">Bulk copy forecast to actuals</div>
-                  <div className="mt-1 text-muted-foreground">
-                    Copy the selected month&apos;s forecast into actuals for all internal seats in{" "}
-                    {selectedArea?.subDomain || "the selected sub-domain"}.
+                {canEditTracker ? (
+                  <>
+                    <Button
+                      type="button"
+                      disabled={!selectedSeatId}
+                      onClick={() => void saveSeatMonth()}
+                    >
+                      Save Month
+                    </Button>
+                    <div className="rounded-xl border border-dashed border-border px-4 py-3 text-sm">
+                      <div className="font-medium">Bulk copy forecast to actuals</div>
+                      <div className="mt-1 text-muted-foreground">
+                        Copy the selected month&apos;s forecast into actuals for all internal seats in{" "}
+                        {selectedArea?.subDomain || "the selected sub-domain"}.
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="mt-3"
+                        disabled={
+                          !effectiveSelectedAreaId || !selectedArea?.subDomain || bulkCopyLoading
+                        }
+                        onClick={() => void copyForecastToInternalActuals()}
+                      >
+                        Copy {MONTH_NAMES[Number(selectedMonth)]} Forecast For Internal Seats
+                      </Button>
+                    </div>
+                  </>
+                ) : (
+                  <div className="rounded-xl border border-dashed border-border px-4 py-3 text-sm text-muted-foreground">
+                    Guest access is currently read-only for tracker data.
                   </div>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="mt-3"
-                    disabled={
-                      !effectiveSelectedAreaId || !selectedArea?.subDomain || bulkCopyLoading
-                    }
-                    onClick={() => void copyForecastToInternalActuals()}
-                  >
-                    Copy {MONTH_NAMES[Number(selectedMonth)]} Forecast For Internal Seats
-                  </Button>
-                </div>
+                )}
                 {selectedSeat ? (
                   <div className="rounded-xl bg-muted/40 p-3 text-sm">
                     <div className="font-medium">Current month entry</div>
@@ -1257,14 +1272,15 @@ export function FinanceWorkspace({
               </CardContent>
             </Card>
 
-            <Card className="border-amber-200/70 bg-white/90">
-              <CardHeader>
-                <CardTitle>Tracker Overrides</CardTitle>
-                <CardDescription>
-                  Controlled manual edits for mapping and finance metadata.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-3">
+            {canEditTracker ? (
+              <Card className="border-amber-200/70 bg-white/90">
+                <CardHeader>
+                  <CardTitle>Tracker Overrides</CardTitle>
+                  <CardDescription>
+                    Controlled manual edits for mapping and finance metadata.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3">
                 <div className="space-y-2">
                   <Label htmlFor="override-seat">Seat</Label>
                   <select
@@ -1433,12 +1449,14 @@ export function FinanceWorkspace({
                 >
                   Save Override
                 </Button>
-              </CardContent>
-            </Card>
+                </CardContent>
+              </Card>
+            ) : null}
           </div>
         </section>
 
-        <section className="grid gap-6 xl:grid-cols-2">
+        {canManageAdminData ? (
+          <section className="grid gap-6 xl:grid-cols-2">
           <Card className="border-amber-200/70 bg-white/90">
             <CardHeader>
               <CardTitle>Imports</CardTitle>
@@ -1884,7 +1902,8 @@ export function FinanceWorkspace({
               </div>
             </CardContent>
           </Card>
-        </section>
+          </section>
+        ) : null}
 
         <div className="text-xs text-muted-foreground">
           {isPending ? "Loading updated data..." : "Tracker is backed by Prisma + SQLite and recalculates after each import or override."}

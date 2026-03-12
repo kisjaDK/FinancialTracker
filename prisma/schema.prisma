@@ -29,6 +29,37 @@ enum MappingCodeType {
   DEPARTMENT_CODE
 }
 
+enum AppRole {
+  GUEST
+  MEMBER
+  ADMIN
+  SUPER_ADMIN
+}
+
+model AppUser {
+  id        String            @id @default(cuid())
+  email     String            @unique
+  name      String?
+  role      AppRole
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+  scopes    UserAccessScope[]
+}
+
+model UserAccessScope {
+  id        String   @id @default(cuid())
+  userId    String
+  domain    String
+  subDomain String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user      AppUser  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([domain, subDomain])
+  @@unique([userId, domain, subDomain])
+}
+
 model TrackingYear {
   id                  String                 @id @default(cuid())
   year                Int                    @unique

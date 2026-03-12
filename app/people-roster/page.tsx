@@ -1,7 +1,7 @@
-import { auth, signOut } from "@/auth"
-import { redirect } from "next/navigation"
+import { signOut } from "@/auth"
 import { PeopleRosterBrowser } from "@/components/finance/people-roster-browser"
 import { getPeopleRosterPageData } from "@/lib/finance/queries"
+import { requirePageAccess } from "@/lib/authz"
 
 type SearchParamValue = string | string[] | undefined
 
@@ -31,12 +31,7 @@ function toArray(value: SearchParamValue) {
 }
 
 export default async function PeopleRosterPage({ searchParams }: PageProps) {
-  const session = await auth()
-  if (!session?.user) {
-    redirect("/login")
-  }
-
-  const user = session.user
+  const viewer = await requirePageAccess("MEMBER")
   const resolvedSearchParams = await searchParams
   const year = resolvedSearchParams?.year
     ? Number(resolvedSearchParams.year)
@@ -54,13 +49,14 @@ export default async function PeopleRosterPage({ searchParams }: PageProps) {
     roles: toArray(resolvedSearchParams?.role),
     bands: toArray(resolvedSearchParams?.band),
     validation: resolvedSearchParams?.validation,
-  })
+  }, viewer)
 
   return (
     <>
       <PeopleRosterBrowser
-        userName={user?.name || "Pandora user"}
-        userEmail={user?.email || "Not available"}
+        userName={viewer.name}
+        userEmail={viewer.email}
+        userRole={viewer.role}
         activeYear={data.activeYear}
         trackingYears={data.trackingYears}
         filters={data.filters}

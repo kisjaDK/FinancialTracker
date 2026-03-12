@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/table"
 import { formatNumber } from "@/lib/finance/format"
 import type { PeopleRosterFilters, PeopleRosterView } from "@/lib/finance/types"
+import type { AppRole } from "@/lib/roles"
 
 type TrackingYearOption = {
   id: string
@@ -33,6 +34,7 @@ type TrackingYearOption = {
 type PeopleRosterBrowserProps = {
   userName: string
   userEmail: string
+  userRole: AppRole
   activeYear: number
   trackingYears: TrackingYearOption[]
   filters: PeopleRosterFilters
@@ -80,6 +82,7 @@ function formatDate(value: string | Date | null) {
 export function PeopleRosterBrowser({
   userName,
   userEmail,
+  userRole,
   activeYear,
   trackingYears,
   filters,
@@ -160,6 +163,7 @@ export function PeopleRosterBrowser({
         subtitle="Browse imported roster rows and filter them by seat, person, team, hierarchy, vendor, and location."
         userName={userName}
         userEmail={userEmail}
+        userRole={userRole}
         activeYear={activeYear}
         currentPath="/people-roster"
       />

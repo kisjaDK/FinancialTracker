@@ -1,11 +1,11 @@
 import { NextResponse } from "next/server"
-import { auth } from "@/auth"
+import { requireApiAccess } from "@/lib/authz"
 import { importBudgetMovementsCsv } from "@/lib/finance/imports"
 
 export async function POST(request: Request) {
-  const session = await auth()
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  const viewer = await requireApiAccess("MEMBER")
+  if (viewer instanceof NextResponse) {
+    return viewer
   }
 
   try {
@@ -23,8 +23,8 @@ export async function POST(request: Request) {
 
     const content = await file.text()
     const batch = await importBudgetMovementsCsv(year, file.name, content, {
-      name: session.user.name,
-      email: session.user.email,
+      name: viewer.name,
+      email: viewer.email,
     })
 
     return NextResponse.json({ batch })

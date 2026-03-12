@@ -16,6 +16,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import type { AppRole } from "@/lib/roles"
 
 type TrackingYearOption = {
   id: string
@@ -39,6 +40,7 @@ type AuditLog = {
 type AuditLogBrowserProps = {
   userName: string
   userEmail: string
+  userRole: AppRole
   activeYear: number
   trackingYears: TrackingYearOption[]
   filters: {
@@ -63,6 +65,7 @@ function formatDateTime(value: Date) {
 export function AuditLogBrowser({
   userName,
   userEmail,
+  userRole,
   activeYear,
   trackingYears,
   filters,
@@ -75,6 +78,7 @@ export function AuditLogBrowser({
         subtitle="Review data changes, who made them, and the before/after values."
         userName={userName}
         userEmail={userEmail}
+        userRole={userRole}
         activeYear={activeYear}
         currentPath="/audit-log"
       />

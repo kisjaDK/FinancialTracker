@@ -2,6 +2,7 @@
 
 import Link from "next/link"
 import { ThemeToggle } from "@/components/layout/theme-toggle"
+import { ROLE_RANK, roleLabel, type AppRole } from "@/lib/roles"
 import { cn } from "@/lib/utils"
 
 type FinanceHeaderProps = {
@@ -9,6 +10,7 @@ type FinanceHeaderProps = {
   subtitle: string
   userName: string
   userEmail: string
+  userRole: AppRole
   activeYear: number
   currentPath:
     | "/welcome"
@@ -18,36 +20,49 @@ type FinanceHeaderProps = {
     | "/internal-costs"
     | "/statuses"
     | "/audit-log"
+    | "/user-admin"
 }
 
 const NAV_ITEMS = [
   {
     href: "/welcome",
     label: "Tracker",
+    minimumRole: "GUEST",
   },
   {
     href: "/budget-movements",
     label: "Budget Movements",
+    minimumRole: "ADMIN",
   },
   {
     href: "/external-actuals",
     label: "External Actuals",
+    minimumRole: "MEMBER",
   },
   {
     href: "/people-roster",
     label: "People Roster",
+    minimumRole: "MEMBER",
   },
   {
     href: "/internal-costs",
     label: "Internal Costs",
+    minimumRole: "ADMIN",
   },
   {
     href: "/statuses",
     label: "Statuses",
+    minimumRole: "ADMIN",
   },
   {
     href: "/audit-log",
     label: "Audit Log",
+    minimumRole: "MEMBER",
+  },
+  {
+    href: "/user-admin",
+    label: "User Admin",
+    minimumRole: "ADMIN",
   },
 ] as const
 
@@ -56,6 +71,7 @@ export function FinanceHeader({
   subtitle,
   userName,
   userEmail,
+  userRole,
   activeYear,
   currentPath,
 }: FinanceHeaderProps) {
@@ -74,14 +90,16 @@ export function FinanceHeader({
           <div className="flex items-center gap-3">
             <div className="hidden text-right sm:block">
               <p className="text-sm font-medium">{userName}</p>
-              <p className="text-xs text-muted-foreground">{userEmail}</p>
+              <p className="text-xs text-muted-foreground">
+                {userEmail} · {roleLabel(userRole)}
+              </p>
             </div>
             <ThemeToggle />
           </div>
         </div>
 
         <nav className="flex flex-wrap items-center gap-2">
-          {NAV_ITEMS.map((item) => {
+          {NAV_ITEMS.filter((item) => ROLE_RANK[userRole] >= ROLE_RANK[item.minimumRole]).map((item) => {
             const href = `${item.href}?year=${activeYear}`
             const isActive = item.href === currentPath
 
