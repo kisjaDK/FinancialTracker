@@ -97,6 +97,7 @@ export type BudgetMovementFilterOption = {
 export type BudgetMovementView = {
   id: string
   batchFileName: string
+  isManual: boolean
   effectiveDate: Date | null
   category: string | null
   givingFunding: string | null
@@ -111,6 +112,13 @@ export type BudgetMovementView = {
   areaDisplayName: string | null
   areaDomain: string | null
   areaSubDomain: string | null
+}
+
+export type BudgetMovementImportBatchView = {
+  id: string
+  fileName: string
+  importedAt: Date
+  rowCount: number
 }
 
 export type PeopleRosterFilters = {

@@ -1,45 +1,34 @@
 import { signOut } from "@/auth"
-import { BudgetMovementsBrowser } from "@/components/finance/budget-movements-browser"
-import { getBudgetMovementsPageData } from "@/lib/finance/queries"
+import { AdminBrowser } from "@/components/finance/admin-browser"
+import { getAdminPageData } from "@/lib/finance/queries"
 import { requirePageAccess } from "@/lib/authz"
 
 type PageProps = {
   searchParams?: Promise<{
     year?: string
-    search?: string
-    category?: string
-    receivingFunding?: string
-    givingPillar?: string
   }>
 }
 
-export default async function BudgetMovementsPage({ searchParams }: PageProps) {
+export default async function AdminPage({ searchParams }: PageProps) {
   const viewer = await requirePageAccess("ADMIN")
   const resolvedSearchParams = await searchParams
   const year = resolvedSearchParams?.year
     ? Number(resolvedSearchParams.year)
     : undefined
-  const data = await getBudgetMovementsPageData({
-    year,
-    search: resolvedSearchParams?.search,
-    category: resolvedSearchParams?.category,
-    receivingFunding: resolvedSearchParams?.receivingFunding,
-    givingPillar: resolvedSearchParams?.givingPillar,
-  }, viewer)
+  const data = await getAdminPageData(year)
 
   return (
     <>
-      <BudgetMovementsBrowser
+      <AdminBrowser
         userName={viewer.name}
         userEmail={viewer.email}
         userRole={viewer.role}
         activeYear={data.activeYear}
         trackingYears={data.trackingYears}
-        filters={data.filters}
-        filterOptions={data.filterOptions}
-        movements={data.movements}
-        totals={data.totals}
-        imports={data.imports}
+        statuses={data.statuses}
+        departmentMappings={data.departmentMappings}
+        exchangeRates={data.exchangeRates}
+        assumptions={data.assumptions}
       />
 
       <form

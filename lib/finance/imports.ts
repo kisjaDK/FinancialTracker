@@ -387,8 +387,20 @@ export async function importBudgetMovementsCsv(
 
   const trackingYear = await getOrCreateTrackingYear(year)
   const [existingBatches, existingMovements] = await Promise.all([
-    prisma.budgetMovementBatch.count({ where: { trackingYearId: trackingYear.id } }),
-    prisma.budgetMovement.count({ where: { trackingYearId: trackingYear.id } }),
+    prisma.budgetMovementBatch.count({
+      where: {
+        trackingYearId: trackingYear.id,
+        isManual: false,
+      },
+    }),
+    prisma.budgetMovement.count({
+      where: {
+        trackingYearId: trackingYear.id,
+        batch: {
+          isManual: false,
+        },
+      },
+    }),
   ])
   const departmentMappings = await prisma.departmentMapping.findMany({
     where: {
@@ -402,17 +414,26 @@ export async function importBudgetMovementsCsv(
 
   await prisma.$transaction(async (transaction) => {
     await transaction.budgetMovement.deleteMany({
-      where: { trackingYearId: trackingYear.id },
+      where: {
+        trackingYearId: trackingYear.id,
+        batch: {
+          isManual: false,
+        },
+      },
     })
 
     await transaction.budgetMovementBatch.deleteMany({
-      where: { trackingYearId: trackingYear.id },
+      where: {
+        trackingYearId: trackingYear.id,
+        isManual: false,
+      },
     })
 
     const batch = await transaction.budgetMovementBatch.create({
       data: {
         trackingYearId: trackingYear.id,
         fileName,
+        isManual: false,
         rowCount: rows.length,
       },
     })
@@ -489,6 +510,7 @@ export async function importBudgetMovementsCsv(
     where: {
       trackingYearId: trackingYear.id,
       fileName,
+      isManual: false,
     },
     orderBy: { importedAt: "desc" },
   })

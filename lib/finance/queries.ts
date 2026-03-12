@@ -1,4 +1,8 @@
-import type { CurrencyCode, ExchangeRate } from "@/lib/generated/prisma/client"
+import type {
+  CurrencyCode,
+  ExchangeRate,
+  Prisma,
+} from "@/lib/generated/prisma/client"
 import {
   ALLOWED_SEAT_STATUSES,
   CLOUD_CATEGORY,
@@ -22,6 +26,7 @@ import type {
   ExternalActualImportBatchView,
   ExternalActualImportFilters,
   ExternalActualImportView,
+  BudgetMovementImportBatchView,
   BudgetMovementFilters,
   BudgetMovementFilterOption,
   BudgetMovementView,
@@ -135,6 +140,30 @@ function buildDepartmentMappingLookup(
     },
     {}
   )
+}
+
+function normalizeOptionalString(value: string | null | undefined) {
+  const trimmed = value?.trim()
+  return trimmed ? trimmed : null
+}
+
+function normalizeOptionalNumber(value: number | null | undefined) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null
+}
+
+function normalizeBudgetMovementDate(value: Date | string | null | undefined) {
+  if (!value) {
+    return null
+  }
+
+  const parsed = value instanceof Date ? value : new Date(value)
+  return Number.isNaN(parsed.getTime()) ? null : parsed
+}
+
+function ensureValidYear(year: number) {
+  if (!Number.isInteger(year)) {
+    throw new Error("Year is required.")
+  }
 }
 
 function buildSummaryKey(subDomain: string | null | undefined) {
@@ -484,15 +513,7 @@ export async function getFinanceWorkspaceData(
   await ensureFreshTrackerDerivation(activeYear)
   const statusDefinitions = await ensureStatusDefinitions(activeYear)
 
-  const [
-    summary,
-    budgetAreas,
-    selectedAreaId,
-    costAssumptions,
-    exchangeRates,
-    departmentMappings,
-    importBatches,
-  ] =
+  const [summary, budgetAreas, selectedAreaId] =
     await Promise.all([
       getBudgetAreaSummary(activeYear, statusDefinitions, viewer),
       prisma.budgetArea.findMany({
@@ -500,25 +521,6 @@ export async function getFinanceWorkspaceData(
         orderBy: [{ domain: "asc" }, { subDomain: "asc" }, { costCenter: "asc" }],
       }),
       Promise.resolve(budgetAreaId),
-      prisma.costAssumption.findMany({
-        where: { trackingYear: { year: activeYear } },
-        orderBy: [{ band: "asc" }, { location: "asc" }],
-      }),
-      getLatestExchangeRates(activeYear),
-      getDepartmentMappings(activeYear),
-      prisma.trackingYear.findUnique({
-        where: { year: activeYear },
-        include: {
-          rosterImports: {
-            orderBy: { importedAt: "desc" },
-            take: 5,
-          },
-          budgetMovementBatches: {
-            orderBy: { importedAt: "desc" },
-            take: 5,
-          },
-        },
-      }),
     ])
 
   const scopedBudgetAreas = filterScopedItems(
@@ -588,12 +590,7 @@ export async function getFinanceWorkspaceData(
     seats,
     budgetAreas: scopedBudgetAreas,
     selectedAreaId: effectiveAreaId,
-    costAssumptions,
-    exchangeRates,
     statusDefinitions,
-    departmentMappings,
-    rosterImports: importBatches?.rosterImports ?? [],
-    budgetMovementBatches: importBatches?.budgetMovementBatches ?? [],
     trackerTeamFilters: trackerTeams ?? [],
     trackerTeamOptions: collectSortedValues(allSeats.map((seat) => seat.team)),
     missingActualMonthFilters: missingActualMonths ?? [],
@@ -611,9 +608,10 @@ export async function getBudgetMovementsPageData(input?: {
   const trackingYears = await prisma.trackingYear.findMany({
     orderBy: { year: "asc" },
   })
+  const requestedYear = Number.isInteger(input?.year) ? input?.year : undefined
 
   const activeYear =
-    input?.year ??
+    requestedYear ??
     trackingYears.find((trackingYear) => trackingYear.isActive)?.year ??
     trackingYears.at(-1)?.year ??
     new Date().getFullYear()
@@ -626,7 +624,7 @@ export async function getBudgetMovementsPageData(input?: {
     givingPillar: input?.givingPillar?.trim() ?? "",
   }
 
-  const [budgetMovements, departmentMappings] = await Promise.all([
+  const [budgetMovements, departmentMappings, importBatches] = await Promise.all([
     prisma.budgetMovement.findMany({
       where: { trackingYearId: trackingYear.id },
       include: {
@@ -641,6 +639,13 @@ export async function getBudgetMovementsPageData(input?: {
         codeType: "DEPARTMENT_CODE",
       },
     }),
+    prisma.budgetMovementBatch.findMany({
+      where: {
+        trackingYearId: trackingYear.id,
+        isManual: false,
+      },
+      orderBy: { importedAt: "desc" },
+    }),
   ])
   const mappingLookup = buildDepartmentMappingLookup(departmentMappings)
 
@@ -651,6 +656,7 @@ export async function getBudgetMovementsPageData(input?: {
     return {
       id: movement.id,
       batchFileName: movement.batch.fileName,
+      isManual: movement.batch.isManual,
       effectiveDate: movement.effectiveDate,
       category: movement.category,
       givingFunding: movement.givingFunding,
@@ -750,7 +756,350 @@ export async function getBudgetMovementsPageData(input?: {
         0
       ),
     },
+    imports: importBatches.map(
+      (batch): BudgetMovementImportBatchView => ({
+        id: batch.id,
+        fileName: batch.fileName,
+        importedAt: batch.importedAt,
+        rowCount: batch.rowCount,
+      })
+    ),
   }
+}
+
+async function getOrCreateManualBudgetMovementBatch(
+  transaction: Prisma.TransactionClient,
+  trackingYearId: string
+) {
+  const existingBatch = await transaction.budgetMovementBatch.findFirst({
+    where: {
+      trackingYearId,
+      isManual: true,
+    },
+    orderBy: { importedAt: "asc" },
+  })
+
+  if (existingBatch) {
+    return existingBatch
+  }
+
+  return transaction.budgetMovementBatch.create({
+    data: {
+      trackingYearId,
+      fileName: "Manual entries",
+      isManual: true,
+      rowCount: 0,
+    },
+  })
+}
+
+async function syncBudgetMovementBatchRowCount(
+  transaction: Prisma.TransactionClient,
+  batchId: string
+) {
+  const rowCount = await transaction.budgetMovement.count({
+    where: { batchId },
+  })
+
+  await transaction.budgetMovementBatch.update({
+    where: { id: batchId },
+    data: { rowCount },
+  })
+}
+
+async function findOrCreateBudgetAreaForMovement(
+  transaction: Prisma.TransactionClient,
+  input: {
+    trackingYearId: string
+    receivingCostCenter: string
+    receivingProjectCode: string
+  }
+) {
+  const existingArea = await transaction.budgetArea.findUnique({
+    where: {
+      trackingYearId_costCenter_projectCode: {
+        trackingYearId: input.trackingYearId,
+        costCenter: input.receivingCostCenter,
+        projectCode: input.receivingProjectCode,
+      },
+    },
+  })
+
+  if (existingArea) {
+    return existingArea
+  }
+
+  const mapping = await transaction.departmentMapping.findUnique({
+    where: {
+      trackingYearId_codeType_sourceCode: {
+        trackingYearId: input.trackingYearId,
+        codeType: "DEPARTMENT_CODE",
+        sourceCode: input.receivingCostCenter,
+      },
+    },
+  })
+
+  return transaction.budgetArea.create({
+    data: {
+      trackingYearId: input.trackingYearId,
+      domain: normalizeDomainLabel(mapping?.domain) || null,
+      subDomain: normalizeSubDomainLabel(mapping?.subDomain) || null,
+      costCenter: input.receivingCostCenter,
+      projectCode: input.receivingProjectCode,
+      displayName: `${input.receivingProjectCode} · ${input.receivingCostCenter}`,
+    },
+  })
+}
+
+function buildBudgetMovementAuditShape(movement: {
+  givingFunding: string | null
+  givingPillar: string | null
+  amountGiven: number
+  receivingCostCenter: string
+  receivingProjectCode: string
+  notes: string | null
+  effectiveDate: Date | null
+  category: string | null
+  financeViewAmount: number | null
+  capexTarget: number | null
+  budgetAreaId: string | null
+  batchId: string
+}) {
+  return {
+    givingFunding: movement.givingFunding,
+    givingPillar: movement.givingPillar,
+    amountGiven: movement.amountGiven,
+    receivingCostCenter: movement.receivingCostCenter,
+    receivingProjectCode: movement.receivingProjectCode,
+    notes: movement.notes,
+    effectiveDate: movement.effectiveDate,
+    category: movement.category,
+    financeViewAmount: movement.financeViewAmount,
+    capexTarget: movement.capexTarget,
+    budgetAreaId: movement.budgetAreaId,
+    batchId: movement.batchId,
+  }
+}
+
+function validateBudgetMovementInput(input: {
+  amountGiven: number
+  receivingCostCenter: string
+  receivingProjectCode: string
+}) {
+  if (!Number.isFinite(input.amountGiven)) {
+    throw new Error("Amount given is required.")
+  }
+
+  if (!input.receivingCostCenter.trim()) {
+    throw new Error("Receiving cost center is required.")
+  }
+
+  if (!input.receivingProjectCode.trim()) {
+    throw new Error("Receiving project code is required.")
+  }
+}
+
+export async function createBudgetMovement(input: {
+  year: number
+  givingFunding?: string | null
+  givingPillar?: string | null
+  amountGiven: number
+  receivingCostCenter: string
+  receivingProjectCode: string
+  notes?: string | null
+  effectiveDate?: Date | string | null
+  category?: string | null
+  financeViewAmount?: number | null
+  capexTarget?: number | null
+}, actor?: AuditActor) {
+  ensureValidYear(input.year)
+  const trackingYear = await getOrCreateTrackingYear(input.year)
+  validateBudgetMovementInput(input)
+
+  const movement = await prisma.$transaction(async (transaction) => {
+    const batch = await getOrCreateManualBudgetMovementBatch(transaction, trackingYear.id)
+    const budgetArea = await findOrCreateBudgetAreaForMovement(transaction, {
+      trackingYearId: trackingYear.id,
+      receivingCostCenter: input.receivingCostCenter.trim(),
+      receivingProjectCode: input.receivingProjectCode.trim(),
+    })
+
+    const created = await transaction.budgetMovement.create({
+      data: {
+        trackingYearId: trackingYear.id,
+        batchId: batch.id,
+        budgetAreaId: budgetArea.id,
+        givingFunding: normalizeOptionalString(input.givingFunding),
+        givingPillar: normalizeOptionalString(input.givingPillar),
+        amountGiven: input.amountGiven,
+        receivingCostCenter: input.receivingCostCenter.trim(),
+        receivingProjectCode: input.receivingProjectCode.trim(),
+        notes: normalizeOptionalString(input.notes),
+        effectiveDate: normalizeBudgetMovementDate(input.effectiveDate),
+        category: normalizeOptionalString(input.category),
+        financeViewAmount: normalizeOptionalNumber(input.financeViewAmount),
+        capexTarget: normalizeOptionalNumber(input.capexTarget),
+      },
+    })
+
+    await syncBudgetMovementBatchRowCount(transaction, batch.id)
+    return created
+  })
+
+  await deriveTrackerSeatsForYear(input.year)
+  await writeAuditLog({
+    trackingYearId: trackingYear.id,
+    entityType: "BudgetMovement",
+    entityId: movement.id,
+    action: "CREATE",
+    actor,
+    changes: buildAuditChanges(null, buildBudgetMovementAuditShape(movement), [
+      "givingFunding",
+      "givingPillar",
+      "amountGiven",
+      "receivingCostCenter",
+      "receivingProjectCode",
+      "notes",
+      "effectiveDate",
+      "category",
+      "financeViewAmount",
+      "capexTarget",
+      "budgetAreaId",
+      "batchId",
+    ]),
+  })
+
+  return movement
+}
+
+export async function updateBudgetMovement(input: {
+  year: number
+  id: string
+  givingFunding?: string | null
+  givingPillar?: string | null
+  amountGiven: number
+  receivingCostCenter: string
+  receivingProjectCode: string
+  notes?: string | null
+  effectiveDate?: Date | string | null
+  category?: string | null
+  financeViewAmount?: number | null
+  capexTarget?: number | null
+}, actor?: AuditActor) {
+  ensureValidYear(input.year)
+  const trackingYear = await getOrCreateTrackingYear(input.year)
+  validateBudgetMovementInput(input)
+
+  const before = await prisma.budgetMovement.findFirstOrThrow({
+    where: {
+      id: input.id,
+      trackingYearId: trackingYear.id,
+    },
+  })
+
+  const movement = await prisma.$transaction(async (transaction) => {
+    const budgetArea = await findOrCreateBudgetAreaForMovement(transaction, {
+      trackingYearId: trackingYear.id,
+      receivingCostCenter: input.receivingCostCenter.trim(),
+      receivingProjectCode: input.receivingProjectCode.trim(),
+    })
+
+    return transaction.budgetMovement.update({
+      where: { id: input.id },
+      data: {
+        budgetAreaId: budgetArea.id,
+        givingFunding: normalizeOptionalString(input.givingFunding),
+        givingPillar: normalizeOptionalString(input.givingPillar),
+        amountGiven: input.amountGiven,
+        receivingCostCenter: input.receivingCostCenter.trim(),
+        receivingProjectCode: input.receivingProjectCode.trim(),
+        notes: normalizeOptionalString(input.notes),
+        effectiveDate: normalizeBudgetMovementDate(input.effectiveDate),
+        category: normalizeOptionalString(input.category),
+        financeViewAmount: normalizeOptionalNumber(input.financeViewAmount),
+        capexTarget: normalizeOptionalNumber(input.capexTarget),
+      },
+    })
+  })
+
+  await deriveTrackerSeatsForYear(input.year)
+  await writeAuditLog({
+    trackingYearId: trackingYear.id,
+    entityType: "BudgetMovement",
+    entityId: movement.id,
+    action: "UPDATE",
+    actor,
+    changes: buildAuditChanges(
+      buildBudgetMovementAuditShape(before),
+      buildBudgetMovementAuditShape(movement),
+      [
+        "givingFunding",
+        "givingPillar",
+        "amountGiven",
+        "receivingCostCenter",
+        "receivingProjectCode",
+        "notes",
+        "effectiveDate",
+        "category",
+        "financeViewAmount",
+        "capexTarget",
+        "budgetAreaId",
+      ]
+    ),
+  })
+
+  return movement
+}
+
+export async function deleteBudgetMovement(input: {
+  year: number
+  id: string
+}, actor?: AuditActor) {
+  ensureValidYear(input.year)
+  const trackingYear = await getOrCreateTrackingYear(input.year)
+  const before = await prisma.budgetMovement.findFirstOrThrow({
+    where: {
+      id: input.id,
+      trackingYearId: trackingYear.id,
+    },
+  })
+
+  await prisma.$transaction(async (transaction) => {
+    await transaction.budgetMovement.delete({
+      where: { id: input.id },
+    })
+
+    await syncBudgetMovementBatchRowCount(transaction, before.batchId)
+  })
+
+  await deriveTrackerSeatsForYear(input.year)
+  await writeAuditLog({
+    trackingYearId: trackingYear.id,
+    entityType: "BudgetMovement",
+    entityId: before.id,
+    action: "DELETE",
+    actor,
+    changes: buildAuditChanges(
+      buildBudgetMovementAuditShape(before),
+      null,
+      [
+        "givingFunding",
+        "givingPillar",
+        "amountGiven",
+        "receivingCostCenter",
+        "receivingProjectCode",
+        "notes",
+        "effectiveDate",
+        "category",
+        "financeViewAmount",
+        "capexTarget",
+        "budgetAreaId",
+        "batchId",
+      ]
+    ),
+  })
+
+  return before
 }
 
 export async function getExternalActualImportsPageData(input?: {
@@ -1170,6 +1519,34 @@ export async function getStatusesPageData(year?: number) {
     activeYear,
     trackingYears,
     statuses,
+  }
+}
+
+export async function getAdminPageData(year?: number) {
+  const trackingYears = await prisma.trackingYear.findMany({
+    orderBy: { year: "asc" },
+  })
+
+  const activeYear =
+    year ??
+    trackingYears.find((trackingYear) => trackingYear.isActive)?.year ??
+    trackingYears.at(-1)?.year ??
+    new Date().getFullYear()
+
+  const [statuses, assumptions, exchangeRates, departmentMappings] = await Promise.all([
+    ensureStatusDefinitions(activeYear),
+    getInternalCostsPageData(activeYear).then((data) => data.assumptions),
+    getLatestExchangeRates(activeYear),
+    getDepartmentMappings(activeYear),
+  ])
+
+  return {
+    activeYear,
+    trackingYears,
+    statuses,
+    assumptions,
+    exchangeRates,
+    departmentMappings,
   }
 }
 

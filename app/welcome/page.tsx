@@ -55,11 +55,7 @@ export default async function WelcomePage({ searchParams }: PageProps) {
             `${area.subDomain || area.pillar || area.projectCode} · ${area.costCenter}`,
         }))}
         selectedAreaId={workspace.selectedAreaId}
-        costAssumptions={workspace.costAssumptions}
-        exchangeRates={workspace.exchangeRates}
-        departmentMappings={workspace.departmentMappings}
         statusDefinitions={workspace.statusDefinitions}
-        budgetMovementBatches={workspace.budgetMovementBatches}
         trackerTeamFilters={workspace.trackerTeamFilters}
         trackerTeamOptions={workspace.trackerTeamOptions}
         missingActualMonthFilters={workspace.missingActualMonthFilters}

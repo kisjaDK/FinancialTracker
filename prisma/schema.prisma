@@ -156,6 +156,7 @@ model BudgetMovementBatch {
   id             String           @id @default(cuid())
   trackingYearId String
   fileName       String
+  isManual       Boolean          @default(false)
   importedAt     DateTime         @default(now())
   rowCount       Int              @default(0)
   trackingYear   TrackingYear     @relation(fields: [trackingYearId], references: [id], onDelete: Cascade)

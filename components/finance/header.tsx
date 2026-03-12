@@ -15,10 +15,10 @@ type FinanceHeaderProps = {
   currentPath:
     | "/welcome"
     | "/budget-movements"
-    | "/external-actuals"
+    | "/actuals"
     | "/people-roster"
     | "/internal-costs"
-    | "/statuses"
+    | "/admin"
     | "/audit-log"
     | "/user-admin"
 }
@@ -35,8 +35,8 @@ const NAV_ITEMS = [
     minimumRole: "ADMIN",
   },
   {
-    href: "/external-actuals",
-    label: "External Actuals",
+    href: "/actuals",
+    label: "Actuals",
     minimumRole: "MEMBER",
   },
   {
@@ -50,8 +50,8 @@ const NAV_ITEMS = [
     minimumRole: "ADMIN",
   },
   {
-    href: "/statuses",
-    label: "Statuses",
+    href: "/admin",
+    label: "Admin",
     minimumRole: "ADMIN",
   },
   {

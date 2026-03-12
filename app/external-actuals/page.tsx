@@ -1,65 +1,34 @@
-import { signOut } from "@/auth"
-import { ExternalActualsBrowser } from "@/components/finance/external-actuals-browser"
-import { getExternalActualImportsPageData } from "@/lib/finance/queries"
-import { requirePageAccess } from "@/lib/authz"
+import { redirect } from "next/navigation"
 
 type PageProps = {
-  searchParams?: Promise<{
-    year?: string
-    user?: string
-    fileName?: string
-    seatId?: string
-    team?: string
-    importedFrom?: string
-    importedTo?: string
-  }>
+  searchParams?: Promise<Record<string, string | string[] | undefined>>
 }
 
-export default async function ExternalActualsPage({ searchParams }: PageProps) {
-  const viewer = await requirePageAccess("MEMBER")
+function appendParam(
+  params: URLSearchParams,
+  key: string,
+  value: string | string[] | undefined
+) {
+  if (Array.isArray(value)) {
+    value.forEach((entry) => params.append(key, entry))
+    return
+  }
+
+  if (value) {
+    params.set(key, value)
+  }
+}
+
+export default async function ExternalActualsRedirectPage({
+  searchParams,
+}: PageProps) {
   const resolvedSearchParams = await searchParams
-  const year = resolvedSearchParams?.year
-    ? Number(resolvedSearchParams.year)
-    : undefined
-  const data = await getExternalActualImportsPageData({
-    year,
-    user: resolvedSearchParams?.user,
-    fileName: resolvedSearchParams?.fileName,
-    seatId: resolvedSearchParams?.seatId,
-    team: resolvedSearchParams?.team,
-    importedFrom: resolvedSearchParams?.importedFrom,
-    importedTo: resolvedSearchParams?.importedTo,
-  }, viewer)
+  const nextParams = new URLSearchParams()
 
-  return (
-    <>
-      <ExternalActualsBrowser
-        userName={viewer.name}
-        userEmail={viewer.email}
-        userRole={viewer.role}
-        activeYear={data.activeYear}
-        trackingYears={data.trackingYears}
-        filters={data.filters}
-        filterOptions={data.filterOptions}
-        imports={data.imports}
-        entries={data.entries}
-        totals={data.totals}
-      />
+  Object.entries(resolvedSearchParams ?? {}).forEach(([key, value]) => {
+    appendParam(nextParams, key, value)
+  })
 
-      <form
-        action={async () => {
-          "use server"
-          await signOut({ redirectTo: "/login" })
-        }}
-        className="fixed right-6 bottom-6"
-      >
-        <button
-          type="submit"
-          className="inline-flex h-10 items-center rounded-full border border-border bg-background/90 px-4 text-sm font-medium shadow-sm backdrop-blur transition-colors hover:bg-accent"
-        >
-          Sign out
-        </button>
-      </form>
-    </>
-  )
+  const query = nextParams.toString()
+  redirect(query ? `/actuals?${query}` : "/actuals")
 }
