@@ -4,6 +4,16 @@ import { useState } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { FinanceHeader } from "@/components/finance/header"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import {
   Card,
@@ -14,7 +24,7 @@ import {
 } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { formatCurrency, formatNumber } from "@/lib/finance/format"
+import { formatNumber } from "@/lib/finance/format"
 import type { AppRole } from "@/lib/roles"
 
 type TrackingYearOption = {
@@ -45,15 +55,6 @@ type ExchangeRate = {
   notes: string | null
 }
 
-type CostAssumption = {
-  id: string
-  band: string
-  location: string
-  yearlyCost: number
-  dailyCost: number
-  notes: string | null
-}
-
 type AdminBrowserProps = {
   userName: string
   userEmail: string
@@ -63,7 +64,6 @@ type AdminBrowserProps = {
   statuses: StatusDefinition[]
   departmentMappings: DepartmentMapping[]
   exchangeRates: ExchangeRate[]
-  assumptions: CostAssumption[]
 }
 
 async function fetchJson(input: RequestInfo, init?: RequestInit) {
@@ -102,7 +102,6 @@ export function AdminBrowser({
   statuses,
   departmentMappings,
   exchangeRates,
-  assumptions,
 }: AdminBrowserProps) {
   const router = useRouter()
   const [mappingValues, setMappingValues] = useState({
@@ -111,16 +110,12 @@ export function AdminBrowser({
     subDomain: "",
     notes: "",
   })
+  const [pendingDelete, setPendingDelete] = useState<DepartmentMapping | null>(null)
+  const [isDeletingMapping, setIsDeletingMapping] = useState(false)
   const [fxValues, setFxValues] = useState({
     currency: "EUR" as "DKK" | "EUR" | "USD",
     rateToDkk: "",
     effectiveDate: `${activeYear}-01-01`,
-    notes: "",
-  })
-  const [assumptionValues, setAssumptionValues] = useState({
-    band: "",
-    location: "",
-    yearlyCost: "",
     notes: "",
   })
 
@@ -156,11 +151,49 @@ export function AdminBrowser({
     )
   }
 
+  async function deleteMapping() {
+    if (!pendingDelete) {
+      return
+    }
+
+    setIsDeletingMapping(true)
+
+    try {
+      await fetchJson("/api/department-mappings", {
+        method: "DELETE",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          year: activeYear,
+          id: pendingDelete.id,
+        }),
+      })
+      toast.success("Hierarchy mapping deleted")
+      setPendingDelete(null)
+      setMappingValues((current) =>
+        current.sourceCode === pendingDelete.sourceCode
+          ? {
+              sourceCode: "",
+              domain: "",
+              subDomain: "",
+              notes: "",
+            }
+          : current
+      )
+      router.refresh()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Delete failed")
+    } finally {
+      setIsDeletingMapping(false)
+    }
+  }
+
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(187,108,37,0.16),_transparent_32%),linear-gradient(180deg,_rgba(255,250,243,1)_0%,_rgba(246,240,232,1)_100%)]">
       <FinanceHeader
         title="Admin"
-        subtitle="Maintain tracker configuration, hierarchy mappings, exchange rates, and manual cost assumptions."
+        subtitle="Maintain tracker configuration, hierarchy mappings, and exchange rates."
         userName={userName}
         userEmail={userEmail}
         userRole={userRole}
@@ -169,6 +202,38 @@ export function AdminBrowser({
       />
 
       <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-6 py-8">
+        <AlertDialog
+          open={Boolean(pendingDelete)}
+          onOpenChange={(open) => {
+            if (!open) {
+              setPendingDelete(null)
+            }
+          }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete hierarchy mapping?</AlertDialogTitle>
+              <AlertDialogDescription>
+                {pendingDelete
+                  ? `This will remove the mapping for ${pendingDelete.sourceCode} (${pendingDelete.domain} / ${pendingDelete.subDomain}). This action cannot be undone.`
+                  : "This action cannot be undone."}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={isDeletingMapping}>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                variant="destructive"
+                disabled={isDeletingMapping}
+                onClick={() => {
+                  void deleteMapping()
+                }}
+              >
+                {isDeletingMapping ? "Deleting..." : "Delete"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+
         <Card className="border-amber-200/70 bg-white/90">
           <CardHeader>
             <CardTitle>Year</CardTitle>
@@ -338,20 +403,32 @@ export function AdminBrowser({
                         <TableCell>{mapping.domain}</TableCell>
                         <TableCell>{mapping.subDomain}</TableCell>
                         <TableCell className="text-right">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() =>
-                              setMappingValues({
-                                sourceCode: mapping.sourceCode,
-                                domain: mapping.domain,
-                                subDomain: mapping.subDomain,
-                                notes: mapping.notes || "",
-                              })
-                            }
-                          >
-                            Edit
-                          </Button>
+                          <div className="flex justify-end gap-2">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() =>
+                                setMappingValues({
+                                  sourceCode: mapping.sourceCode,
+                                  domain: mapping.domain,
+                                  subDomain: mapping.subDomain,
+                                  notes: mapping.notes || "",
+                                })
+                              }
+                            >
+                              Edit
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="text-red-600 hover:text-red-700"
+                              onClick={() => {
+                                setPendingDelete(mapping)
+                              }}
+                            >
+                              Delete
+                            </Button>
+                          </div>
                         </TableCell>
                       </TableRow>
                     ))}
@@ -486,136 +563,6 @@ export function AdminBrowser({
                 {!exchangeRates.some((rate) => rate.currency === "DKK") ? (
                   <div className="text-muted-foreground">DKK is treated as 1.00 automatically.</div>
                 ) : null}
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card className="border-amber-200/70 bg-white/90">
-            <CardHeader>
-              <CardTitle>Manual Cost Assumptions</CardTitle>
-              <CardDescription>Internal yearly cost by band and location.</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="space-y-3">
-                <Input
-                  placeholder="Band 5"
-                  value={assumptionValues.band}
-                  onChange={(event) =>
-                    setAssumptionValues((current) => ({
-                      ...current,
-                      band: event.target.value,
-                    }))
-                  }
-                />
-                <Input
-                  placeholder="Denmark"
-                  value={assumptionValues.location}
-                  onChange={(event) =>
-                    setAssumptionValues((current) => ({
-                      ...current,
-                      location: event.target.value,
-                    }))
-                  }
-                />
-                <Input
-                  placeholder="950000"
-                  value={assumptionValues.yearlyCost}
-                  onChange={(event) =>
-                    setAssumptionValues((current) => ({
-                      ...current,
-                      yearlyCost: event.target.value,
-                    }))
-                  }
-                />
-                <Input
-                  placeholder="Optional notes"
-                  value={assumptionValues.notes}
-                  onChange={(event) =>
-                    setAssumptionValues((current) => ({
-                      ...current,
-                      notes: event.target.value,
-                    }))
-                  }
-                />
-                <div className="flex gap-2">
-                  <Button
-                    onClick={() => {
-                      void handleJsonSubmit(
-                        {
-                          year: activeYear,
-                          band: assumptionValues.band,
-                          location: assumptionValues.location,
-                          yearlyCost: Number(assumptionValues.yearlyCost),
-                          notes: assumptionValues.notes,
-                        },
-                        "/api/cost-assumptions",
-                        "Cost assumption saved"
-                      )
-                    }}
-                  >
-                    Save Assumption
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    onClick={() =>
-                      setAssumptionValues({
-                        band: "",
-                        location: "",
-                        yearlyCost: "",
-                        notes: "",
-                      })
-                    }
-                  >
-                    Clear
-                  </Button>
-                </div>
-              </div>
-
-              <div className="max-h-72 overflow-y-auto rounded-xl border">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Band</TableHead>
-                      <TableHead>Location</TableHead>
-                      <TableHead>Yearly Cost</TableHead>
-                      <TableHead>Daily Cost</TableHead>
-                      <TableHead />
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {assumptions.map((assumption) => (
-                      <TableRow key={assumption.id}>
-                        <TableCell>{assumption.band}</TableCell>
-                        <TableCell>{assumption.location}</TableCell>
-                        <TableCell>{formatCurrency(assumption.yearlyCost)}</TableCell>
-                        <TableCell>{formatCurrency(assumption.dailyCost)}</TableCell>
-                        <TableCell className="text-right">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() =>
-                              setAssumptionValues({
-                                band: assumption.band,
-                                location: assumption.location,
-                                yearlyCost: String(assumption.yearlyCost),
-                                notes: assumption.notes || "",
-                              })
-                            }
-                          >
-                            Edit
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                    {assumptions.length === 0 ? (
-                      <TableRow>
-                        <TableCell colSpan={5} className="py-6 text-center text-muted-foreground">
-                          No cost assumptions saved yet.
-                        </TableCell>
-                      </TableRow>
-                    ) : null}
-                  </TableBody>
-                </Table>
               </div>
             </CardContent>
           </Card>

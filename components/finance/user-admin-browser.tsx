@@ -1,6 +1,7 @@
 "use client"
 
 import { useMemo, useState } from "react"
+import { Trash2 } from "lucide-react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { FinanceHeader } from "@/components/finance/header"
@@ -93,6 +94,30 @@ export function UserAdminBrowser({
       ).sort((left, right) => left.localeCompare(right)),
     [scopeOptions]
   )
+  const subDomainOptionsByDomain = useMemo(() => {
+    const options = new Map<string, string[]>()
+
+    for (const scope of scopeOptions) {
+      const domain = scope.domain.trim()
+      const subDomain = scope.subDomain?.trim()
+
+      if (!domain || !subDomain) {
+        continue
+      }
+
+      const current = options.get(domain) ?? []
+      if (!current.includes(subDomain)) {
+        current.push(subDomain)
+      }
+      options.set(domain, current)
+    }
+
+    for (const values of options.values()) {
+      values.sort((left, right) => left.localeCompare(right))
+    }
+
+    return options
+  }, [scopeOptions])
 
   function startCreate() {
     setEditingEmail(null)
@@ -165,6 +190,18 @@ export function UserAdminBrowser({
     }
   }
 
+  function updateScope(
+    index: number,
+    updater: (scope: EditableUser["scopes"][number]) => EditableUser["scopes"][number]
+  ) {
+    setForm((current) => ({
+      ...current,
+      scopes: current.scopes.map((entry, entryIndex) =>
+        entryIndex === index ? updater(entry) : entry
+      ),
+    }))
+  }
+
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(187,108,37,0.16),_transparent_32%),linear-gradient(180deg,_rgba(255,250,243,1)_0%,_rgba(246,240,232,1)_100%)]">
       <FinanceHeader
@@ -178,8 +215,8 @@ export function UserAdminBrowser({
       />
 
       <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-6 py-8">
-        <div className="grid gap-6 lg:grid-cols-[1.05fr_1.35fr]">
-          <Card className="border-amber-200/70 bg-white/90">
+        <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
+          <Card className="w-full border-amber-200/70 bg-white/90 lg:w-[30rem] lg:flex-none">
             <CardHeader>
               <CardTitle>{editingEmail ? "Edit User" : "Add User"}</CardTitle>
               <CardDescription>
@@ -247,7 +284,13 @@ export function UserAdminBrowser({
                     onClick={() =>
                       setForm((current) => ({
                         ...current,
-                        scopes: [...current.scopes, { ...EMPTY_SCOPE }],
+                        scopes: [
+                          ...current.scopes,
+                          {
+                            ...EMPTY_SCOPE,
+                            domain: current.scopes.at(-1)?.domain ?? "",
+                          },
+                        ],
                       }))
                     }
                   >
@@ -259,46 +302,56 @@ export function UserAdminBrowser({
                   <div key={`${index}-${scope.domain}-${scope.subDomain}`} className="grid gap-3 rounded-xl border border-border/70 p-3 md:grid-cols-[1fr_1fr_auto]">
                     <div className="space-y-2">
                       <label className="text-sm font-medium">Domain</label>
-                      <Input
-                        list="domain-options"
+                      <select
                         value={scope.domain}
                         onChange={(event) =>
-                          setForm((current) => ({
-                            ...current,
-                            scopes: current.scopes.map((entry, entryIndex) =>
-                              entryIndex === index
-                                ? { ...entry, domain: event.target.value }
-                                : entry
-                            ),
+                          updateScope(index, (entry) => ({
+                            ...entry,
+                            domain: event.target.value,
+                            subDomain: "",
                           }))
                         }
-                        placeholder="Data & Analytics"
-                      />
+                        className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm"
+                      >
+                        <option value="">Select domain</option>
+                        {domainOptions.map((domain) => (
+                          <option key={domain} value={domain}>
+                            {domain}
+                          </option>
+                        ))}
+                      </select>
                     </div>
 
                     <div className="space-y-2">
                       <label className="text-sm font-medium">Sub-domain</label>
-                      <Input
-                        list="subdomain-options"
+                      <select
                         value={scope.subDomain ?? ""}
                         onChange={(event) =>
-                          setForm((current) => ({
-                            ...current,
-                            scopes: current.scopes.map((entry, entryIndex) =>
-                              entryIndex === index
-                                ? { ...entry, subDomain: event.target.value }
-                                : entry
-                            ),
+                          updateScope(index, (entry) => ({
+                            ...entry,
+                            subDomain: event.target.value,
                           }))
                         }
-                        placeholder="Architecture"
-                      />
+                        disabled={!scope.domain}
+                        className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        <option value="">
+                          {scope.domain ? "All sub-domains" : "Select domain first"}
+                        </option>
+                        {(subDomainOptionsByDomain.get(scope.domain) ?? []).map((subDomain) => (
+                          <option key={`${scope.domain}-${subDomain}`} value={subDomain}>
+                            {subDomain}
+                          </option>
+                        ))}
+                      </select>
                     </div>
 
                     <div className="flex items-end">
                       <Button
                         type="button"
                         variant="ghost"
+                        size="icon-sm"
+                        className="text-red-600 hover:text-red-700"
                         onClick={() =>
                           setForm((current) => ({
                             ...current,
@@ -308,27 +361,15 @@ export function UserAdminBrowser({
                                 : current.scopes.filter((_, entryIndex) => entryIndex !== index),
                           }))
                         }
+                        aria-label={`Remove scope ${index + 1}`}
+                        title="Remove scope"
                       >
-                        Remove
+                        <Trash2 />
                       </Button>
                     </div>
                   </div>
                 ))}
               </div>
-
-              <datalist id="domain-options">
-                {domainOptions.map((domain) => (
-                  <option key={domain} value={domain} />
-                ))}
-              </datalist>
-              <datalist id="subdomain-options">
-                {scopeOptions
-                  .map((scope) => scope.subDomain)
-                  .filter((value): value is string => Boolean(value))
-                  .map((subDomain) => (
-                    <option key={subDomain} value={subDomain} />
-                  ))}
-              </datalist>
 
               <div className="flex gap-3">
                 <Button type="button" onClick={saveUser}>
@@ -341,7 +382,7 @@ export function UserAdminBrowser({
             </CardContent>
           </Card>
 
-          <Card className="border-amber-200/70 bg-white/90">
+          <Card className="min-w-0 flex-1 border-amber-200/70 bg-white/90">
             <CardHeader>
               <CardTitle>Assigned Users</CardTitle>
               <CardDescription>
@@ -354,7 +395,7 @@ export function UserAdminBrowser({
                   <TableRow>
                     <TableHead>User</TableHead>
                     <TableHead>Role</TableHead>
-                    <TableHead>Scopes</TableHead>
+                    <TableHead className="w-[34%]">Scopes</TableHead>
                     <TableHead className="text-right">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -366,7 +407,7 @@ export function UserAdminBrowser({
                         <div className="text-xs text-muted-foreground">{user.email}</div>
                       </TableCell>
                       <TableCell className="capitalize">{roleLabel(user.role)}</TableCell>
-                      <TableCell className="text-sm text-muted-foreground">
+                      <TableCell className="max-w-0 whitespace-normal break-words text-sm text-muted-foreground">
                         {user.scopes.length > 0
                           ? user.scopes
                               .map((scope) =>
@@ -385,9 +426,13 @@ export function UserAdminBrowser({
                           <Button
                             type="button"
                             variant="ghost"
+                            size="icon-sm"
+                            className="text-red-600 hover:text-red-700"
                             onClick={() => removeUser(user.email)}
+                            aria-label={`Remove ${user.email}`}
+                            title="Remove user"
                           >
-                            Remove
+                            <Trash2 />
                           </Button>
                         </div>
                       </TableCell>

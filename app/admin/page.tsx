@@ -28,7 +28,6 @@ export default async function AdminPage({ searchParams }: PageProps) {
         statuses={data.statuses}
         departmentMappings={data.departmentMappings}
         exchangeRates={data.exchangeRates}
-        assumptions={data.assumptions}
       />
 
       <form

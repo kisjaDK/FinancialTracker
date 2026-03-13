@@ -1533,9 +1533,8 @@ export async function getAdminPageData(year?: number) {
     trackingYears.at(-1)?.year ??
     new Date().getFullYear()
 
-  const [statuses, assumptions, exchangeRates, departmentMappings] = await Promise.all([
+  const [statuses, exchangeRates, departmentMappings] = await Promise.all([
     ensureStatusDefinitions(activeYear),
-    getInternalCostsPageData(activeYear).then((data) => data.assumptions),
     getLatestExchangeRates(activeYear),
     getDepartmentMappings(activeYear),
   ])
@@ -1544,7 +1543,6 @@ export async function getAdminPageData(year?: number) {
     activeYear,
     trackingYears,
     statuses,
-    assumptions,
     exchangeRates,
     departmentMappings,
   }
@@ -2499,6 +2497,55 @@ export async function upsertDepartmentMapping(input: {
   })
 
   return mapping
+}
+
+export async function deleteDepartmentMapping(input: {
+  year: number
+  id: string
+}, actor?: AuditActor) {
+  ensureValidYear(input.year)
+  const trackingYear = await getOrCreateTrackingYear(input.year)
+  const before = await prisma.departmentMapping.findFirstOrThrow({
+    where: {
+      id: input.id,
+      trackingYearId: trackingYear.id,
+      codeType: "DEPARTMENT_CODE",
+    },
+  })
+
+  await prisma.$transaction(async (transaction) => {
+    await transaction.departmentMapping.delete({
+      where: { id: before.id },
+    })
+
+    await transaction.budgetArea.updateMany({
+      where: {
+        trackingYearId: trackingYear.id,
+        costCenter: before.sourceCode,
+      },
+      data: {
+        domain: null,
+        subDomain: null,
+      },
+    })
+  })
+
+  await deriveTrackerSeatsForYear(input.year)
+  await writeAuditLog({
+    trackingYearId: trackingYear.id,
+    entityType: "DepartmentMapping",
+    entityId: before.id,
+    action: "DELETE",
+    actor,
+    changes: buildAuditChanges(before, null, [
+      "sourceCode",
+      "domain",
+      "subDomain",
+      "notes",
+    ]),
+  })
+
+  return before
 }
 
 export async function updateTrackerSeat(
