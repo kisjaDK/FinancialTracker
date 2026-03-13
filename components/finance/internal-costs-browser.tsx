@@ -34,6 +34,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { serializeCsv } from "@/lib/finance/csv"
 import { formatCurrency } from "@/lib/finance/format"
 import type { AppRole } from "@/lib/roles"
 
@@ -83,6 +84,7 @@ export function InternalCostsBrowser({
 }: InternalCostsBrowserProps) {
   const router = useRouter()
   const messageRef = useRef<HTMLTextAreaElement | null>(null)
+  const importRef = useRef<HTMLInputElement | null>(null)
   const [values, setValues] = useState({
     band: "",
     location: "",
@@ -184,6 +186,38 @@ export function InternalCostsBrowser({
     }
   }
 
+  function downloadCsv(fileName: string, content: string) {
+    const blob = new Blob([content], { type: "text/csv;charset=utf-8;" })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement("a")
+    link.href = url
+    link.download = fileName
+    link.click()
+    URL.revokeObjectURL(url)
+  }
+
+  async function importInternalCosts(file: File) {
+    const formData = new FormData()
+    formData.append("year", String(activeYear))
+    formData.append("file", file)
+
+    try {
+      const body = await fetchJson("/api/imports/internal-costs", {
+        method: "POST",
+        body: formData,
+      })
+      toast.success(
+        `${body.importedCount} internal cost row${body.importedCount === 1 ? "" : "s"} imported`
+      )
+      if (importRef.current) {
+        importRef.current.value = ""
+      }
+      router.refresh()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Import failed")
+    }
+  }
+
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(187,108,37,0.16),_transparent_32%),linear-gradient(180deg,_rgba(255,250,243,1)_0%,_rgba(246,240,232,1)_100%)]">
       <FinanceHeader
@@ -258,6 +292,48 @@ export function InternalCostsBrowser({
                     </option>
                   ))}
                 </select>
+              </div>
+
+              <div className="rounded-xl border border-dashed border-border p-4">
+                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <p className="text-sm font-medium">CSV Import / Export</p>
+                    <p className="text-xs text-muted-foreground">
+                      Import `Location`, `Band`, and `Yearly Cost (DKK)`.
+                    </p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    onClick={() =>
+                      downloadCsv(
+                        `internal-costs-${activeYear}.csv`,
+                        serializeCsv(
+                          assumptions.map((assumption) => ({
+                            Location: assumption.location,
+                            Band: assumption.band,
+                            "Yearly Cost (DKK)": assumption.yearlyCost,
+                          })),
+                          ["Location", "Band", "Yearly Cost (DKK)"]
+                        )
+                      )
+                    }
+                  >
+                    Export CSV
+                  </Button>
+                </div>
+                <div className="mt-3">
+                  <Input
+                    ref={importRef}
+                    type="file"
+                    accept=".csv,text/csv"
+                    onChange={(event) => {
+                      const file = event.target.files?.[0]
+                      if (file) {
+                        void importInternalCosts(file)
+                      }
+                    }}
+                  />
+                </div>
               </div>
 
               <div className="grid gap-3 md:grid-cols-2">

@@ -2839,6 +2839,246 @@ export async function deleteDepartmentMapping(input: {
   return before
 }
 
+export type ResettableTrackingYearDataset =
+  | "people-roster"
+  | "forecasts"
+  | "actuals"
+  | "budget-movements"
+  | "internal-costs"
+
+export async function resetTrackingYearDataset(
+  input: {
+    year: number
+    dataset: ResettableTrackingYearDataset
+  },
+  actor?: AuditActor
+) {
+  ensureValidYear(input.year)
+  const trackingYear = await getOrCreateTrackingYear(input.year)
+
+  if (input.dataset === "people-roster") {
+    const [rosterImportCount, rosterSeatCount] = await Promise.all([
+      prisma.rosterImport.count({
+        where: { trackingYearId: trackingYear.id },
+      }),
+      prisma.trackerSeat.count({
+        where: {
+          trackingYearId: trackingYear.id,
+          sourceType: "ROSTER",
+        },
+      }),
+    ])
+
+    await prisma.$transaction(async (transaction) => {
+      await transaction.rosterImport.deleteMany({
+        where: { trackingYearId: trackingYear.id },
+      })
+      await transaction.trackerSeat.deleteMany({
+        where: {
+          trackingYearId: trackingYear.id,
+          sourceType: "ROSTER",
+        },
+      })
+    })
+
+    await writeAuditLog({
+      trackingYearId: trackingYear.id,
+      entityType: "TrackingYearReset",
+      entityId: trackingYear.id,
+      action: "RESET",
+      actor,
+      changes: [
+        {
+          field: "peopleRoster",
+          oldValue: JSON.stringify({
+            rosterImportCount,
+            rosterSeatCount,
+          }),
+          newValue: JSON.stringify({ rosterImportCount: 0, rosterSeatCount: 0 }),
+        },
+      ],
+    })
+
+    return { dataset: input.dataset, deletedCount: rosterImportCount + rosterSeatCount }
+  }
+
+  if (input.dataset === "budget-movements") {
+    const [batchCount, movementCount] = await Promise.all([
+      prisma.budgetMovementBatch.count({
+        where: { trackingYearId: trackingYear.id },
+      }),
+      prisma.budgetMovement.count({
+        where: { trackingYearId: trackingYear.id },
+      }),
+    ])
+
+    await prisma.budgetMovementBatch.deleteMany({
+      where: { trackingYearId: trackingYear.id },
+    })
+
+    await writeAuditLog({
+      trackingYearId: trackingYear.id,
+      entityType: "TrackingYearReset",
+      entityId: trackingYear.id,
+      action: "RESET",
+      actor,
+      changes: [
+        {
+          field: "budgetMovements",
+          oldValue: JSON.stringify({
+            batchCount,
+            movementCount,
+          }),
+          newValue: JSON.stringify({ batchCount: 0, movementCount: 0 }),
+        },
+      ],
+    })
+
+    return { dataset: input.dataset, deletedCount: batchCount + movementCount }
+  }
+
+  if (input.dataset === "internal-costs") {
+    const costCount = await prisma.costAssumption.count({
+      where: { trackingYearId: trackingYear.id },
+    })
+
+    await prisma.costAssumption.deleteMany({
+      where: { trackingYearId: trackingYear.id },
+    })
+
+    await writeAuditLog({
+      trackingYearId: trackingYear.id,
+      entityType: "TrackingYearReset",
+      entityId: trackingYear.id,
+      action: "RESET",
+      actor,
+      changes: [
+        {
+          field: "internalCosts",
+          oldValue: JSON.stringify({ costCount }),
+          newValue: JSON.stringify({ costCount: 0 }),
+        },
+      ],
+    })
+
+    return { dataset: input.dataset, deletedCount: costCount }
+  }
+
+  const seatIds = (
+    await prisma.trackerSeat.findMany({
+      where: { trackingYearId: trackingYear.id },
+      select: { id: true },
+    })
+  ).map((seat) => seat.id)
+
+  if (input.dataset === "forecasts") {
+    const updatedCount = await prisma.seatMonth.updateMany({
+      where: {
+        trackerSeatId: { in: seatIds },
+        OR: [
+          { forecastOverrideAmount: { not: null } },
+          { forecastIncluded: false },
+        ],
+      },
+      data: {
+        forecastOverrideAmount: null,
+        forecastIncluded: true,
+      },
+    })
+
+    await writeAuditLog({
+      trackingYearId: trackingYear.id,
+      entityType: "TrackingYearReset",
+      entityId: trackingYear.id,
+      action: "RESET",
+      actor,
+      changes: [
+        {
+          field: "forecasts",
+          oldValue: JSON.stringify({ updatedSeatMonths: updatedCount.count }),
+          newValue: JSON.stringify({ updatedSeatMonths: 0 }),
+        },
+      ],
+    })
+
+    return { dataset: input.dataset, deletedCount: updatedCount.count }
+  }
+
+  if (input.dataset === "actuals") {
+    const [importCount, entryCount, monthCount] = await Promise.all([
+      prisma.externalActualImport.count({
+        where: { trackingYearId: trackingYear.id },
+      }),
+      prisma.externalActualEntry.count({
+        where: { trackingYearId: trackingYear.id },
+      }),
+      prisma.seatMonth.count({
+        where: {
+          trackerSeatId: { in: seatIds },
+          OR: [
+            { actualAmountRaw: { not: null } },
+            { actualAmount: { not: 0 } },
+            { exchangeRateUsed: { not: null } },
+            { notes: { not: null } },
+          ],
+        },
+      }),
+    ])
+
+    await prisma.$transaction(async (transaction) => {
+      await transaction.externalActualImport.deleteMany({
+        where: { trackingYearId: trackingYear.id },
+      })
+      await transaction.seatMonth.updateMany({
+        where: {
+          trackerSeatId: { in: seatIds },
+          OR: [
+            { actualAmountRaw: { not: null } },
+            { actualAmount: { not: 0 } },
+            { exchangeRateUsed: { not: null } },
+            { notes: { not: null } },
+          ],
+        },
+        data: {
+          actualAmount: 0,
+          actualAmountRaw: null,
+          actualCurrency: "DKK",
+          exchangeRateUsed: null,
+          forecastIncluded: true,
+          notes: null,
+        },
+      })
+    })
+
+    await writeAuditLog({
+      trackingYearId: trackingYear.id,
+      entityType: "TrackingYearReset",
+      entityId: trackingYear.id,
+      action: "RESET",
+      actor,
+      changes: [
+        {
+          field: "actuals",
+          oldValue: JSON.stringify({
+            importCount,
+            entryCount,
+            updatedSeatMonths: monthCount,
+          }),
+          newValue: JSON.stringify({
+            importCount: 0,
+            entryCount: 0,
+            updatedSeatMonths: 0,
+          }),
+        },
+      ],
+    })
+
+    return { dataset: input.dataset, deletedCount: importCount + entryCount + monthCount }
+  }
+
+  throw new Error("Unsupported dataset.")
+}
+
 export async function updateTrackerSeat(
   seatId: string,
   payload: {

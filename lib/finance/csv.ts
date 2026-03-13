@@ -78,3 +78,25 @@ export function parseCsv(content: string) {
     }, {})
   })
 }
+
+function escapeCsvValue(value: string | number | null | undefined) {
+  const normalized = value === null || value === undefined ? "" : String(value)
+
+  if (/[",\n]/.test(normalized)) {
+    return `"${normalized.replaceAll('"', '""')}"`
+  }
+
+  return normalized
+}
+
+export function serializeCsv(
+  rows: Array<Record<string, string | number | null | undefined>>,
+  headers: string[]
+) {
+  const headerLine = headers.map((header) => escapeCsvValue(header)).join(",")
+  const dataLines = rows.map((row) =>
+    headers.map((header) => escapeCsvValue(row[header])).join(",")
+  )
+
+  return [headerLine, ...dataLines].join("\n")
+}

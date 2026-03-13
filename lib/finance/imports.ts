@@ -75,6 +75,17 @@ function rosterHeaderValue(row: Record<string, string>, ...headers: string[]) {
   return ""
 }
 
+function csvHeaderValue(row: Record<string, string>, ...headers: string[]) {
+  for (const header of headers) {
+    const value = row[header]
+    if (value !== undefined) {
+      return value
+    }
+  }
+
+  return ""
+}
+
 function normalizeValue(value: string | null | undefined) {
   return value?.trim().toLowerCase() ?? ""
 }
@@ -87,6 +98,17 @@ function normalizeSubDomainLabel(value: string | null | undefined) {
 
   return normalizeValue(trimmed) === "engineering"
     ? "Architecture & Engineering"
+    : trimmed
+}
+
+function normalizeCostBandLabel(value: string | null | undefined) {
+  const trimmed = value?.trim()
+  if (!trimmed) {
+    return ""
+  }
+
+  return normalizeValue(trimmed).startsWith("band ")
+    ? trimmed.slice(5).trim()
     : trimmed
 }
 
@@ -537,6 +559,271 @@ export async function importBudgetMovementsCsv(
   })
 
   return batch
+}
+
+export async function importDepartmentMappingsCsv(
+  year: number,
+  content: string,
+  actor?: AuditActor
+) {
+  const rows = parseCsv(content)
+  if (rows.length === 0) {
+    throw new Error("Hierarchy mapping file is empty.")
+  }
+
+  requireAnyHeader(rows, [
+    {
+      label: "Department code",
+      headers: ["Department Code", "Source Code", "sourceCode"],
+    },
+    { label: "Domain", headers: ["Domain", "domain"] },
+    { label: "Sub-domain", headers: ["Sub-domain", "SubDomain", "subDomain"] },
+  ])
+
+  const trackingYear = await getOrCreateTrackingYear(year)
+  const normalizedRows = rows
+    .map((row) => ({
+      sourceCode: csvHeaderValue(row, "Department Code", "Source Code", "sourceCode").trim(),
+      domain: csvHeaderValue(row, "Domain", "domain").trim(),
+      subDomain: csvHeaderValue(row, "Sub-domain", "SubDomain", "subDomain").trim(),
+      notes: csvHeaderValue(row, "Notes", "notes").trim(),
+    }))
+    .filter(
+      (row) => row.sourceCode.length > 0 || row.domain.length > 0 || row.subDomain.length > 0
+    )
+
+  if (normalizedRows.length === 0) {
+    throw new Error("Hierarchy mapping file does not contain any importable rows.")
+  }
+
+  for (const row of normalizedRows) {
+    if (!row.sourceCode || !row.domain || !row.subDomain) {
+      throw new Error(
+        `Hierarchy mapping rows must include department code, domain, and sub-domain for ${row.sourceCode || "every row"}.`
+      )
+    }
+  }
+
+  const uniqueRows = Array.from(
+    new Map(normalizedRows.map((row) => [normalizeValue(row.sourceCode), row])).values()
+  )
+  const existingMappings = await prisma.departmentMapping.findMany({
+    where: {
+      trackingYearId: trackingYear.id,
+      codeType: "DEPARTMENT_CODE",
+      sourceCode: { in: uniqueRows.map((row) => row.sourceCode) },
+    },
+  })
+  const existingBySourceCode = new Map(
+    existingMappings.map((mapping) => [normalizeValue(mapping.sourceCode), mapping])
+  )
+
+  await prisma.$transaction(
+    uniqueRows.map((row) =>
+      prisma.departmentMapping.upsert({
+        where: {
+          trackingYearId_codeType_sourceCode: {
+            trackingYearId: trackingYear.id,
+            codeType: "DEPARTMENT_CODE",
+            sourceCode: row.sourceCode,
+          },
+        },
+        update: {
+          domain: row.domain,
+          subDomain: row.subDomain,
+          notes: row.notes || null,
+        },
+        create: {
+          trackingYearId: trackingYear.id,
+          codeType: "DEPARTMENT_CODE",
+          sourceCode: row.sourceCode,
+          domain: row.domain,
+          subDomain: row.subDomain,
+          notes: row.notes || null,
+        },
+      })
+    )
+  )
+
+  await prisma.$transaction(
+    uniqueRows.map((row) =>
+      prisma.budgetArea.updateMany({
+        where: {
+          trackingYearId: trackingYear.id,
+          costCenter: row.sourceCode,
+        },
+        data: {
+          domain: row.domain,
+          subDomain: row.subDomain,
+        },
+      })
+    )
+  )
+
+  await deriveTrackerSeatsForYear(year)
+
+  await Promise.all(
+    uniqueRows.map((row) => {
+      const before = existingBySourceCode.get(normalizeValue(row.sourceCode))
+
+      return writeAuditLog({
+        trackingYearId: trackingYear.id,
+        entityType: "DepartmentMapping",
+        entityId: before?.id ?? null,
+        action: before ? "UPDATE" : "CREATE",
+        actor,
+        changes: [
+          {
+            field: "sourceCode",
+            oldValue: before?.sourceCode ?? null,
+            newValue: row.sourceCode,
+          },
+          {
+            field: "domain",
+            oldValue: before?.domain ?? null,
+            newValue: row.domain,
+          },
+          {
+            field: "subDomain",
+            oldValue: before?.subDomain ?? null,
+            newValue: row.subDomain,
+          },
+          {
+            field: "notes",
+            oldValue: before?.notes ?? null,
+            newValue: row.notes || null,
+          },
+        ],
+      })
+    })
+  )
+
+  return { importedCount: uniqueRows.length }
+}
+
+export async function importCostAssumptionsCsv(
+  year: number,
+  content: string,
+  actor?: AuditActor
+) {
+  const rows = parseCsv(content)
+  if (rows.length === 0) {
+    throw new Error("Internal cost file is empty.")
+  }
+
+  requireAnyHeader(rows, [
+    { label: "Location", headers: ["Location", "location"] },
+    { label: "Band", headers: ["Band", "band"] },
+    {
+      label: "Yearly cost",
+      headers: ["Yearly Cost (DKK)", "Yearly Cost", "yearlyCost"],
+    },
+  ])
+
+  const trackingYear = await getOrCreateTrackingYear(year)
+  const normalizedRows = rows
+    .map((row) => ({
+      location: csvHeaderValue(row, "Location", "location").trim(),
+      band: normalizeCostBandLabel(csvHeaderValue(row, "Band", "band")),
+      yearlyCost: parseNumber(
+        csvHeaderValue(row, "Yearly Cost (DKK)", "Yearly Cost", "yearlyCost")
+      ),
+    }))
+    .filter((row) => row.location.length > 0 || row.band.length > 0 || row.yearlyCost !== null)
+
+  if (normalizedRows.length === 0) {
+    throw new Error("Internal cost file does not contain any importable rows.")
+  }
+
+  for (const row of normalizedRows) {
+    if (!row.location || !row.band || row.yearlyCost === null) {
+      throw new Error(
+        `Internal cost rows must include location, band, and yearly cost for ${row.location || row.band || "every row"}.`
+      )
+    }
+  }
+
+  const uniqueRows = Array.from(
+    new Map(
+      normalizedRows.map((row) => [
+        `${normalizeValue(row.location)}:${normalizeValue(row.band)}`,
+        row,
+      ])
+    ).values()
+  )
+  const existingAssumptions = await prisma.costAssumption.findMany({
+    where: {
+      trackingYearId: trackingYear.id,
+      OR: uniqueRows.map((row) => ({
+        location: row.location,
+        band: row.band,
+      })),
+    },
+  })
+  const existingByKey = new Map(
+    existingAssumptions.map((assumption) => [
+      `${normalizeValue(assumption.location)}:${normalizeValue(assumption.band)}`,
+      assumption,
+    ])
+  )
+
+  await prisma.$transaction(
+    uniqueRows.map((row) =>
+      prisma.costAssumption.upsert({
+        where: {
+          trackingYearId_band_location: {
+            trackingYearId: trackingYear.id,
+            band: row.band,
+            location: row.location,
+          },
+        },
+        update: {
+          yearlyCost: row.yearlyCost!,
+        },
+        create: {
+          trackingYearId: trackingYear.id,
+          band: row.band,
+          location: row.location,
+          yearlyCost: row.yearlyCost!,
+        },
+      })
+    )
+  )
+
+  await Promise.all(
+    uniqueRows.map((row) => {
+      const before = existingByKey.get(
+        `${normalizeValue(row.location)}:${normalizeValue(row.band)}`
+      )
+
+      return writeAuditLog({
+        trackingYearId: trackingYear.id,
+        entityType: "CostAssumption",
+        entityId: before?.id ?? null,
+        action: before ? "UPDATE" : "CREATE",
+        actor,
+        changes: [
+          {
+            field: "location",
+            oldValue: before?.location ?? null,
+            newValue: row.location,
+          },
+          {
+            field: "band",
+            oldValue: before?.band ?? null,
+            newValue: row.band,
+          },
+          {
+            field: "yearlyCost",
+            oldValue: before?.yearlyCost ?? null,
+            newValue: row.yearlyCost!,
+          },
+        ],
+      })
+    })
+  )
+
+  return { importedCount: uniqueRows.length }
 }
 
 export async function importExternalActualsCsv(

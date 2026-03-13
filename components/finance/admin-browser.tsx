@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { FinanceHeader } from "@/components/finance/header"
@@ -23,6 +23,7 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
+import { serializeCsv } from "@/lib/finance/csv"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { formatNumber } from "@/lib/finance/format"
 import type { AppRole } from "@/lib/roles"
@@ -54,6 +55,13 @@ type ExchangeRate = {
   effectiveDate: Date
   notes: string | null
 }
+
+type ResetDataset =
+  | "people-roster"
+  | "forecasts"
+  | "actuals"
+  | "budget-movements"
+  | "internal-costs"
 
 type AdminBrowserProps = {
   userName: string
@@ -104,6 +112,7 @@ export function AdminBrowser({
   exchangeRates,
 }: AdminBrowserProps) {
   const router = useRouter()
+  const mappingImportRef = useRef<HTMLInputElement | null>(null)
   const [mappingValues, setMappingValues] = useState({
     sourceCode: "",
     domain: "",
@@ -112,6 +121,8 @@ export function AdminBrowser({
   })
   const [pendingDelete, setPendingDelete] = useState<DepartmentMapping | null>(null)
   const [isDeletingMapping, setIsDeletingMapping] = useState(false)
+  const [pendingReset, setPendingReset] = useState<ResetDataset | null>(null)
+  const [isResetting, setIsResetting] = useState(false)
   const [fxValues, setFxValues] = useState({
     currency: "EUR" as "DKK" | "EUR" | "USD",
     rateToDkk: "",
@@ -189,6 +200,62 @@ export function AdminBrowser({
     }
   }
 
+  function downloadCsv(fileName: string, content: string) {
+    const blob = new Blob([content], { type: "text/csv;charset=utf-8;" })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement("a")
+    link.href = url
+    link.download = fileName
+    link.click()
+    URL.revokeObjectURL(url)
+  }
+
+  async function importMappings(file: File) {
+    const formData = new FormData()
+    formData.append("year", String(activeYear))
+    formData.append("file", file)
+
+    try {
+      const body = await fetchJson("/api/imports/department-mappings", {
+        method: "POST",
+        body: formData,
+      })
+      toast.success(
+        `${body.importedCount} hierarchy mapping row${body.importedCount === 1 ? "" : "s"} imported`
+      )
+      if (mappingImportRef.current) {
+        mappingImportRef.current.value = ""
+      }
+      router.refresh()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Import failed")
+    }
+  }
+
+  async function resetDataset(dataset: ResetDataset) {
+    setIsResetting(true)
+
+    try {
+      await fetchJson("/api/admin/year-reset", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          year: activeYear,
+          dataset,
+        }),
+      })
+      toast.success("Year data reset")
+      setPendingReset(null)
+      router.refresh()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Reset failed")
+    } finally {
+      setIsResetting(false)
+    }
+  }
+
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(187,108,37,0.16),_transparent_32%),linear-gradient(180deg,_rgba(255,250,243,1)_0%,_rgba(246,240,232,1)_100%)]">
       <FinanceHeader
@@ -234,6 +301,40 @@ export function AdminBrowser({
           </AlertDialogContent>
         </AlertDialog>
 
+        <AlertDialog
+          open={Boolean(pendingReset)}
+          onOpenChange={(open) => {
+            if (!open) {
+              setPendingReset(null)
+            }
+          }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Reset year data?</AlertDialogTitle>
+              <AlertDialogDescription>
+                {pendingReset
+                  ? `This will permanently clear ${pendingReset.replaceAll("-", " ")} for ${activeYear}.`
+                  : "This action cannot be undone."}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={isResetting}>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                variant="destructive"
+                disabled={isResetting}
+                onClick={() => {
+                  if (pendingReset) {
+                    void resetDataset(pendingReset)
+                  }
+                }}
+              >
+                {isResetting ? "Resetting..." : "Reset"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+
         <Card className="border-amber-200/70 bg-white/90">
           <CardHeader>
             <CardTitle>Year</CardTitle>
@@ -254,6 +355,33 @@ export function AdminBrowser({
                 </option>
               ))}
             </select>
+          </CardContent>
+        </Card>
+
+        <Card className="border-amber-200/70 bg-white/90">
+          <CardHeader>
+            <CardTitle>Reset Year Data</CardTitle>
+            <CardDescription>
+              Clear one year-scoped dataset at a time without touching service messages.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+            {[
+              { key: "people-roster", label: "Reset People Roster" },
+              { key: "forecasts", label: "Reset Forecasts" },
+              { key: "actuals", label: "Reset Actuals" },
+              { key: "budget-movements", label: "Reset Budget Movements" },
+              { key: "internal-costs", label: "Reset Internal Costs" },
+            ].map((item) => (
+              <Button
+                key={item.key}
+                variant="outline"
+                className="justify-start"
+                onClick={() => setPendingReset(item.key as ResetDataset)}
+              >
+                {item.label}
+              </Button>
+            ))}
           </CardContent>
         </Card>
 
@@ -311,6 +439,49 @@ export function AdminBrowser({
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="grid gap-3">
+                <div className="rounded-xl border border-dashed border-border p-4">
+                  <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                    <div>
+                      <p className="text-sm font-medium">CSV Import / Export</p>
+                      <p className="text-xs text-muted-foreground">
+                        Import `Department Code`, `Domain`, `Sub-domain`, and optional `Notes`.
+                      </p>
+                    </div>
+                    <Button
+                      variant="outline"
+                      onClick={() =>
+                        downloadCsv(
+                          `hierarchy-mappings-${activeYear}.csv`,
+                          serializeCsv(
+                            departmentMappings.map((mapping) => ({
+                              "Department Code": mapping.sourceCode,
+                              Domain: mapping.domain,
+                              "Sub-domain": mapping.subDomain,
+                              Notes: mapping.notes ?? "",
+                            })),
+                            ["Department Code", "Domain", "Sub-domain", "Notes"]
+                          )
+                        )
+                      }
+                    >
+                      Export CSV
+                    </Button>
+                  </div>
+                  <div className="mt-3 flex flex-col gap-2 md:flex-row">
+                    <Input
+                      ref={mappingImportRef}
+                      type="file"
+                      accept=".csv,text/csv"
+                      onChange={(event) => {
+                        const file = event.target.files?.[0]
+                        if (file) {
+                          void importMappings(file)
+                        }
+                      }}
+                    />
+                  </div>
+                </div>
+
                 <Input
                   placeholder="Department code, e.g. D6861"
                   value={mappingValues.sourceCode}
