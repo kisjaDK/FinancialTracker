@@ -69,6 +69,7 @@ export type DepartmentMappingView = {
   sourceCode: string
   domain: string
   subDomain: string
+  projectCode: string
   notes: string | null
 }
 
@@ -142,6 +143,7 @@ export type PeopleRosterView = {
   seatId: string
   departmentCode: string | null
   domain: string | null
+  projectCode: string | null
   name: string | null
   email: string | null
   team: string | null

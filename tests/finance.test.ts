@@ -104,6 +104,7 @@ test("deriveSeatMetrics uses internal cost assumptions", () => {
       actualAmountRaw: monthIndex === 0 ? 100000 : null,
       actualCurrency: "DKK",
       exchangeRateUsed: monthIndex === 0 ? 1 : null,
+      forecastOverrideAmount: null,
       forecastIncluded: monthIndex > 0,
       notes: null,
       createdAt: new Date(),

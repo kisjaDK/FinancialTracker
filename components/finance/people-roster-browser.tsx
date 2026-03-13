@@ -423,6 +423,7 @@ export function PeopleRosterBrowser({
                   <TableHead>Seat</TableHead>
                   <TableHead>Person</TableHead>
                   <TableHead>Hierarchy</TableHead>
+                  <TableHead>Project Code</TableHead>
                   <TableHead>Vendor</TableHead>
                   <TableHead>Location</TableHead>
                   <TableHead>Role</TableHead>
@@ -456,6 +457,7 @@ export function PeopleRosterBrowser({
                         Mapped: {person.mappedSubDomain || "No mapping"}
                       </div>
                     </TableCell>
+                    <TableCell>{person.projectCode || "No project code"}</TableCell>
                     <TableCell>
                       <div>{person.vendor || "No vendor"}</div>
                       {person.dailyRate && person.dailyRate > 0 ? (

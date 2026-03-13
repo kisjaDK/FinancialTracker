@@ -3,11 +3,20 @@
 import Link from "next/link"
 import { useMemo, useState, useTransition } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
+import { Check, ChevronsUpDown } from "lucide-react"
 import { toast } from "sonner"
 import { FinanceHeader } from "@/components/finance/header"
 import { MultiSelectFilter } from "@/components/finance/multi-select-filter"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command"
 import {
   Card,
   CardContent,
@@ -17,6 +26,7 @@ import {
 } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import {
   Table,
   TableBody,
@@ -27,6 +37,7 @@ import {
 } from "@/components/ui/table"
 import { formatCurrency, formatNumber, formatPercent } from "@/lib/finance/format"
 import { MONTH_NAMES } from "@/lib/finance/constants"
+import { cn } from "@/lib/utils"
 import type { AppRole } from "@/lib/roles"
 
 type TrackingYearOption = {
@@ -77,6 +88,7 @@ type SeatRow = {
   seatId: string
   domain: string | null
   subDomain: string | null
+  projectCode: string | null
   team: string | null
   inSeat: string | null
   resourceType: string | null
@@ -178,6 +190,15 @@ function formatForecastCoverage(seat: SeatRow) {
   return `${firstMonth}-${lastMonth} (${coveredMonths.length})`
 }
 
+function isCodeLikeAreaLabel(value: string | null | undefined) {
+  const trimmed = value?.trim()
+  if (!trimmed) {
+    return false
+  }
+
+  return /^[A-Z]\d+\s*·\s*[A-Z]\d+$/i.test(trimmed)
+}
+
 function sumQuarter(values: number[], quarterIndex: number) {
   const start = quarterIndex * 3
   return values.slice(start, start + 3).reduce((sum, value) => sum + value, 0)
@@ -222,8 +243,9 @@ export function FinanceWorkspace({
   const [selectedSeatId, setSelectedSeatId] = useState(seats[0]?.id ?? "")
   const [showSpentQuarterly, setShowSpentQuarterly] = useState(false)
   const [showForecastQuarterly, setShowForecastQuarterly] = useState(false)
+  const [pillarPickerOpen, setPillarPickerOpen] = useState(false)
   const [overrideValues, setOverrideValues] = useState({
-    budgetAreaId: selectedAreaId ?? "",
+    budgetAreaId: "",
     spendPlanId: "",
     ritm: "",
     sow: "",
@@ -302,6 +324,42 @@ export function FinanceWorkspace({
   }, [activeSeatSortDirection, activeSeatSortField, seats])
 
   const selectedSeat = sortedSeats.find((seat) => seat.id === selectedSeatId) ?? sortedSeats[0]
+  const pillarOptions = useMemo(
+    () =>
+      budgetAreas
+        .map((area) => ({
+          id: area.id,
+          label:
+            area.pillar ||
+            area.subDomain ||
+            (!isCodeLikeAreaLabel(area.displayName) ? area.displayName : null) ||
+            area.domain ||
+            "Unnamed pillar",
+          detail: [area.projectCode, area.costCenter].filter(Boolean).join(" · "),
+          area,
+        }))
+        .sort((left, right) => left.label.localeCompare(right.label)),
+    [budgetAreas]
+  )
+  const selectedOverrideArea =
+    pillarOptions.find((option) => option.id === overrideValues.budgetAreaId)?.area ?? null
+
+  function resetOverrideValues() {
+    setOverrideValues({
+      budgetAreaId: "",
+      spendPlanId: "",
+      ritm: "",
+      sow: "",
+      status: "",
+      allocation: "",
+      notes: "",
+    })
+  }
+
+  function selectSeat(seatId: string) {
+    setSelectedSeatId(seatId)
+    resetOverrideValues()
+  }
 
   function updateSeatSort(field: SeatSortField) {
     const nextDirection =
@@ -434,54 +492,60 @@ export function FinanceWorkspace({
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Area</TableHead>
+                    <TableHead>Pillar</TableHead>
+                    <TableHead>Project Code</TableHead>
                     <TableHead>Budget</TableHead>
-                    <TableHead>Spent</TableHead>
-                    <TableHead>Forecast</TableHead>
-                    <TableHead>Remaining</TableHead>
-                    <TableHead>Seats</TableHead>
-                    <TableHead>Active</TableHead>
-                    <TableHead>Open</TableHead>
+                    <TableHead className="whitespace-normal leading-tight">Spent To Date</TableHead>
+                    <TableHead className="whitespace-normal leading-tight">Remaining Budget</TableHead>
+                    <TableHead className="whitespace-normal leading-tight">Forecast Spent To End Of Year</TableHead>
+                    <TableHead className="whitespace-normal leading-tight">End Of Year Balance</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {summary.map((row) => (
-                    <TableRow
-                      key={row.id}
-                      className={row.id === selectedAreaId ? "bg-amber-50" : undefined}
-                    >
-                      <TableCell>
-                        <button
-                          type="button"
-                          className="text-left"
-                          onClick={() => updateParams({ budgetAreaId: row.id })}
-                        >
-                          <div className="font-medium">{row.displayName}</div>
-                          <div className="text-xs text-muted-foreground">
-                            {(row.domain || "Unmapped domain")} ·{" "}
-                            {row.subDomain || "Unmapped sub-domain"}
+                  {summary.map((row) => {
+                    const remainingBudget = row.amountGivenBudget - row.spentToDate
+                    const forecastSpentToEndOfYear = row.totalForecast - row.spentToDate
+                    const endOfYearBalance = remainingBudget - forecastSpentToEndOfYear
+
+                    return (
+                      <TableRow
+                        key={row.id}
+                        className={row.id === selectedAreaId ? "bg-amber-50" : undefined}
+                      >
+                        <TableCell>
+                          <button
+                            type="button"
+                            className="text-left"
+                            onClick={() => updateParams({ budgetAreaId: row.id })}
+                          >
+                            <div className="font-medium">{row.displayName}</div>
+                            <div className="text-xs text-muted-foreground">
+                              {(row.domain || "Unmapped domain")} ·{" "}
+                              {row.subDomain || "Unmapped sub-domain"}
+                            </div>
+                          </button>
+                        </TableCell>
+                        <TableCell>
+                          <div className="font-medium">{row.projectCode || "Unassigned"}</div>
+                        </TableCell>
+                        <TableCell>
+                          <div className="font-medium">
+                            {formatCurrency(row.amountGivenBudget)}
                           </div>
-                        </button>
-                      </TableCell>
-                      <TableCell>
-                        <div className="font-medium">
-                          {formatCurrency(row.amountGivenBudget)}
-                        </div>
-                        <div className="text-xs text-muted-foreground">
-                          Finance view {formatCurrency(row.financeViewBudget)}
-                        </div>
-                      </TableCell>
-                      <TableCell>{formatCurrency(row.spentToDate)}</TableCell>
-                      <TableCell>{formatCurrency(row.totalForecast)}</TableCell>
-                      <TableCell>{formatCurrency(row.forecastRemaining)}</TableCell>
-                      <TableCell>{row.seatCount}</TableCell>
-                      <TableCell>{row.activeSeatCount}</TableCell>
-                      <TableCell>{row.openSeatCount}</TableCell>
-                    </TableRow>
-                  ))}
+                          <div className="text-xs text-muted-foreground">
+                            Finance view {formatCurrency(row.financeViewBudget)}
+                          </div>
+                        </TableCell>
+                        <TableCell>{formatCurrency(row.spentToDate)}</TableCell>
+                        <TableCell>{formatCurrency(remainingBudget)}</TableCell>
+                        <TableCell>{formatCurrency(forecastSpentToEndOfYear)}</TableCell>
+                        <TableCell>{formatCurrency(endOfYearBalance)}</TableCell>
+                      </TableRow>
+                    )
+                  })}
                   {summary.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={8} className="py-8 text-center text-muted-foreground">
+                      <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">
                         Import budget movements and roster data to populate the tracker.
                       </TableCell>
                     </TableRow>
@@ -503,7 +567,7 @@ export function FinanceWorkspace({
             <CardContent className="space-y-4 text-sm">
               {selectedArea ? (
                 <>
-                  <div className="grid gap-3 md:grid-cols-4">
+                  <div className="grid gap-3 md:grid-cols-5">
                     <div className="rounded-xl bg-muted/50 p-3">
                       <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
                         Domain
@@ -518,6 +582,14 @@ export function FinanceWorkspace({
                       </div>
                       <div className="mt-2 text-base font-semibold">
                         {selectedArea.subDomain || "Unmapped"}
+                      </div>
+                    </div>
+                    <div className="rounded-xl bg-muted/50 p-3">
+                      <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                        Project Code
+                      </div>
+                      <div className="mt-2 text-base font-semibold">
+                        {selectedArea.projectCode || "Unassigned"}
                       </div>
                     </div>
                     <div className="rounded-xl bg-muted/50 p-3">
@@ -724,7 +796,7 @@ export function FinanceWorkspace({
                     <TableRow
                       key={seat.id}
                       className={seat.id === selectedSeatId ? "bg-amber-50" : "cursor-pointer"}
-                      onClick={() => setSelectedSeatId(seat.id)}
+                      onClick={() => selectSeat(seat.id)}
                     >
                       <TableCell>
                         <div className="flex items-center justify-between gap-3">
@@ -740,6 +812,9 @@ export function FinanceWorkspace({
                         <div className="text-xs text-muted-foreground">{seat.team}</div>
                         <div className="text-xs text-muted-foreground">
                           {(seat.domain || "Unmapped")} · {seat.subDomain || "Unmapped"}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          {seat.projectCode || "No project code"}
                         </div>
                       </TableCell>
                       <TableCell>
@@ -888,7 +963,7 @@ export function FinanceWorkspace({
                     id="override-seat"
                     className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
                     value={selectedSeatId}
-                    onChange={(event) => setSelectedSeatId(event.target.value)}
+                    onChange={(event) => selectSeat(event.target.value)}
                   >
                     {seats.map((seat) => (
                       <option key={seat.id} value={seat.id}>
@@ -898,36 +973,117 @@ export function FinanceWorkspace({
                   </select>
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="override-area">Budget Area</Label>
-                  <select
-                    id="override-area"
-                    className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
-                    value={overrideValues.budgetAreaId}
-                    onChange={(event) =>
-                      setOverrideValues((current) => ({
-                        ...current,
-                        budgetAreaId: event.target.value,
-                      }))
-                    }
-                  >
-                    <option value="">Keep derived mapping</option>
-                    {budgetAreas.map((area) => (
-                      <option key={area.id} value={area.id}>
-                        {area.displayName || `${area.pillar || area.projectCode} · ${area.costCenter}`}
-                      </option>
-                    ))}
-                  </select>
+                  <Label htmlFor="override-pillar">Pillar</Label>
+                  <Popover open={pillarPickerOpen} onOpenChange={setPillarPickerOpen}>
+                    <PopoverTrigger asChild>
+                      <Button
+                        id="override-pillar"
+                        variant="outline"
+                        role="combobox"
+                        aria-expanded={pillarPickerOpen}
+                        className="w-full justify-between"
+                      >
+                        <span className="truncate text-left">
+                          {selectedOverrideArea
+                            ? selectedOverrideArea.displayName ||
+                              selectedOverrideArea.pillar ||
+                              selectedOverrideArea.subDomain ||
+                              selectedOverrideArea.projectCode
+                            : "Keep derived mapping"}
+                        </span>
+                        <ChevronsUpDown className="ml-2 size-4 shrink-0 opacity-50" />
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-[420px] p-0" align="start">
+                      <Command>
+                        <CommandInput placeholder="Find pillar..." />
+                        <CommandList>
+                          <CommandEmpty>No pillar found.</CommandEmpty>
+                          <CommandGroup>
+                            <CommandItem
+                              value="keep-derived-mapping"
+                              onSelect={() => {
+                                setOverrideValues((current) => ({
+                                  ...current,
+                                  budgetAreaId: "",
+                                }))
+                                setPillarPickerOpen(false)
+                              }}
+                            >
+                              <Check
+                                className={cn(
+                                  "mr-2 size-4",
+                                  !overrideValues.budgetAreaId ? "opacity-100" : "opacity-0"
+                                )}
+                              />
+                              Keep derived mapping
+                            </CommandItem>
+                            {pillarOptions.map((option) => (
+                              <CommandItem
+                                key={option.id}
+                                value={`${option.label} ${option.detail}`}
+                                onSelect={() => {
+                                  setOverrideValues((current) => ({
+                                    ...current,
+                                    budgetAreaId: option.id,
+                                  }))
+                                  setPillarPickerOpen(false)
+                                }}
+                              >
+                                <Check
+                                  className={cn(
+                                    "mr-2 size-4",
+                                    overrideValues.budgetAreaId === option.id
+                                      ? "opacity-100"
+                                      : "opacity-0"
+                                  )}
+                                />
+                                <div className="flex min-w-0 flex-col">
+                                  <span className="truncate font-medium">{option.label}</span>
+                                  <span className="text-muted-foreground text-xs">
+                                    {option.detail}
+                                  </span>
+                                </div>
+                              </CommandItem>
+                            ))}
+                          </CommandGroup>
+                        </CommandList>
+                      </Command>
+                    </PopoverContent>
+                  </Popover>
                 </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="space-y-2">
-                    <Label htmlFor="override-domain">Domain</Label>
-                    <Input id="override-domain" placeholder="Data & Analytics" />
+                {selectedOverrideArea ? (
+                  <div className="grid gap-3 rounded-xl border border-dashed border-border px-4 py-3 text-sm md:grid-cols-4">
+                    <div>
+                      <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                        Domain
+                      </div>
+                      <div className="mt-1 font-medium">
+                        {selectedOverrideArea.domain || "Unmapped"}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                        Sub-domain
+                      </div>
+                      <div className="mt-1 font-medium">
+                        {selectedOverrideArea.subDomain || "Unmapped"}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                        Cost Center
+                      </div>
+                      <div className="mt-1 font-medium">{selectedOverrideArea.costCenter}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                        Project Code
+                      </div>
+                      <div className="mt-1 font-medium">{selectedOverrideArea.projectCode}</div>
+                    </div>
                   </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="override-subdomain">Sub-domain</Label>
-                    <Input id="override-subdomain" placeholder="Architecture" />
-                  </div>
-                </div>
+                ) : null}
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-2">
                     <Label htmlFor="spend-plan">Spend Plan ID</Label>
@@ -1026,13 +1182,17 @@ export function FinanceWorkspace({
                     handleJsonSubmit(
                       {
                         override: {
-                          domain:
-                            (document.getElementById("override-domain") as HTMLInputElement | null)
-                              ?.value || null,
-                          subDomain:
-                            (document.getElementById("override-subdomain") as HTMLInputElement | null)
-                              ?.value || null,
+                          domain: selectedOverrideArea?.domain || null,
+                          subDomain: selectedOverrideArea?.subDomain || null,
                           budgetAreaId: overrideValues.budgetAreaId || null,
+                          funding: selectedOverrideArea?.funding || null,
+                          pillar:
+                            selectedOverrideArea?.displayName ||
+                            selectedOverrideArea?.pillar ||
+                            selectedOverrideArea?.subDomain ||
+                            null,
+                          costCenter: selectedOverrideArea?.costCenter || null,
+                          projectCode: selectedOverrideArea?.projectCode || null,
                           spendPlanId: overrideValues.spendPlanId || null,
                           ritm: overrideValues.ritm || null,
                           sow: overrideValues.sow || null,

@@ -14,10 +14,12 @@ export async function POST(request: Request) {
   try {
     const body = await request.json()
     const mapping = await upsertDepartmentMapping({
+      id: body.id ? String(body.id).trim() : undefined,
       year: Number(body.year),
       sourceCode: String(body.sourceCode || "").trim(),
       domain: String(body.domain || "").trim(),
       subDomain: String(body.subDomain || "").trim(),
+      projectCode: String(body.projectCode || "").trim(),
       notes: body.notes ? String(body.notes) : undefined,
     }, {
       name: viewer.name,

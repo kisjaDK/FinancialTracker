@@ -96,8 +96,17 @@ function normalizeSubDomainLabel(value: string | null | undefined) {
     return ""
   }
 
-  return normalizeValue(trimmed) === "engineering"
-    ? "Architecture & Engineering"
+  return trimmed
+}
+
+function normalizeDomainLabel(value: string | null | undefined) {
+  const trimmed = value?.trim()
+  if (!trimmed) {
+    return ""
+  }
+
+  return normalizeValue(trimmed) === "data and analytics"
+    ? "Data & Analytics"
     : trimmed
 }
 
@@ -116,6 +125,65 @@ function buildDepartmentCodeKey(sourceCode: string | null | undefined) {
   return normalizeValue(sourceCode)
 }
 
+function resolveDepartmentMapping(
+  lookup: Map<string, Array<{ subDomain: string; projectCode?: string | null } & Record<string, unknown>>>,
+  input: {
+    sourceCode: string | null | undefined
+    subDomain?: string | null | undefined
+  }
+) {
+  const candidates = lookup.get(buildDepartmentCodeKey(input.sourceCode)) || []
+  const normalizedSubDomain = normalizeValue(normalizeSubDomainLabel(input.subDomain))
+
+  if (!normalizedSubDomain) {
+    return candidates[0]
+  }
+
+  return (
+    candidates.find((mapping) => normalizeValue(normalizeSubDomainLabel(String(mapping.subDomain || ""))) === normalizedSubDomain) ||
+    candidates.find((mapping) => normalizeValue(normalizeSubDomainLabel(String(mapping.subDomain || ""))).includes(normalizedSubDomain)) ||
+    candidates[0]
+  )
+}
+
+function resolveDepartmentMappingByDomain(
+  mappings: Array<{ domain?: string | null; subDomain: string } & Record<string, unknown>>,
+  input: {
+    domain: string | null | undefined
+    subDomain?: string | null | undefined
+  }
+) {
+  const normalizedSubDomain = normalizeValue(normalizeSubDomainLabel(input.subDomain))
+
+  const domainMatches = mappings.filter(
+    (mapping) =>
+      normalizeValue(normalizeDomainLabel(String(mapping.domain || ""))) ===
+      normalizeValue(normalizeDomainLabel(input.domain))
+  )
+
+  if (domainMatches.length === 0) {
+    return undefined
+  }
+
+  if (!normalizedSubDomain) {
+    return domainMatches[0]
+  }
+
+  return (
+    domainMatches.find(
+      (mapping) =>
+        normalizeValue(normalizeSubDomainLabel(String(mapping.subDomain || ""))) ===
+        normalizedSubDomain
+    ) ||
+    domainMatches.find((mapping) =>
+      normalizeValue(normalizeSubDomainLabel(String(mapping.subDomain || ""))).includes(
+        normalizedSubDomain
+      )
+    ) ||
+    domainMatches[0]
+  )
+}
+
 function getRosterImportError(input: {
   departmentCode: string | null
   rosterSubDomain: string | null
@@ -129,13 +197,6 @@ function getRosterImportError(input: {
 
   if (!input.mapping) {
     return `No hierarchy mapping for ${input.departmentCode}`
-  }
-
-  const rosterSubDomain = normalizeSubDomainLabel(input.rosterSubDomain)
-  const mappedSubDomain = normalizeSubDomainLabel(input.mapping.subDomain)
-
-  if (normalizeValue(rosterSubDomain) !== normalizeValue(mappedSubDomain)) {
-    return `Hierarchy mapping mismatch: ${input.departmentCode} maps to ${mappedSubDomain}, roster row has ${rosterSubDomain || "blank"}`
   }
 
   return null
@@ -226,9 +287,15 @@ export async function importRosterCsv(
       codeType: "DEPARTMENT_CODE",
     },
   })
-  const departmentMappingLookup = new Map(
-    departmentMappings.map((mapping) => [buildDepartmentCodeKey(mapping.sourceCode), mapping])
-  )
+  const departmentMappingLookup = departmentMappings.reduce<
+    Map<string, typeof departmentMappings>
+  >((map, mapping) => {
+    const key = buildDepartmentCodeKey(mapping.sourceCode)
+    const current = map.get(key) || []
+    current.push(mapping)
+    map.set(key, current)
+    return map
+  }, new Map())
   const [existingImports, existingPeople, existingSeats] = await Promise.all([
     prisma.rosterImport.count({ where: { trackingYearId: trackingYear.id } }),
     prisma.rosterPerson.count({ where: { trackingYearId: trackingYear.id } }),
@@ -265,17 +332,35 @@ export async function importRosterCsv(
     ).values()
   )
   const errorRowCount = dedupedRows.filter((row) =>
-    Boolean(
-      getRosterImportError({
-        departmentCode: rosterHeaderValue(row, "Domain") || null,
-        rosterSubDomain:
-          rosterHeaderValue(row, "Name of Product line / Project", "Sub-Domain") ||
-          null,
-        mapping: departmentMappingLookup.get(
-          buildDepartmentCodeKey(rosterHeaderValue(row, "Domain") || null)
-        ),
+    Boolean((() => {
+      const departmentCode = rosterHeaderValue(
+        row,
+        "Department Code",
+        "Department code",
+        "Department",
+        "Cost Center",
+        "Cost centre",
+        "Cost center"
+      ) || null
+      const domain = rosterHeaderValue(row, "Domain") || null
+      const rosterSubDomain =
+        rosterHeaderValue(row, "Name of Product line / Project", "Sub-Domain") || null
+      const mapping =
+        resolveDepartmentMapping(departmentMappingLookup as never, {
+          sourceCode: departmentCode,
+          subDomain: rosterSubDomain,
+        }) ||
+        resolveDepartmentMappingByDomain(departmentMappings as never, {
+          domain,
+          subDomain: rosterSubDomain,
+        })
+
+      return getRosterImportError({
+        departmentCode: departmentCode || domain,
+        rosterSubDomain,
+        mapping,
       })
-    )
+    })())
   ).length
 
   const batch = await prisma.$transaction(async (transaction) => {
@@ -293,22 +378,45 @@ export async function importRosterCsv(
 
     await transaction.rosterPerson.createMany({
       data: dedupedRows.map((row) => ({
+        ...(() => {
+          const departmentCode = rosterHeaderValue(
+            row,
+            "Department Code",
+            "Department code",
+            "Department",
+            "Cost Center",
+            "Cost centre",
+            "Cost center"
+          ) || null
+          const domain = rosterHeaderValue(row, "Domain") || null
+          const rosterSubDomain =
+            rosterHeaderValue(row, "Name of Product line / Project", "Sub-Domain") ||
+            null
+          const mapping =
+            resolveDepartmentMapping(departmentMappingLookup as never, {
+              sourceCode: departmentCode,
+              subDomain: rosterSubDomain,
+            }) ||
+            resolveDepartmentMappingByDomain(departmentMappings as never, {
+              domain,
+              subDomain: rosterSubDomain,
+            })
+
+          return {
+            domain: departmentCode || domain,
+            importError: getRosterImportError({
+              departmentCode: departmentCode || domain,
+              rosterSubDomain,
+              mapping,
+            }),
+          }
+        })(),
         trackingYearId: trackingYear.id,
         importId: nextBatch.id,
         seatId: String(rosterHeaderValue(row, "Seat ID")).trim(),
-        domain: rosterHeaderValue(row, "Domain") || null,
         productLine:
           rosterHeaderValue(row, "Name of Product line / Project", "Sub-Domain") ||
           null,
-        importError: getRosterImportError({
-          departmentCode: rosterHeaderValue(row, "Domain") || null,
-          rosterSubDomain:
-            rosterHeaderValue(row, "Name of Product line / Project", "Sub-Domain") ||
-            null,
-          mapping: departmentMappingLookup.get(
-            buildDepartmentCodeKey(rosterHeaderValue(row, "Domain") || null)
-          ),
-        }),
         teamName: rosterHeaderValue(row, "Name of team", "Team") || null,
         band: rosterHeaderValue(row, "Band") || null,
         peoplePortalPositionId:
@@ -578,6 +686,10 @@ export async function importDepartmentMappingsCsv(
     },
     { label: "Domain", headers: ["Domain", "domain"] },
     { label: "Sub-domain", headers: ["Sub-domain", "SubDomain", "subDomain"] },
+    {
+      label: "Project code",
+      headers: ["Project Code", "Project code", "projectCode"],
+    },
   ])
 
   const trackingYear = await getOrCreateTrackingYear(year)
@@ -586,10 +698,15 @@ export async function importDepartmentMappingsCsv(
       sourceCode: csvHeaderValue(row, "Department Code", "Source Code", "sourceCode").trim(),
       domain: csvHeaderValue(row, "Domain", "domain").trim(),
       subDomain: csvHeaderValue(row, "Sub-domain", "SubDomain", "subDomain").trim(),
+      projectCode: csvHeaderValue(row, "Project Code", "Project code", "projectCode").trim(),
       notes: csvHeaderValue(row, "Notes", "notes").trim(),
     }))
     .filter(
-      (row) => row.sourceCode.length > 0 || row.domain.length > 0 || row.subDomain.length > 0
+      (row) =>
+        row.sourceCode.length > 0 ||
+        row.domain.length > 0 ||
+        row.subDomain.length > 0 ||
+        row.projectCode.length > 0
     )
 
   if (normalizedRows.length === 0) {
@@ -597,15 +714,20 @@ export async function importDepartmentMappingsCsv(
   }
 
   for (const row of normalizedRows) {
-    if (!row.sourceCode || !row.domain || !row.subDomain) {
+    if (!row.sourceCode || !row.domain || !row.subDomain || !row.projectCode) {
       throw new Error(
-        `Hierarchy mapping rows must include department code, domain, and sub-domain for ${row.sourceCode || "every row"}.`
+        `Hierarchy mapping rows must include department code, domain, sub-domain, and project code for ${row.sourceCode || "every row"}.`
       )
     }
   }
 
   const uniqueRows = Array.from(
-    new Map(normalizedRows.map((row) => [normalizeValue(row.sourceCode), row])).values()
+    new Map(
+      normalizedRows.map((row) => [
+        `${normalizeValue(row.sourceCode)}::${normalizeValue(row.subDomain)}::${normalizeValue(row.projectCode)}`,
+        row,
+      ])
+    ).values()
   )
   const existingMappings = await prisma.departmentMapping.findMany({
     where: {
@@ -615,22 +737,24 @@ export async function importDepartmentMappingsCsv(
     },
   })
   const existingBySourceCode = new Map(
-    existingMappings.map((mapping) => [normalizeValue(mapping.sourceCode), mapping])
+    existingMappings.map((mapping) => [
+      `${normalizeValue(mapping.sourceCode)}::${normalizeValue(mapping.subDomain)}::${normalizeValue(mapping.projectCode)}`,
+      mapping,
+    ])
   )
 
   await prisma.$transaction(
     uniqueRows.map((row) =>
       prisma.departmentMapping.upsert({
         where: {
-          trackingYearId_codeType_sourceCode: {
-            trackingYearId: trackingYear.id,
-            codeType: "DEPARTMENT_CODE",
-            sourceCode: row.sourceCode,
-          },
+          id: existingBySourceCode.get(
+            `${normalizeValue(row.sourceCode)}::${normalizeValue(row.subDomain)}::${normalizeValue(row.projectCode)}`
+          )?.id || "__create_new_mapping__",
         },
         update: {
           domain: row.domain,
           subDomain: row.subDomain,
+          projectCode: row.projectCode,
           notes: row.notes || null,
         },
         create: {
@@ -639,6 +763,7 @@ export async function importDepartmentMappingsCsv(
           sourceCode: row.sourceCode,
           domain: row.domain,
           subDomain: row.subDomain,
+          projectCode: row.projectCode,
           notes: row.notes || null,
         },
       })
@@ -664,7 +789,9 @@ export async function importDepartmentMappingsCsv(
 
   await Promise.all(
     uniqueRows.map((row) => {
-      const before = existingBySourceCode.get(normalizeValue(row.sourceCode))
+      const before = existingBySourceCode.get(
+        `${normalizeValue(row.sourceCode)}::${normalizeValue(row.subDomain)}::${normalizeValue(row.projectCode)}`
+      )
 
       return writeAuditLog({
         trackingYearId: trackingYear.id,
@@ -687,6 +814,11 @@ export async function importDepartmentMappingsCsv(
             field: "subDomain",
             oldValue: before?.subDomain ?? null,
             newValue: row.subDomain,
+          },
+          {
+            field: "projectCode",
+            oldValue: before?.projectCode ?? null,
+            newValue: row.projectCode,
           },
           {
             field: "notes",

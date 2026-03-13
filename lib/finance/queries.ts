@@ -81,9 +81,7 @@ function normalizeSubDomainLabel(value: string | null | undefined) {
     return null
   }
 
-  return normalizeValue(trimmed) === "engineering"
-    ? "Architecture & Engineering"
-    : trimmed
+  return trimmed
 }
 
 function normalizeCostBandLabel(value: string | null | undefined) {
@@ -128,22 +126,75 @@ function buildDepartmentCodeKey(sourceCode: string | null | undefined) {
 
 function buildDepartmentMappingLookup(
   mappings: {
+    id?: string
     sourceCode: string
     domain: string
     subDomain: string
+    projectCode?: string | null
   }[]
 ) {
-  return mappings.reduce<Record<string, { domain: string; subDomain: string }>>(
+  return mappings.reduce<
+    Record<string, { id?: string; domain: string; subDomain: string; projectCode: string }[]>
+  >(
     (accumulator, mapping) => {
-      accumulator[buildDepartmentCodeKey(mapping.sourceCode)] = {
+      const key = buildDepartmentCodeKey(mapping.sourceCode)
+      accumulator[key] ||= []
+      accumulator[key].push({
+        id: mapping.id,
         domain: normalizeDomainLabel(mapping.domain) || mapping.domain,
         subDomain: normalizeSubDomainLabel(mapping.subDomain) || mapping.subDomain,
-      }
+        projectCode: mapping.projectCode?.trim() || "",
+      })
 
       return accumulator
     },
     {}
   )
+}
+
+function resolveDepartmentMapping(
+  mappingLookup: ReturnType<typeof buildDepartmentMappingLookup>,
+  input: {
+    sourceCode: string | null | undefined
+    subDomain?: string | null | undefined
+    projectCode?: string | null | undefined
+  }
+) {
+  const candidates = mappingLookup[buildDepartmentCodeKey(input.sourceCode)] || []
+
+  if (candidates.length === 0) {
+    return undefined
+  }
+
+  const normalizedProjectCode = normalizeValue(input.projectCode)
+  const normalizedSubDomain = normalizeValue(normalizeSubDomainLabel(input.subDomain))
+
+  if (normalizedProjectCode) {
+    const projectMatch = candidates.find(
+      (mapping) => normalizeValue(mapping.projectCode) === normalizedProjectCode
+    )
+    if (projectMatch) {
+      return projectMatch
+    }
+  }
+
+  if (normalizedSubDomain) {
+    const exactSubDomain = candidates.find(
+      (mapping) => normalizeValue(mapping.subDomain) === normalizedSubDomain
+    )
+    if (exactSubDomain) {
+      return exactSubDomain
+    }
+
+    const fuzzySubDomain = candidates.find((mapping) =>
+      normalizeValue(mapping.subDomain).includes(normalizedSubDomain)
+    )
+    if (fuzzySubDomain) {
+      return fuzzySubDomain
+    }
+  }
+
+  return candidates[0]
 }
 
 function normalizeOptionalString(value: string | null | undefined) {
@@ -170,13 +221,19 @@ function ensureValidYear(year: number) {
   }
 }
 
-function buildSummaryKey(subDomain: string | null | undefined) {
-  return subDomain?.trim() || "Unmapped"
+function buildSummaryKey(input: {
+  subDomain: string | null | undefined
+  projectCode: string | null | undefined
+}) {
+  return `${input.subDomain?.trim() || "Unmapped"}::${input.projectCode?.trim() || "Unassigned"}`
 }
 
 function parseSummaryKey(summaryKey: string) {
+  const [subDomain, projectCode] = summaryKey.split("::")
+
   return {
-    subDomain: summaryKey === "Unmapped" ? null : summaryKey,
+    subDomain: subDomain === "Unmapped" ? null : subDomain || null,
+    projectCode: projectCode === "Unassigned" ? null : projectCode || null,
   }
 }
 
@@ -380,7 +437,7 @@ export async function deriveTrackerSeatsForYear(year: number) {
       .values()
   )
 
-  const [budgetAreas, departmentMappings] = await Promise.all([
+  const [budgetAreas, departmentMappings, existingRosterSeats] = await Promise.all([
     prisma.budgetArea.findMany({
       where: { trackingYearId: trackingYear.id },
     }),
@@ -390,8 +447,20 @@ export async function deriveTrackerSeatsForYear(year: number) {
         codeType: "DEPARTMENT_CODE",
       },
     }),
+    prisma.trackerSeat.findMany({
+      where: {
+        trackingYearId: trackingYear.id,
+        sourceType: "ROSTER",
+      },
+      include: {
+        override: true,
+      },
+    }),
   ])
   const mappingLookup = buildDepartmentMappingLookup(departmentMappings)
+  const existingSeatBySourceKey = new Map(
+    existingRosterSeats.map((seat) => [seat.sourceKey, seat])
+  )
 
   await prisma.trackerSeat.updateMany({
     where: {
@@ -408,14 +477,39 @@ export async function deriveTrackerSeatsForYear(year: number) {
   }
 
   for (const person of latestPeopleBySeatId) {
-    const budgetArea = findMatchingBudgetArea(
+    const fallbackBudgetArea = findMatchingBudgetArea(
       budgetAreas,
       person.productLine,
       person.fundingType
     )
     const mappedHierarchy =
-      mappingLookup[buildDepartmentCodeKey(person.domain)] ||
-      mappingLookup[buildDepartmentCodeKey(budgetArea?.costCenter)]
+      resolveDepartmentMapping(mappingLookup, {
+        sourceCode: person.domain,
+        subDomain: person.productLine,
+        projectCode: fallbackBudgetArea?.projectCode,
+      }) ||
+      resolveDepartmentMapping(mappingLookup, {
+        sourceCode: fallbackBudgetArea?.costCenter,
+        subDomain: person.productLine,
+        projectCode: fallbackBudgetArea?.projectCode,
+      })
+    const mappedBudgetArea =
+      mappedHierarchy?.projectCode && person.domain
+        ? budgetAreas.find(
+            (area) =>
+              normalizeValue(area.costCenter) === normalizeValue(person.domain) &&
+              normalizeValue(area.projectCode) === normalizeValue(mappedHierarchy.projectCode)
+          )
+        : null
+    const budgetArea =
+      mappedBudgetArea || fallbackBudgetArea
+    const existingSeat = existingSeatBySourceKey.get(buildSourceKey(person.seatId))
+    const derivedProjectCode =
+      mappedHierarchy?.projectCode || budgetArea?.projectCode || null
+    const projectCode =
+      existingSeat?.override?.projectCode && existingSeat.sourceKey === buildSourceKey(person.seatId)
+        ? existingSeat.projectCode
+        : derivedProjectCode
 
     const trackerSeat = await prisma.trackerSeat.upsert({
       where: {
@@ -440,7 +534,7 @@ export async function deriveTrackerSeatsForYear(year: number) {
         funding: person.fundingType || budgetArea?.funding || null,
         pillar: person.productLine || budgetArea?.pillar || null,
         costCenter: budgetArea?.costCenter || null,
-        projectCode: budgetArea?.projectCode || null,
+        projectCode,
         resourceType: person.resourceType,
         team: person.teamName,
         inSeat: person.resourceName,
@@ -475,7 +569,7 @@ export async function deriveTrackerSeatsForYear(year: number) {
         funding: person.fundingType || budgetArea?.funding || null,
         pillar: person.productLine || budgetArea?.pillar || null,
         costCenter: budgetArea?.costCenter || null,
-        projectCode: budgetArea?.projectCode || null,
+        projectCode,
         resourceType: person.resourceType,
         team: person.teamName,
         inSeat: person.resourceName,
@@ -517,18 +611,46 @@ export async function getFinanceWorkspaceData(
   await ensureFreshTrackerDerivation(activeYear)
   const statusDefinitions = await ensureStatusDefinitions(activeYear)
 
-  const [summary, budgetAreas, selectedAreaId] =
+  const [summary, budgetAreas, departmentMappings, selectedAreaId] =
     await Promise.all([
       getBudgetAreaSummary(activeYear, statusDefinitions, viewer),
       prisma.budgetArea.findMany({
         where: { trackingYear: { year: activeYear } },
         orderBy: [{ domain: "asc" }, { subDomain: "asc" }, { costCenter: "asc" }],
       }),
+      prisma.departmentMapping.findMany({
+        where: {
+          trackingYear: { year: activeYear },
+          codeType: "DEPARTMENT_CODE",
+        },
+      }),
       Promise.resolve(budgetAreaId),
     ])
 
+  const mappingLookup = buildDepartmentMappingLookup(departmentMappings)
+  const resolvedBudgetAreas = budgetAreas.map((area) => {
+    const mappedHierarchy = resolveDepartmentMapping(mappingLookup, {
+      sourceCode: area.costCenter,
+      subDomain: area.subDomain,
+      projectCode: area.projectCode,
+    })
+
+    const subDomain =
+      normalizeSubDomainLabel(mappedHierarchy?.subDomain || area.subDomain || null) || null
+    const domain =
+      normalizeDomainLabel(mappedHierarchy?.domain || area.domain || null) || null
+
+    return {
+      ...area,
+      domain,
+      subDomain,
+      pillar: subDomain || area.pillar,
+      displayName: subDomain || area.displayName,
+    }
+  })
+
   const scopedBudgetAreas = filterScopedItems(
-    budgetAreas,
+    resolvedBudgetAreas,
     viewer,
     (area) => ({ domain: area.domain, subDomain: area.subDomain })
   )
@@ -865,8 +987,10 @@ export async function getBudgetMovementsPageData(input?: {
   const mappingLookup = buildDepartmentMappingLookup(departmentMappings)
 
   const movementViews: BudgetMovementView[] = budgetMovements.map((movement) => {
-    const mappedHierarchy =
-      mappingLookup[buildDepartmentCodeKey(movement.receivingCostCenter)]
+    const mappedHierarchy = resolveDepartmentMapping(mappingLookup, {
+      sourceCode: movement.receivingCostCenter,
+      projectCode: movement.receivingProjectCode,
+    })
 
     return {
       id: movement.id,
@@ -1044,13 +1168,12 @@ async function findOrCreateBudgetAreaForMovement(
     return existingArea
   }
 
-  const mapping = await transaction.departmentMapping.findUnique({
+  const mapping = await transaction.departmentMapping.findFirst({
     where: {
-      trackingYearId_codeType_sourceCode: {
-        trackingYearId: input.trackingYearId,
-        codeType: "DEPARTMENT_CODE",
-        sourceCode: input.receivingCostCenter,
-      },
+      trackingYearId: input.trackingYearId,
+      codeType: "DEPARTMENT_CODE",
+      sourceCode: input.receivingCostCenter,
+      projectCode: input.receivingProjectCode,
     },
   })
 
@@ -1512,7 +1635,7 @@ export async function getPeopleRosterPageData(input?: {
     validation: input?.validation?.trim() ?? "",
   }
 
-  const [people, departmentMappings, rosterImports] = await Promise.all([
+  const [people, departmentMappings, rosterImports, trackerSeats] = await Promise.all([
     prisma.rosterPerson.findMany({
       where: {
         trackingYearId: trackingYear.id,
@@ -1539,6 +1662,17 @@ export async function getPeopleRosterPageData(input?: {
       orderBy: [{ importedAt: "desc" }],
       take: 20,
     }),
+    prisma.trackerSeat.findMany({
+      where: {
+        trackingYearId: trackingYear.id,
+        sourceType: "ROSTER",
+      },
+      include: {
+        months: true,
+        override: true,
+        budgetArea: true,
+      },
+    }),
   ])
 
   const latestPeople = Array.from(
@@ -1553,8 +1687,17 @@ export async function getPeopleRosterPageData(input?: {
       .values()
   )
   const mappingLookup = buildDepartmentMappingLookup(departmentMappings)
+  const trackerSeatBySeatId = new Map(
+    trackerSeats.map((seat) => [seat.seatId, seat])
+  )
   const rosterViews: PeopleRosterView[] = latestPeople.map((person) => {
-    const mappedHierarchy = mappingLookup[buildDepartmentCodeKey(person.domain)]
+    const trackerSeat = trackerSeatBySeatId.get(person.seatId)
+    const effectiveSeat = trackerSeat ? getEffectiveSeat(trackerSeat as SeatWithRelations) : null
+    const mappedHierarchy = resolveDepartmentMapping(mappingLookup, {
+      sourceCode: person.domain,
+      subDomain: person.productLine,
+      projectCode: effectiveSeat?.projectCode,
+    })
 
     return {
       id: person.id,
@@ -1562,6 +1705,7 @@ export async function getPeopleRosterPageData(input?: {
       seatId: person.seatId,
       departmentCode: person.domain,
       domain: normalizeDomainLabel(person.domain),
+      projectCode: effectiveSeat?.projectCode || mappedHierarchy?.projectCode || null,
       name: person.resourceName,
       email: person.email,
       team: person.teamName,
@@ -1988,13 +2132,17 @@ export async function getBudgetAreaSummary(
   const summaryMap = new Map<string, BudgetAreaSummary>()
 
   for (const area of budgetAreas) {
-    const mappedHierarchy =
-      mappingLookup[buildDepartmentCodeKey(area.costCenter)]
+    const mappedHierarchy = resolveDepartmentMapping(mappingLookup, {
+      sourceCode: area.costCenter,
+      subDomain: area.subDomain,
+      projectCode: area.projectCode,
+    })
     const domain = normalizeDomainLabel(mappedHierarchy?.domain || area.domain || null)
     const subDomain = normalizeSubDomainLabel(
       mappedHierarchy?.subDomain || area.subDomain || null
     )
-    const summaryKey = buildSummaryKey(subDomain)
+    const projectCode = mappedHierarchy?.projectCode || area.projectCode
+    const summaryKey = buildSummaryKey({ subDomain, projectCode })
     const existing = summaryMap.get(summaryKey)
 
     summaryMap.set(summaryKey, {
@@ -2004,7 +2152,7 @@ export async function getBudgetAreaSummary(
       funding: area.funding,
       pillar: area.pillar,
       costCenter: existing?.costCenter || area.costCenter,
-      projectCode: existing?.projectCode || area.projectCode,
+      projectCode: existing?.projectCode || projectCode,
       displayName: subDomain || domain || "Unmapped",
       budget: existing?.budget || 0,
       amountGivenBudget: existing?.amountGivenBudget || 0,
@@ -2028,12 +2176,18 @@ export async function getBudgetAreaSummary(
     const budgetArea = movement.budgetAreaId
       ? budgetAreasById.get(movement.budgetAreaId)
       : null
-    const mappedHierarchy =
-      mappingLookup[buildDepartmentCodeKey(movement.receivingCostCenter)] || {
+    const mappedHierarchy = resolveDepartmentMapping(mappingLookup, {
+      sourceCode: movement.receivingCostCenter,
+      projectCode: movement.receivingProjectCode,
+    }) || {
         domain: normalizeDomainLabel(budgetArea?.domain || null),
         subDomain: normalizeSubDomainLabel(budgetArea?.subDomain || null),
+        projectCode: budgetArea?.projectCode || movement.receivingProjectCode,
       }
-    const summaryKey = buildSummaryKey(mappedHierarchy?.subDomain || null)
+    const summaryKey = buildSummaryKey({
+      subDomain: mappedHierarchy?.subDomain || null,
+      projectCode: movement.receivingProjectCode,
+    })
     const summary =
       summaryMap.get(summaryKey) ||
       {
@@ -2082,7 +2236,10 @@ export async function getBudgetAreaSummary(
       exchangeRates,
       year
     )
-    const summaryKey = buildSummaryKey(effectiveSeat.subDomain)
+    const summaryKey = buildSummaryKey({
+      subDomain: effectiveSeat.subDomain,
+      projectCode: effectiveSeat.projectCode,
+    })
     const summary =
       summaryMap.get(summaryKey) ||
       {
@@ -2202,7 +2359,9 @@ export async function getTrackerDetail(
     })
     .filter(({ effectiveSeat }) => {
       return normalizeValue(effectiveSeat.subDomain) ===
-        normalizeValue(selectedSummary.subDomain)
+          normalizeValue(selectedSummary.subDomain) &&
+        normalizeValue(effectiveSeat.projectCode) ===
+          normalizeValue(selectedSummary.projectCode)
     })
     .map(({ seat, effectiveSeat }) => {
       const metrics = deriveSeatMetrics(
@@ -2549,6 +2708,7 @@ export async function getDepartmentMappings(
     sourceCode: mapping.sourceCode,
     domain: mapping.domain,
     subDomain: mapping.subDomain,
+    projectCode: mapping.projectCode,
     notes: mapping.notes,
   }))
 }
@@ -2682,45 +2842,56 @@ export async function upsertBudgetArea(input: {
 }
 
 export async function upsertDepartmentMapping(input: {
+  id?: string
   year: number
   sourceCode: string
   domain: string
   subDomain: string
+  projectCode: string
   notes?: string
 }, actor?: AuditActor) {
   const trackingYear = await getOrCreateTrackingYear(input.year)
-  const before = await prisma.departmentMapping.findUnique({
-    where: {
-      trackingYearId_codeType_sourceCode: {
-        trackingYearId: trackingYear.id,
-        codeType: "DEPARTMENT_CODE",
-        sourceCode: input.sourceCode,
-      },
-    },
-  })
+  const before = input.id
+    ? await prisma.departmentMapping.findFirst({
+        where: {
+          id: input.id,
+          trackingYearId: trackingYear.id,
+          codeType: "DEPARTMENT_CODE",
+        },
+      })
+    : await prisma.departmentMapping.findFirst({
+        where: {
+          trackingYearId: trackingYear.id,
+          codeType: "DEPARTMENT_CODE",
+          sourceCode: input.sourceCode,
+          subDomain: input.subDomain,
+          projectCode: input.projectCode,
+        },
+      })
 
-  const mapping = await prisma.departmentMapping.upsert({
-    where: {
-      trackingYearId_codeType_sourceCode: {
-        trackingYearId: trackingYear.id,
-        codeType: "DEPARTMENT_CODE",
-        sourceCode: input.sourceCode,
-      },
-    },
-    update: {
-      domain: normalizeDomainLabel(input.domain) || input.domain,
-      subDomain: input.subDomain,
-      notes: input.notes || null,
-    },
-    create: {
-      trackingYearId: trackingYear.id,
-      codeType: "DEPARTMENT_CODE",
-      sourceCode: input.sourceCode,
-      domain: normalizeDomainLabel(input.domain) || input.domain,
-      subDomain: input.subDomain,
-      notes: input.notes || null,
-    },
-  })
+  const payload = {
+    domain: normalizeDomainLabel(input.domain) || input.domain,
+    subDomain: input.subDomain,
+    projectCode: input.projectCode,
+    notes: input.notes || null,
+  }
+
+  const mapping = before
+    ? await prisma.departmentMapping.update({
+        where: { id: before.id },
+        data: {
+          sourceCode: input.sourceCode,
+          ...payload,
+        },
+      })
+    : await prisma.departmentMapping.create({
+        data: {
+          trackingYearId: trackingYear.id,
+          codeType: "DEPARTMENT_CODE",
+          sourceCode: input.sourceCode,
+          ...payload,
+        },
+      })
 
   await prisma.budgetArea.updateMany({
     where: {
@@ -2783,6 +2954,7 @@ export async function upsertDepartmentMapping(input: {
       "sourceCode",
       "domain",
       "subDomain",
+      "projectCode",
       "notes",
     ]),
   })
@@ -3288,6 +3460,8 @@ async function getInternalForecastCopyCandidates(input: {
       ({ effectiveSeat }) =>
         normalizeValue(effectiveSeat.subDomain) ===
           normalizeValue(selectedSummary.subDomain) &&
+        normalizeValue(effectiveSeat.projectCode) ===
+          normalizeValue(selectedSummary.projectCode) &&
         !isExternalSeat(effectiveSeat)
     )
 

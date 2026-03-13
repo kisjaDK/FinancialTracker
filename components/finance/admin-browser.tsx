@@ -46,6 +46,7 @@ type DepartmentMapping = {
   sourceCode: string
   domain: string
   subDomain: string
+  projectCode: string
   notes: string | null
 }
 
@@ -113,10 +114,12 @@ export function AdminBrowser({
 }: AdminBrowserProps) {
   const router = useRouter()
   const mappingImportRef = useRef<HTMLInputElement | null>(null)
+  const [editingMappingId, setEditingMappingId] = useState<string | null>(null)
   const [mappingValues, setMappingValues] = useState({
     sourceCode: "",
     domain: "",
     subDomain: "",
+    projectCode: "",
     notes: "",
   })
   const [pendingDelete, setPendingDelete] = useState<DepartmentMapping | null>(null)
@@ -129,6 +132,17 @@ export function AdminBrowser({
     effectiveDate: `${activeYear}-01-01`,
     notes: "",
   })
+
+  function resetMappingForm() {
+    setEditingMappingId(null)
+    setMappingValues({
+      sourceCode: "",
+      domain: "",
+      subDomain: "",
+      projectCode: "",
+      notes: "",
+    })
+  }
 
   async function handleJsonSubmit(
     payload: unknown,
@@ -144,6 +158,9 @@ export function AdminBrowser({
         body: JSON.stringify(payload),
       })
       toast.success(successMessage)
+      if (endpoint === "/api/department-mappings") {
+        resetMappingForm()
+      }
       router.refresh()
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Save failed")
@@ -188,10 +205,14 @@ export function AdminBrowser({
               sourceCode: "",
               domain: "",
               subDomain: "",
+              projectCode: "",
               notes: "",
             }
           : current
       )
+      if (pendingDelete.id === editingMappingId) {
+        setEditingMappingId(null)
+      }
       router.refresh()
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Delete failed")
@@ -444,7 +465,7 @@ export function AdminBrowser({
                     <div>
                       <p className="text-sm font-medium">CSV Import / Export</p>
                       <p className="text-xs text-muted-foreground">
-                        Import `Department Code`, `Domain`, `Sub-domain`, and optional `Notes`.
+                        Import `Department Code`, `Domain`, `Sub-domain`, `Project Code`, and optional `Notes`.
                       </p>
                     </div>
                     <Button
@@ -457,9 +478,10 @@ export function AdminBrowser({
                               "Department Code": mapping.sourceCode,
                               Domain: mapping.domain,
                               "Sub-domain": mapping.subDomain,
+                              "Project Code": mapping.projectCode,
                               Notes: mapping.notes ?? "",
                             })),
-                            ["Department Code", "Domain", "Sub-domain", "Notes"]
+                            ["Department Code", "Domain", "Sub-domain", "Project Code", "Notes"]
                           )
                         )
                       }
@@ -513,6 +535,16 @@ export function AdminBrowser({
                   }
                 />
                 <Input
+                  placeholder="L68610001"
+                  value={mappingValues.projectCode}
+                  onChange={(event) =>
+                    setMappingValues((current) => ({
+                      ...current,
+                      projectCode: event.target.value,
+                    }))
+                  }
+                />
+                <Input
                   placeholder="Optional notes"
                   value={mappingValues.notes}
                   onChange={(event) =>
@@ -528,31 +560,26 @@ export function AdminBrowser({
                     onClick={() => {
                       void handleJsonSubmit(
                         {
+                          id: editingMappingId,
                           year: activeYear,
                           sourceCode: mappingValues.sourceCode,
                           domain: mappingValues.domain,
                           subDomain: mappingValues.subDomain,
+                          projectCode: mappingValues.projectCode,
                           notes: mappingValues.notes,
                         },
                         "/api/department-mappings",
-                        "Hierarchy mapping saved"
+                        editingMappingId ? "Hierarchy mapping updated" : "Hierarchy mapping saved"
                       )
                     }}
                   >
-                    Save Mapping
+                    {editingMappingId ? "Update Mapping" : "Save Mapping"}
                   </Button>
                   <Button
                     variant="ghost"
-                    onClick={() =>
-                      setMappingValues({
-                        sourceCode: "",
-                        domain: "",
-                        subDomain: "",
-                        notes: "",
-                      })
-                    }
+                    onClick={resetMappingForm}
                   >
-                    Clear
+                    {editingMappingId ? "Cancel Edit" : "Clear"}
                   </Button>
                 </div>
               </div>
@@ -564,6 +591,7 @@ export function AdminBrowser({
                       <TableHead>Department Code</TableHead>
                       <TableHead>Domain</TableHead>
                       <TableHead>Sub-domain</TableHead>
+                      <TableHead>Project Code</TableHead>
                       <TableHead />
                     </TableRow>
                   </TableHeader>
@@ -573,19 +601,22 @@ export function AdminBrowser({
                         <TableCell>{mapping.sourceCode}</TableCell>
                         <TableCell>{mapping.domain}</TableCell>
                         <TableCell>{mapping.subDomain}</TableCell>
+                        <TableCell>{mapping.projectCode}</TableCell>
                         <TableCell className="text-right">
                           <div className="flex justify-end gap-2">
                             <Button
                               variant="ghost"
                               size="sm"
-                              onClick={() =>
+                              onClick={() => {
+                                setEditingMappingId(mapping.id)
                                 setMappingValues({
                                   sourceCode: mapping.sourceCode,
                                   domain: mapping.domain,
                                   subDomain: mapping.subDomain,
+                                  projectCode: mapping.projectCode,
                                   notes: mapping.notes || "",
                                 })
-                              }
+                              }}
                             >
                               Edit
                             </Button>
@@ -605,7 +636,7 @@ export function AdminBrowser({
                     ))}
                     {departmentMappings.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={4} className="py-6 text-center text-muted-foreground">
+                        <TableCell colSpan={5} className="py-6 text-center text-muted-foreground">
                           No hierarchy mappings saved yet.
                         </TableCell>
                       </TableRow>

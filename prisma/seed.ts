@@ -138,6 +138,7 @@ async function main() {
         sourceCode: "D6861",
         domain: "Data & Analytics",
         subDomain: "Architecture",
+        projectCode: "L68610001",
       },
       {
         trackingYearId: trackingYear.id,
@@ -145,6 +146,7 @@ async function main() {
         sourceCode: "D4453",
         domain: "Data & Analytics",
         subDomain: "AI & Automation",
+        projectCode: "L44530001",
       },
     ],
   })
