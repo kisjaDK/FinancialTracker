@@ -399,7 +399,7 @@ export function FinanceWorkspace({
           </Card>
         </section>
 
-        <section className="grid gap-6 xl:grid-cols-[1.4fr_0.6fr]">
+        <section className="space-y-6">
           <Card className="border-amber-200/70 bg-white/90">
             <CardHeader className="flex-row items-end justify-between gap-4">
               <div>
@@ -503,12 +503,12 @@ export function FinanceWorkspace({
             <CardContent className="space-y-4 text-sm">
               {selectedArea ? (
                 <>
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid gap-3 md:grid-cols-4">
                     <div className="rounded-xl bg-muted/50 p-3">
                       <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
                         Domain
                       </div>
-                      <div className="mt-2 text-lg font-semibold">
+                      <div className="mt-2 text-base font-semibold">
                         {selectedArea.domain || "Unmapped"}
                       </div>
                     </div>
@@ -516,17 +516,15 @@ export function FinanceWorkspace({
                       <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
                         Sub-domain
                       </div>
-                      <div className="mt-2 text-lg font-semibold">
+                      <div className="mt-2 text-base font-semibold">
                         {selectedArea.subDomain || "Unmapped"}
                       </div>
                     </div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-3">
                     <div className="rounded-xl bg-muted/50 p-3">
                       <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
                         PERM Target
                       </div>
-                      <div className="mt-2 text-lg font-semibold">
+                      <div className="mt-2 text-base font-semibold">
                         {formatPercent(selectedArea.permTarget)}
                       </div>
                     </div>
@@ -534,29 +532,49 @@ export function FinanceWorkspace({
                       <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
                         Cloud Target
                       </div>
-                      <div className="mt-2 text-lg font-semibold">
+                      <div className="mt-2 text-base font-semibold">
                         {formatCurrency(selectedArea.cloudCostTarget)}
                       </div>
                     </div>
                   </div>
-                  <div className="rounded-xl border border-dashed border-border px-4 py-3">
-                    <div className="flex items-center justify-between">
-                      <span className="text-muted-foreground">PERM Forecast</span>
-                      <span className="font-medium">
+                  <div className="grid gap-3 md:grid-cols-3">
+                    <div className="rounded-xl border border-dashed border-border px-4 py-3">
+                      <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                        PERM Forecast
+                      </div>
+                      <div className="mt-2 font-medium">
                         {formatCurrency(selectedArea.permForecast)}
-                      </span>
+                      </div>
                     </div>
-                    <div className="mt-2 flex items-center justify-between">
-                      <span className="text-muted-foreground">EXT Forecast</span>
-                      <span className="font-medium">
+                    <div className="rounded-xl border border-dashed border-border px-4 py-3">
+                      <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                        EXT Forecast
+                      </div>
+                      <div className="mt-2 font-medium">
                         {formatCurrency(selectedArea.extForecast)}
-                      </span>
+                      </div>
                     </div>
-                    <div className="mt-2 flex items-center justify-between">
-                      <span className="text-muted-foreground">Cloud Forecast</span>
-                      <span className="font-medium">
+                    <div className="rounded-xl border border-dashed border-border px-4 py-3">
+                      <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                        Cloud Forecast
+                      </div>
+                      <div className="mt-2 font-medium">
                         {formatCurrency(selectedArea.cloudCostForecast)}
-                      </span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-xl bg-muted/30 px-4 py-3">
+                    <div className="flex items-center gap-2">
+                      <span className="text-muted-foreground">Spent</span>
+                      <span className="font-medium">{formatCurrency(selectedArea.spentToDate)}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-muted-foreground">Budget</span>
+                      <span className="font-medium">{formatCurrency(selectedArea.amountGivenBudget)}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-muted-foreground">Remaining</span>
+                      <span className="font-medium">{formatCurrency(selectedArea.forecastRemaining)}</span>
                     </div>
                   </div>
                 </>

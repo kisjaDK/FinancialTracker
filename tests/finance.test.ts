@@ -8,6 +8,8 @@ import {
 } from "@/lib/finance/derive"
 import { buildExchangeRateLookup, convertAmountToDkk } from "@/lib/finance/currency"
 import type { SeatWithRelations } from "@/lib/finance/types"
+import { formatFteAsPercent } from "@/lib/finance/format"
+import { getRichTextPlainText, renderRichTextToHtml } from "@/lib/rich-text"
 
 test("parseCsv handles quoted values and headers", () => {
   const rows = parseCsv('Seat ID,Name of resource,Location\n300127,"Doe, Jane",Denmark')
@@ -146,4 +148,24 @@ test("convertAmountToDkk uses latest configured exchange rate", () => {
   const converted = convertAmountToDkk(100, "USD", rates)
   assert.equal(converted.amountDkk, 690)
   assert.equal(converted.exchangeRateUsed, 6.9)
+})
+
+test("renderRichTextToHtml supports paragraphs and lists", () => {
+  const html = renderRichTextToHtml("**Heads up**\n\n- Confirm leave\n- Copy only approved months")
+
+  assert.match(html, /<strong>Heads up<\/strong>/)
+  assert.match(html, /<ul><li>Confirm leave<\/li><li>Copy only approved months<\/li><\/ul>/)
+})
+
+test("getRichTextPlainText strips markdown markers", () => {
+  assert.equal(
+    getRichTextPlainText("**Heads up**\n- Confirm leave"),
+    "Heads up Confirm leave"
+  )
+})
+
+test("formatFteAsPercent converts FTE fractions to percent", () => {
+  assert.equal(formatFteAsPercent(0.4), "40%")
+  assert.equal(formatFteAsPercent(1), "100%")
+  assert.equal(formatFteAsPercent(40), "40%")
 })

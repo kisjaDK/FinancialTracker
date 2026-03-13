@@ -29,6 +29,9 @@ export async function POST(request: Request) {
                   amount: Number(override.amount),
                 }))
               : undefined,
+            confirmedTrackerSeatIds: Array.isArray(body.confirmedTrackerSeatIds)
+              ? body.confirmedTrackerSeatIds.map((value: unknown) => String(value || ""))
+              : undefined,
           }, {
             name: viewer.name,
             email: viewer.email,

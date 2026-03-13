@@ -36,6 +36,10 @@ enum AppRole {
   SUPER_ADMIN
 }
 
+enum ServiceMessageKey {
+  INTERNAL_ACTUALS
+}
+
 model AppUser {
   id        String            @id @default(cuid())
   email     String            @unique
@@ -76,10 +80,24 @@ model TrackingYear {
   externalActualImports ExternalActualImport[]
   exchangeRates       ExchangeRate[]
   statusDefinitions   StatusDefinition[]
+  serviceMessages     ServiceMessage[]
   rosterImports       RosterImport[]
   rosterPeople        RosterPerson[]
   trackerSeats        TrackerSeat[]
   auditLogs           AuditLog[]
+}
+
+model ServiceMessage {
+  id             String            @id @default(cuid())
+  trackingYearId String
+  key            ServiceMessageKey
+  content        String
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  trackingYear   TrackingYear      @relation(fields: [trackingYearId], references: [id], onDelete: Cascade)
+
+  @@unique([trackingYearId, key])
+  @@index([trackingYearId, key])
 }
 
 model AuditLog {
@@ -365,6 +383,7 @@ model SeatMonth {
   actualAmountRaw  Float?
   actualCurrency   CurrencyCode @default(DKK)
   exchangeRateUsed Float?
+  forecastOverrideAmount Float?
   forecastIncluded Boolean     @default(true)
   notes            String?
   createdAt        DateTime    @default(now())

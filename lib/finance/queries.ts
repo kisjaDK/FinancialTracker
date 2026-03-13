@@ -2,6 +2,7 @@ import type {
   CurrencyCode,
   ExchangeRate,
   Prisma,
+  ServiceMessageKey,
 } from "@/lib/generated/prisma/client"
 import {
   ALLOWED_SEAT_STATUSES,
@@ -40,6 +41,9 @@ import type {
 } from "@/lib/finance/types"
 import { filterByScopes, hasScopeRestrictions, type AppViewer } from "@/lib/authz"
 import { prisma } from "@/lib/prisma"
+
+export const INTERNAL_ACTUALS_SERVICE_MESSAGE_KEY: ServiceMessageKey =
+  "INTERNAL_ACTUALS"
 
 function normalizeValue(value: string | null | undefined) {
   return value?.trim().toLowerCase() ?? ""
@@ -509,7 +513,7 @@ export async function getFinanceWorkspaceData(
     trackingYears.at(-1)?.year ??
     new Date().getFullYear()
 
-  await getOrCreateTrackingYear(activeYear)
+  const trackingYear = await getOrCreateTrackingYear(activeYear)
   await ensureFreshTrackerDerivation(activeYear)
   const statusDefinitions = await ensureStatusDefinitions(activeYear)
 
@@ -582,12 +586,21 @@ export async function getFinanceWorkspaceData(
 
     return true
   })
+  const internalActualsMessage = await prisma.serviceMessage.findUnique({
+    where: {
+      trackingYearId_key: {
+        trackingYearId: trackingYear.id,
+        key: INTERNAL_ACTUALS_SERVICE_MESSAGE_KEY,
+      },
+    },
+  })
 
   return {
     activeYear,
     trackingYears,
     summary,
     seats,
+    internalActualsMessage: internalActualsMessage?.content ?? null,
     budgetAreas: scopedBudgetAreas,
     selectedAreaId: effectiveAreaId,
     statusDefinitions,
@@ -595,6 +608,208 @@ export async function getFinanceWorkspaceData(
     trackerTeamOptions: collectSortedValues(allSeats.map((seat) => seat.team)),
     missingActualMonthFilters: missingActualMonths ?? [],
     missingActualMonthOptions: MONTH_NAMES,
+  }
+}
+
+export async function getForecastsPageData(input?: {
+  year?: number
+  subDomain?: string
+  team?: string
+  seatId?: string
+  name?: string
+  status?: string
+  selectedSeatId?: string
+}, viewer?: Pick<AppViewer, "role" | "scopes">) {
+  const trackingYears = await prisma.trackingYear.findMany({
+    orderBy: { year: "asc" },
+  })
+
+  const activeYear =
+    input?.year ??
+    trackingYears.find((trackingYear) => trackingYear.isActive)?.year ??
+    trackingYears.at(-1)?.year ??
+    new Date().getFullYear()
+
+  const trackingYear = await getOrCreateTrackingYear(activeYear)
+  await ensureFreshTrackerDerivation(activeYear)
+
+  const [seats, assumptions, exchangeRates, internalActualsMessage] =
+    await Promise.all([
+      prisma.trackerSeat.findMany({
+        where: {
+          trackingYearId: trackingYear.id,
+          isActive: true,
+        },
+        include: {
+          months: {
+            orderBy: { monthIndex: "asc" },
+          },
+          override: true,
+          budgetArea: true,
+        },
+        orderBy: [{ inSeat: "asc" }, { seatId: "asc" }],
+      }),
+      prisma.costAssumption.findMany({
+        where: {
+          trackingYearId: trackingYear.id,
+        },
+      }),
+      prisma.exchangeRate.findMany({
+        where: { trackingYearId: trackingYear.id },
+        orderBy: { effectiveDate: "desc" },
+      }),
+      prisma.serviceMessage.findUnique({
+        where: {
+          trackingYearId_key: {
+            trackingYearId: trackingYear.id,
+            key: INTERNAL_ACTUALS_SERVICE_MESSAGE_KEY,
+          },
+        },
+      }),
+    ])
+
+  const scopedSeats = filterScopedItems(
+    seats as SeatWithRelations[],
+    viewer,
+    (seat) => {
+      const effectiveSeat = getEffectiveSeat(seat)
+      return { domain: effectiveSeat.domain, subDomain: effectiveSeat.subDomain }
+    }
+  )
+  const assumptionLookup = buildCostAssumptionLookup(assumptions)
+  const exchangeRateLookup = buildExchangeRateLookup(exchangeRates)
+  const mappedSeats = scopedSeats.map((seat) => {
+    const effectiveSeat = getEffectiveSeat(seat)
+    const metrics = deriveSeatMetrics(seat, assumptionLookup, exchangeRates, activeYear)
+    const baseMetrics = deriveSeatMetrics(
+      {
+        ...seat,
+        months: seat.months.map((month) => ({
+          ...month,
+          forecastOverrideAmount: null,
+        })),
+      },
+      assumptionLookup,
+      exchangeRates,
+      activeYear
+    )
+    const cancelled = isTrackerCancelledSeat(seat, effectiveSeat, exchangeRates)
+
+    return {
+      ...effectiveSeat,
+      months: seat.months.map((month) => {
+        const converted =
+          month.actualAmountRaw !== null && month.actualAmountRaw !== undefined
+            ? convertAmountToDkk(
+                month.actualAmountRaw,
+                month.actualCurrency,
+                exchangeRateLookup
+              )
+            : {
+                amountDkk: month.actualAmount,
+                exchangeRateUsed: month.exchangeRateUsed,
+              }
+
+        return {
+          monthIndex: month.monthIndex,
+          actualAmountDkk: cancelled ? 0 : (converted.amountDkk ?? 0),
+          actualAmountRaw: cancelled ? null : month.actualAmountRaw,
+          actualCurrency: month.actualCurrency,
+          exchangeRateUsed: converted.exchangeRateUsed ?? null,
+          forecastOverrideAmount: month.forecastOverrideAmount ?? null,
+          forecastIncluded: month.forecastIncluded,
+          notes: month.notes,
+        }
+      }),
+      totalSpent: metrics.totalSpent,
+      totalForecast: metrics.totalForecast,
+      baseMonthlyForecast: baseMetrics.monthlyForecast,
+      monthlyForecast: metrics.monthlyForecast,
+    }
+  })
+
+  const filters = {
+    subDomain: input?.subDomain?.trim() ?? "",
+    team: input?.team?.trim() ?? "",
+    seatId: input?.seatId?.trim() ?? "",
+    name: input?.name?.trim() ?? "",
+    status: input?.status?.trim() ?? "",
+  }
+
+  const filteredSeats = mappedSeats
+    .filter((seat) => {
+      if (
+        filters.subDomain &&
+        normalizeValue(seat.subDomain) !== normalizeValue(filters.subDomain)
+      ) {
+        return false
+      }
+
+      if (filters.team && normalizeValue(seat.team) !== normalizeValue(filters.team)) {
+        return false
+      }
+
+      if (
+        filters.status &&
+        normalizeValue(seat.status) !== normalizeValue(filters.status)
+      ) {
+        return false
+      }
+
+      if (
+        filters.seatId &&
+        !normalizeValue(seat.seatId).includes(normalizeValue(filters.seatId))
+      ) {
+        return false
+      }
+
+      if (
+        filters.name &&
+        !normalizeValue(seat.inSeat).includes(normalizeValue(filters.name))
+      ) {
+        return false
+      }
+
+      return true
+    })
+    .sort((left, right) => {
+      const nameCompare = (left.inSeat || "").localeCompare(right.inSeat || "", undefined, {
+        sensitivity: "base",
+      })
+
+      if (nameCompare !== 0) {
+        return nameCompare
+      }
+
+      return left.seatId.localeCompare(right.seatId, undefined, {
+        sensitivity: "base",
+      })
+    })
+
+  const selectedSeatId = filteredSeats.some((seat) => seat.id === input?.selectedSeatId)
+    ? input?.selectedSeatId ?? null
+    : filteredSeats[0]?.id ?? null
+
+  return {
+    activeYear,
+    trackingYears,
+    seats: filteredSeats,
+    selectedSeatId,
+    filters,
+    filterOptions: {
+      subDomains: collectSortedValues(mappedSeats.map((seat) => seat.subDomain)),
+      teams: collectSortedValues(mappedSeats.map((seat) => seat.team)),
+      statuses: collectSortedValues(mappedSeats.map((seat) => seat.status)),
+      seats: mappedSeats.map((seat) => ({
+        id: seat.id,
+        seatId: seat.seatId,
+        name: seat.inSeat || "",
+        team: seat.team || "",
+        subDomain: seat.subDomain || "",
+        status: seat.status || "",
+      })),
+    },
+    internalCostServiceMessage: internalActualsMessage?.content ?? null,
   }
 }
 
@@ -1487,14 +1702,25 @@ export async function getInternalCostsPageData(year?: number) {
     new Date().getFullYear()
 
   const trackingYear = await getOrCreateTrackingYear(activeYear)
-  const assumptions = await prisma.costAssumption.findMany({
-    where: { trackingYearId: trackingYear.id },
-    orderBy: [{ location: "asc" }, { band: "asc" }],
-  })
+  const [assumptions, internalActualsMessage] = await Promise.all([
+    prisma.costAssumption.findMany({
+      where: { trackingYearId: trackingYear.id },
+      orderBy: [{ location: "asc" }, { band: "asc" }],
+    }),
+    prisma.serviceMessage.findUnique({
+      where: {
+        trackingYearId_key: {
+          trackingYearId: trackingYear.id,
+          key: INTERNAL_ACTUALS_SERVICE_MESSAGE_KEY,
+        },
+      },
+    }),
+  ])
 
   return {
     activeYear,
     trackingYears,
+    internalActualsMessage: internalActualsMessage?.content ?? null,
     assumptions: assumptions.map((assumption) => ({
       ...assumption,
       dailyCost: assumption.yearlyCost / WORK_DAYS_PER_YEAR,
@@ -2005,6 +2231,7 @@ export async function getTrackerDetail(
           actualAmountRaw: cancelled ? null : month.actualAmountRaw,
           actualCurrency: month.actualCurrency,
           exchangeRateUsed: converted.exchangeRateUsed ?? null,
+          forecastOverrideAmount: month.forecastOverrideAmount ?? null,
           forecastIncluded: month.forecastIncluded,
           notes: month.notes,
         }
@@ -2093,7 +2320,6 @@ export async function upsertCostAssumption(input: {
   band: string
   location: string
   yearlyCost: number
-  notes?: string
 }, actor?: AuditActor) {
   const trackingYear = await getOrCreateTrackingYear(input.year)
   const band = normalizeCostBandLabel(input.band)
@@ -2117,14 +2343,12 @@ export async function upsertCostAssumption(input: {
     },
     update: {
       yearlyCost: input.yearlyCost,
-      notes: input.notes || null,
     },
     create: {
       trackingYearId: trackingYear.id,
       band,
       location: input.location,
       yearlyCost: input.yearlyCost,
-      notes: input.notes || null,
     },
   })
 
@@ -2138,7 +2362,6 @@ export async function upsertCostAssumption(input: {
       "band",
       "location",
       "yearlyCost",
-      "notes",
     ]),
   })
 
@@ -2212,11 +2435,79 @@ export async function deleteCostAssumption(input: {
       "band",
       "location",
       "yearlyCost",
-      "notes",
     ]),
   })
 
   return deleted
+}
+
+export async function upsertServiceMessage(input: {
+  year: number
+  key: ServiceMessageKey
+  content?: string | null
+}, actor?: AuditActor) {
+  const trackingYear = await getOrCreateTrackingYear(input.year)
+  const content = input.content?.trim() ?? ""
+  const before = await prisma.serviceMessage.findUnique({
+    where: {
+      trackingYearId_key: {
+        trackingYearId: trackingYear.id,
+        key: input.key,
+      },
+    },
+  })
+
+  if (!content) {
+    if (before) {
+      await prisma.serviceMessage.delete({
+        where: {
+          trackingYearId_key: {
+            trackingYearId: trackingYear.id,
+            key: input.key,
+          },
+        },
+      })
+
+      await writeAuditLog({
+        trackingYearId: trackingYear.id,
+        entityType: "ServiceMessage",
+        entityId: before.id,
+        action: "DELETE",
+        actor,
+        changes: buildAuditChanges(before, null, ["key", "content"]),
+      })
+    }
+
+    return null
+  }
+
+  const message = await prisma.serviceMessage.upsert({
+    where: {
+      trackingYearId_key: {
+        trackingYearId: trackingYear.id,
+        key: input.key,
+      },
+    },
+    update: {
+      content,
+    },
+    create: {
+      trackingYearId: trackingYear.id,
+      key: input.key,
+      content,
+    },
+  })
+
+  await writeAuditLog({
+    trackingYearId: trackingYear.id,
+    entityType: "ServiceMessage",
+    entityId: message.id,
+    action: before ? "UPDATE" : "CREATE",
+    actor,
+    changes: buildAuditChanges(before, message, ["key", "content"]),
+  })
+
+  return message
 }
 
 export async function getLatestExchangeRates(year: number): Promise<LatestExchangeRate[]> {
@@ -2554,6 +2845,7 @@ export async function updateTrackerSeat(
     monthIndex?: number
     actualAmount?: number
     actualCurrency?: CurrencyCode
+    forecastOverrideAmount?: number | null
     forecastIncluded?: boolean
     notes?: string
     override?: {
@@ -2596,8 +2888,9 @@ export async function updateTrackerSeat(
         orderBy: { effectiveDate: "desc" },
       })
     )
-    const currency = payload.actualCurrency ?? "DKK"
-    const rawAmount = payload.actualAmount ?? 0
+    const currency = payload.actualCurrency ?? beforeMonth?.actualCurrency ?? "DKK"
+    const rawAmount =
+      payload.actualAmount ?? beforeMonth?.actualAmountRaw ?? beforeMonth?.actualAmount ?? 0
     const isClearingActual = rawAmount <= 0
     const converted = isClearingActual
       ? {
@@ -2605,6 +2898,15 @@ export async function updateTrackerSeat(
           exchangeRateUsed: null,
         }
       : convertAmountToDkk(rawAmount, currency, exchangeRates)
+    const forecastIncluded =
+      payload.actualAmount !== undefined && isClearingActual
+        ? true
+        : (payload.forecastIncluded ?? beforeMonth?.forecastIncluded ?? true)
+    const notes = payload.notes === undefined ? beforeMonth?.notes ?? null : payload.notes
+    const forecastOverrideAmount =
+      payload.forecastOverrideAmount === undefined
+        ? beforeMonth?.forecastOverrideAmount ?? null
+        : payload.forecastOverrideAmount
 
     const month = await prisma.seatMonth.upsert({
       where: {
@@ -2618,10 +2920,9 @@ export async function updateTrackerSeat(
         actualAmountRaw: isClearingActual ? null : rawAmount,
         actualCurrency: currency,
         exchangeRateUsed: converted.exchangeRateUsed,
-        forecastIncluded: isClearingActual
-          ? true
-          : (payload.forecastIncluded ?? true),
-        notes: payload.notes ?? null,
+        forecastOverrideAmount,
+        forecastIncluded,
+        notes,
       },
       create: {
         trackerSeatId: seat.id,
@@ -2630,10 +2931,9 @@ export async function updateTrackerSeat(
         actualAmountRaw: isClearingActual ? null : rawAmount,
         actualCurrency: currency,
         exchangeRateUsed: converted.exchangeRateUsed,
-        forecastIncluded: isClearingActual
-          ? true
-          : (payload.forecastIncluded ?? true),
-        notes: payload.notes ?? null,
+        forecastOverrideAmount,
+        forecastIncluded,
+        notes,
       },
     })
 
@@ -2649,6 +2949,7 @@ export async function updateTrackerSeat(
         "actualAmountRaw",
         "actualCurrency",
         "exchangeRateUsed",
+        "forecastOverrideAmount",
         "forecastIncluded",
         "notes",
       ]),
@@ -2765,12 +3066,20 @@ async function getInternalForecastCopyCandidates(input: {
         return null
       }
 
+      const status = effectiveSeat.status
+      const isOnLeave = normalizeValue(status) === normalizeValue("On leave")
+      const allocation = Number.isFinite(Number(effectiveSeat.allocation))
+        ? Number(effectiveSeat.allocation)
+        : 0
+
       return {
         trackerSeatId: seat.id,
         seatId: seat.seatId,
         inSeat: effectiveSeat.inSeat,
         team: effectiveSeat.team,
-        status: effectiveSeat.status,
+        status,
+        allocationPercent: allocation <= 1 ? allocation * 100 : allocation,
+        requiresConfirmation: isOnLeave,
         amount: Math.round(monthForecast),
       }
     })
@@ -2783,9 +3092,18 @@ async function getInternalForecastCopyCandidates(input: {
         inSeat: string | null
         team: string | null
         status: string | null
+        allocationPercent: number
+        requiresConfirmation: boolean
         amount: number
       } => Boolean(seat)
-    ),
+    )
+    .sort((left, right) => {
+      if (left.requiresConfirmation !== right.requiresConfirmation) {
+        return left.requiresConfirmation ? -1 : 1
+      }
+
+      return left.seatId.localeCompare(right.seatId)
+    }),
     viewer,
     () => ({ domain: null, subDomain: selectedSummary.subDomain })
   )
@@ -2815,12 +3133,21 @@ export async function applyForecastCopyToActualsForSubDomain(input: {
     trackerSeatId: string
     amount: number
   }[]
+  confirmedTrackerSeatIds?: string[]
 }, actor?: AuditActor, viewer?: Pick<AppViewer, "role" | "scopes">) {
   const trackingYear = await getOrCreateTrackingYear(input.year)
   const candidates = await getInternalForecastCopyCandidates(input, viewer)
   const overrideLookup = new Map(
     (input.overrides ?? []).map((override) => [override.trackerSeatId, override.amount])
   )
+  const confirmedSeatIds = new Set(input.confirmedTrackerSeatIds ?? [])
+  const unconfirmedOnLeaveSeats = candidates.filter(
+    (candidate) => candidate.requiresConfirmation && !confirmedSeatIds.has(candidate.trackerSeatId)
+  )
+
+  if (unconfirmedOnLeaveSeats.length > 0) {
+    throw new Error("Confirm the on-leave seats before completing the forecast copy.")
+  }
 
   const updates = candidates.map((candidate) => {
     const amount = Math.round(

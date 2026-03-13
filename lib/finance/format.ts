@@ -17,5 +17,17 @@ export function formatNumber(value: number) {
 }
 
 export function formatPercent(value: number) {
-  return `${numberFormatter.format(value * 100)}%`
+  const normalized = Number(value)
+  return `${numberFormatter.format(Number.isFinite(normalized) ? normalized * 100 : 0)}%`
+}
+
+export function formatFteAsPercent(value: number) {
+  const normalized = Number(value)
+
+  if (!Number.isFinite(normalized)) {
+    return "0%"
+  }
+
+  const percent = normalized <= 1 ? normalized * 100 : normalized
+  return `${numberFormatter.format(percent)}%`
 }

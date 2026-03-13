@@ -2,7 +2,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { PrismaClient } from "@/lib/generated/prisma/client"
 
-const PRISMA_SCHEMA_VERSION = "2026-03-12-budget-movement-manual-batches-v1"
+const PRISMA_SCHEMA_VERSION = "2026-03-13-forecast-overrides-v1"
 
 function resolveDatabaseUrl() {
   const databaseUrl = process.env.DATABASE_URL
@@ -45,6 +45,7 @@ const supportsFinanceModels =
   "exchangeRate" in cachedPrisma &&
   "budgetArea" in cachedPrisma &&
   "statusDefinition" in cachedPrisma &&
+  "serviceMessage" in cachedPrisma &&
   "auditLog" in cachedPrisma &&
   "externalActualImport" in cachedPrisma &&
   "externalActualEntry" in cachedPrisma

@@ -20,12 +20,14 @@ export default async function InternalCostsPage({ searchParams }: PageProps) {
   return (
     <>
       <InternalCostsBrowser
+        key={data.activeYear}
         userName={viewer.name}
         userEmail={viewer.email}
         userRole={viewer.role}
         activeYear={data.activeYear}
         trackingYears={data.trackingYears}
         assumptions={data.assumptions}
+        internalActualsMessage={data.internalActualsMessage}
       />
 
       <form

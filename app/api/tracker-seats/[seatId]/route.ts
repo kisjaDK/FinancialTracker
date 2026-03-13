@@ -23,6 +23,13 @@ export async function POST(request: Request, context: Params) {
       actualAmount:
         body.actualAmount === undefined ? undefined : Number(body.actualAmount),
       actualCurrency: body.actualCurrency ?? undefined,
+      forecastOverrideAmount:
+        body.forecastOverrideAmount === undefined
+          ? undefined
+          : body.forecastOverrideAmount === null ||
+              body.forecastOverrideAmount === ""
+            ? null
+            : Number(body.forecastOverrideAmount),
       forecastIncluded:
         body.forecastIncluded === undefined
           ? undefined

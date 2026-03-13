@@ -78,6 +78,7 @@ export type SeatMonthView = {
   actualAmountRaw: number | null
   actualCurrency: CurrencyCode
   exchangeRateUsed: number | null
+  forecastOverrideAmount: number | null
   forecastIncluded: boolean
   notes: string | null
 }

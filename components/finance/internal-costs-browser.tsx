@@ -1,8 +1,9 @@
 "use client"
 
-import { useState } from "react"
+import { useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
+import { GuidanceHover } from "@/components/finance/guidance-hover"
 import { FinanceHeader } from "@/components/finance/header"
 import {
   AlertDialog,
@@ -24,6 +25,7 @@ import {
 } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Textarea } from "@/components/ui/textarea"
 import {
   Table,
   TableBody,
@@ -47,7 +49,6 @@ type CostAssumption = {
   location: string
   yearlyCost: number
   dailyCost: number
-  notes: string | null
 }
 
 type InternalCostsBrowserProps = {
@@ -57,6 +58,7 @@ type InternalCostsBrowserProps = {
   activeYear: number
   trackingYears: TrackingYearOption[]
   assumptions: CostAssumption[]
+  internalActualsMessage: string | null
 }
 
 async function fetchJson(input: RequestInfo, init?: RequestInit) {
@@ -77,18 +79,48 @@ export function InternalCostsBrowser({
   activeYear,
   trackingYears,
   assumptions,
+  internalActualsMessage,
 }: InternalCostsBrowserProps) {
   const router = useRouter()
+  const messageRef = useRef<HTMLTextAreaElement | null>(null)
   const [values, setValues] = useState({
     band: "",
     location: "",
     yearlyCost: "",
-    notes: "",
   })
+  const [serviceMessage, setServiceMessage] = useState(internalActualsMessage ?? "")
   const [pendingDelete, setPendingDelete] = useState<{
     band: string
     location: string
   } | null>(null)
+
+  function insertMarkdown(
+    prefix: string,
+    suffix = prefix,
+    placeholder = "text"
+  ) {
+    const element = messageRef.current
+
+    if (!element) {
+      return
+    }
+
+    const start = element.selectionStart ?? serviceMessage.length
+    const end = element.selectionEnd ?? serviceMessage.length
+    const selected = serviceMessage.slice(start, end)
+    const replacement = `${prefix}${selected || placeholder}${suffix}`
+    const nextValue =
+      serviceMessage.slice(0, start) + replacement + serviceMessage.slice(end)
+
+    setServiceMessage(nextValue)
+
+    requestAnimationFrame(() => {
+      element.focus()
+      const cursorStart = start + prefix.length
+      const cursorEnd = cursorStart + (selected || placeholder).length
+      element.setSelectionRange(cursorStart, cursorEnd)
+    })
+  }
 
   async function saveAssumption() {
     try {
@@ -102,10 +134,29 @@ export function InternalCostsBrowser({
           band: values.band,
           location: values.location,
           yearlyCost: Number(values.yearlyCost),
-          notes: values.notes,
         }),
       })
       toast.success("Internal cost saved")
+      router.refresh()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Save failed")
+    }
+  }
+
+  async function saveServiceMessage() {
+    try {
+      await fetchJson("/api/service-messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          year: activeYear,
+          key: "INTERNAL_ACTUALS",
+          content: serviceMessage,
+        }),
+      })
+      toast.success(serviceMessage.trim() ? "Service message saved" : "Service message cleared")
       router.refresh()
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Save failed")
@@ -182,61 +233,61 @@ export function InternalCostsBrowser({
           </AlertDialogContent>
         </AlertDialog>
 
-        <Card className="border-amber-200/70 bg-white/90">
-          <CardHeader>
-            <CardTitle>Maintain Costs</CardTitle>
-            <CardDescription>
-              Edit an existing row or add a new internal cost assumption for the selected year.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="internal-cost-year">Year</Label>
-              <select
-                id="internal-cost-year"
-                className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
-                value={String(activeYear)}
-                onChange={(event) => {
-                  router.push(`/internal-costs?year=${event.target.value}`)
-                }}
-              >
-                {trackingYears.map((year) => (
-                  <option key={year.id} value={year.year}>
-                    {year.year}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="grid gap-3 md:grid-cols-2">
+        <section className="grid gap-6 xl:grid-cols-2">
+          <Card className="border-amber-200/70 bg-white/90">
+            <CardHeader>
+              <CardTitle>Maintain Costs</CardTitle>
+              <CardDescription>
+                Edit an existing row or add a new internal cost assumption for the selected year.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
               <div className="space-y-2">
-                <Label htmlFor="internal-band">Band</Label>
-                <Input
-                  id="internal-band"
-                  value={values.band}
-                  onChange={(event) =>
-                    setValues((current) => ({ ...current, band: event.target.value }))
-                  }
-                  placeholder="5"
-                />
+                <Label htmlFor="internal-cost-year">Year</Label>
+                <select
+                  id="internal-cost-year"
+                  className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
+                  value={String(activeYear)}
+                  onChange={(event) => {
+                    router.push(`/internal-costs?year=${event.target.value}`)
+                  }}
+                >
+                  {trackingYears.map((year) => (
+                    <option key={year.id} value={year.year}>
+                      {year.year}
+                    </option>
+                  ))}
+                </select>
               </div>
-              <div className="space-y-2">
-                <Label htmlFor="internal-location">Location</Label>
-                <Input
-                  id="internal-location"
-                  value={values.location}
-                  onChange={(event) =>
-                    setValues((current) => ({
-                      ...current,
-                      location: event.target.value,
-                    }))
-                  }
-                  placeholder="Denmark"
-                />
-              </div>
-            </div>
 
-            <div className="grid gap-3 md:grid-cols-2">
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="internal-band">Band</Label>
+                  <Input
+                    id="internal-band"
+                    value={values.band}
+                    onChange={(event) =>
+                      setValues((current) => ({ ...current, band: event.target.value }))
+                    }
+                    placeholder="5"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="internal-location">Location</Label>
+                  <Input
+                    id="internal-location"
+                    value={values.location}
+                    onChange={(event) =>
+                      setValues((current) => ({
+                        ...current,
+                        location: event.target.value,
+                      }))
+                    }
+                    placeholder="Denmark"
+                  />
+                </div>
+              </div>
+
               <div className="space-y-2">
                 <Label htmlFor="internal-yearly-cost">Yearly Cost (DKK)</Label>
                 <Input
@@ -251,37 +302,87 @@ export function InternalCostsBrowser({
                   placeholder="1628000"
                 />
               </div>
-              <div className="space-y-2">
-                <Label htmlFor="internal-notes">Notes</Label>
-                <Input
-                  id="internal-notes"
-                  value={values.notes}
-                  onChange={(event) =>
-                    setValues((current) => ({ ...current, notes: event.target.value }))
+
+              <div className="flex gap-2">
+                <Button onClick={saveAssumption}>Save</Button>
+                <Button
+                  variant="ghost"
+                  onClick={() =>
+                    setValues({
+                      band: "",
+                      location: "",
+                      yearlyCost: "",
+                    })
                   }
-                  placeholder="Optional notes"
+                >
+                  Clear
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="border-amber-200/70 bg-white/90">
+            <CardHeader>
+              <CardTitle>Service Message</CardTitle>
+              <CardDescription>
+                Year-scoped guidance for the internal actuals workflow.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex items-center gap-2">
+                <Label htmlFor="internal-actuals-service-message">Internal Actuals Message</Label>
+                <GuidanceHover
+                  content={serviceMessage}
+                  label="Service message preview"
+                  className="size-4"
                 />
               </div>
-            </div>
-
-            <div className="flex gap-2">
-              <Button onClick={saveAssumption}>Save</Button>
-              <Button
-                variant="ghost"
-                onClick={() =>
-                  setValues({
-                    band: "",
-                    location: "",
-                    yearlyCost: "",
-                    notes: "",
-                  })
-                }
-              >
-                Clear
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => insertMarkdown("**", "**")}
+                >
+                  Bold
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => insertMarkdown("*", "*")}
+                >
+                  Italic
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => insertMarkdown("- ", "", "List item")}
+                >
+                  Bullet
+                </Button>
+              </div>
+              <Textarea
+                ref={messageRef}
+                id="internal-actuals-service-message"
+                value={serviceMessage}
+                onChange={(event) => setServiceMessage(event.target.value)}
+                placeholder="Use markdown for a year-level internal actuals message. Example: **Confirm leave dates** or - Copy only approved months"
+                className="min-h-40"
+              />
+              <p className="text-xs text-muted-foreground">
+                This message is shown on the internal actuals page and in the bulk copy dialog.
+              </p>
+              <div className="flex gap-2">
+                <Button onClick={saveServiceMessage}>Save Message</Button>
+                <Button variant="ghost" onClick={() => setServiceMessage("")}>
+                  Clear
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </section>
 
         <Card className="border-amber-200/70 bg-white/90">
           <CardHeader>
@@ -298,7 +399,6 @@ export function InternalCostsBrowser({
                   <TableHead>Band</TableHead>
                   <TableHead>Yearly Cost</TableHead>
                   <TableHead>Daily Cost</TableHead>
-                  <TableHead>Notes</TableHead>
                   <TableHead />
                 </TableRow>
               </TableHeader>
@@ -309,7 +409,6 @@ export function InternalCostsBrowser({
                     <TableCell>{assumption.band}</TableCell>
                     <TableCell>{formatCurrency(assumption.yearlyCost)}</TableCell>
                     <TableCell>{formatCurrency(assumption.dailyCost)}</TableCell>
-                    <TableCell>{assumption.notes || "No notes"}</TableCell>
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-2">
                         <Button
@@ -320,7 +419,6 @@ export function InternalCostsBrowser({
                               band: assumption.band,
                               location: assumption.location,
                               yearlyCost: String(assumption.yearlyCost),
-                              notes: assumption.notes || "",
                             })
                           }
                         >
@@ -344,7 +442,7 @@ export function InternalCostsBrowser({
                 ))}
                 {assumptions.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={6} className="py-10 text-center text-muted-foreground">
+                    <TableCell colSpan={5} className="py-10 text-center text-muted-foreground">
                       No internal cost assumptions saved yet.
                     </TableCell>
                   </TableRow>

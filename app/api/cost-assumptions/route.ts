@@ -15,7 +15,6 @@ export async function POST(request: Request) {
       band: String(body.band || "").trim(),
       location: String(body.location || "").trim(),
       yearlyCost: Number(body.yearlyCost),
-      notes: body.notes ? String(body.notes) : undefined,
     }, {
       name: viewer.name,
       email: viewer.email,

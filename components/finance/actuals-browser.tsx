@@ -4,9 +4,11 @@ import { useEffect, useState, useTransition } from "react"
 import Link from "next/link"
 import { useRouter, useSearchParams } from "next/navigation"
 import { toast } from "sonner"
+import { GuidanceHover } from "@/components/finance/guidance-hover"
 import { FinanceHeader } from "@/components/finance/header"
+import { Checkbox } from "@/components/ui/checkbox"
 import { MONTH_NAMES, SUPPORTED_CURRENCIES } from "@/lib/finance/constants"
-import { formatCurrency, formatNumber } from "@/lib/finance/format"
+import { formatCurrency, formatFteAsPercent, formatNumber } from "@/lib/finance/format"
 import type {
   ExternalActualImportBatchView,
   ExternalActualImportFilters,
@@ -47,6 +49,8 @@ type TrackingYearOption = {
   year: number
   isActive: boolean
 }
+
+type CheckedState = boolean | "indeterminate"
 
 type SummaryRow = {
   id: string
@@ -92,6 +96,8 @@ type BulkForecastPreview = {
     inSeat: string | null
     team: string | null
     status: string | null
+    allocationPercent: number
+    requiresConfirmation: boolean
     amount: number
   }[]
 }
@@ -105,6 +111,7 @@ type ActualsBrowserProps = {
   selectedAreaId: string | null
   summary: SummaryRow[]
   seats: SeatRow[]
+  internalActualsMessage: string | null
   filters: ExternalActualImportFilters
   filterOptions: {
     users: string[]
@@ -151,6 +158,7 @@ export function ActualsBrowser({
   selectedAreaId,
   summary,
   seats,
+  internalActualsMessage,
   filters,
   filterOptions,
   imports,
@@ -170,6 +178,7 @@ export function ActualsBrowser({
   const [bulkCopyDialogOpen, setBulkCopyDialogOpen] = useState(false)
   const [bulkCopyPreview, setBulkCopyPreview] = useState<BulkForecastPreview | null>(null)
   const [bulkCopyOverrides, setBulkCopyOverrides] = useState<Record<string, string>>({})
+  const [bulkCopyConfirmations, setBulkCopyConfirmations] = useState<Record<string, boolean>>({})
   const [bulkCopyLoading, setBulkCopyLoading] = useState(false)
   const [selectedYear, setSelectedYear] = useState(String(activeYear))
   const [selectedImportYear, setSelectedImportYear] = useState(String(activeYear))
@@ -257,6 +266,13 @@ export function ActualsBrowser({
           response.seats.map((seat) => [seat.trackerSeatId, String(seat.amount)])
         )
       )
+      setBulkCopyConfirmations(
+        Object.fromEntries(
+          response.seats
+            .filter((seat) => seat.requiresConfirmation)
+            .map((seat) => [seat.trackerSeatId, false])
+        )
+      )
       setBulkCopyDialogOpen(true)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Bulk update failed")
@@ -286,6 +302,9 @@ export function ActualsBrowser({
             trackerSeatId: seat.trackerSeatId,
             amount: Number(bulkCopyOverrides[seat.trackerSeatId] || 0),
           })),
+          confirmedTrackerSeatIds: bulkCopyPreview.seats
+            .filter((seat) => bulkCopyConfirmations[seat.trackerSeatId])
+            .map((seat) => seat.trackerSeatId),
         }),
       })
 
@@ -296,12 +315,25 @@ export function ActualsBrowser({
       )
       setBulkCopyDialogOpen(false)
       setBulkCopyPreview(null)
+      setBulkCopyConfirmations({})
       router.refresh()
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Bulk update failed")
     } finally {
       setBulkCopyLoading(false)
     }
+  }
+
+  const pendingOnLeaveConfirmations =
+    bulkCopyPreview?.seats.filter(
+      (seat) => seat.requiresConfirmation && !bulkCopyConfirmations[seat.trackerSeatId]
+    ) ?? []
+
+  function updateBulkCopyConfirmation(trackerSeatId: string, checked: CheckedState) {
+    setBulkCopyConfirmations((current) => ({
+      ...current,
+      [trackerSeatId]: checked === true,
+    }))
   }
 
   function handleImport() {
@@ -385,12 +417,19 @@ export function ActualsBrowser({
             setBulkCopyDialogOpen(open)
             if (!open) {
               setBulkCopyPreview(null)
+              setBulkCopyConfirmations({})
             }
           }}
         >
           <DialogContent className="max-h-[85vh] max-w-3xl overflow-hidden">
             <DialogHeader>
-              <DialogTitle>Review forecast copy to actuals</DialogTitle>
+              <div className="flex items-center gap-2">
+                <DialogTitle>Review forecast copy to actuals</DialogTitle>
+                <GuidanceHover
+                  content={internalActualsMessage}
+                  label="Internal actuals service message"
+                />
+              </div>
               <DialogDescription>
                 {bulkCopyPreview
                   ? `Month: ${bulkCopyPreview.monthLabel}. Review the internal seats in ${
@@ -408,12 +447,29 @@ export function ActualsBrowser({
                       className="grid gap-3 rounded-lg border border-border p-3 md:grid-cols-[1.4fr_0.8fr_0.8fr]"
                     >
                       <div>
-                        <div className="font-medium">
-                          {seat.seatId} · {seat.inSeat || "Unassigned"}
+                        <div className="flex items-center gap-2 font-medium">
+                          <span>
+                            {seat.seatId} · {seat.inSeat || "Unassigned"} · {formatFteAsPercent(seat.allocationPercent)}
+                          </span>
                         </div>
                         <div className="text-xs text-muted-foreground">
                           {seat.team || "No team"} · {bulkCopyPreview.monthLabel}
                         </div>
+                        {seat.requiresConfirmation ? (
+                          <label className="mt-3 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+                            <Checkbox
+                              checked={bulkCopyConfirmations[seat.trackerSeatId] ?? false}
+                              onCheckedChange={(checked) =>
+                                updateBulkCopyConfirmation(seat.trackerSeatId, checked)
+                              }
+                              className="mt-0.5"
+                            />
+                            <span>
+                              Confirm this seat is on leave and should still receive copied
+                              internal actuals.
+                            </span>
+                          </label>
+                        ) : null}
                       </div>
                       <div className="text-sm">
                         <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
@@ -450,19 +506,30 @@ export function ActualsBrowser({
               )}
             </div>
             <DialogFooter>
+              {pendingOnLeaveConfirmations.length > 0 ? (
+                <div className="mr-auto text-sm text-amber-900">
+                  Confirm {pendingOnLeaveConfirmations.length} on-leave seat
+                  {pendingOnLeaveConfirmations.length === 1 ? "" : "s"} before completing.
+                </div>
+              ) : null}
               <Button
                 type="button"
                 variant="outline"
                 onClick={() => {
                   setBulkCopyDialogOpen(false)
                   setBulkCopyPreview(null)
+                  setBulkCopyConfirmations({})
                 }}
               >
                 Cancel
               </Button>
               <Button
                 type="button"
-                disabled={!bulkCopyPreview?.seats.length || bulkCopyLoading}
+                disabled={
+                  !bulkCopyPreview?.seats.length ||
+                  bulkCopyLoading ||
+                  pendingOnLeaveConfirmations.length > 0
+                }
                 onClick={() => void completeBulkForecastCopy()}
               >
                 Complete
@@ -540,7 +607,13 @@ export function ActualsBrowser({
             <Card className="border-amber-200/70 bg-white/90">
               <CardHeader className="flex-row items-end justify-between gap-4">
                 <div>
-                  <CardTitle>Internal Actuals Controls</CardTitle>
+                  <div className="flex items-center gap-2">
+                    <CardTitle>Internal Actuals Controls</CardTitle>
+                    <GuidanceHover
+                      content={internalActualsMessage}
+                      label="Internal actuals service message"
+                    />
+                  </div>
                   <CardDescription>
                     Scope the internal actuals work before editing seat-month values.
                   </CardDescription>
@@ -722,6 +795,21 @@ export function ActualsBrowser({
                       ))}
                     </select>
                   </div>
+                  {internalActualsMessage ? (
+                    <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+                      <div className="flex items-center gap-2 font-medium">
+                        <span>Internal actuals service message</span>
+                        <GuidanceHover
+                          content={internalActualsMessage}
+                          label="Internal actuals service message"
+                        />
+                      </div>
+                      <div className="mt-1 text-amber-900/80">
+                        Hover the info icon to review the instructions before entering or copying
+                        actuals.
+                      </div>
+                    </div>
+                  ) : null}
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-2">
                       <Label htmlFor="month-select">Month</Label>

@@ -190,6 +190,13 @@ export function deriveSeatMetrics(
       return 0
     }
 
+    if (
+      month?.forecastOverrideAmount !== null &&
+      month?.forecastOverrideAmount !== undefined
+    ) {
+      return month.forecastOverrideAmount
+    }
+
     return monthlyBaseForecast
   })
 
