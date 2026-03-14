@@ -78,6 +78,9 @@ function formatTarget(value: number | null) {
 }
 
 const DOMAIN_ROLLUP_LABEL_WIDTH = "10rem"
+const STAFFING_POSITIVE_COLOR = "var(--color-chart-2)"
+const STAFFING_ON_LEAVE_COLOR = "var(--color-chart-1)"
+const STAFFING_OPEN_COLOR = "var(--color-chart-4)"
 
 function monthTotal(month: StaffingMonthBucket) {
   return month.active + month.onLeave + month.open
@@ -115,7 +118,14 @@ function DomainVarianceCell({
         </Link>
       </div>
       <div>Target {formatTarget(target)}</div>
-      <div className={diff !== null && diff > 0 ? "text-red-700" : "text-emerald-700"}>
+      <div
+        style={{
+          color:
+            diff !== null && diff > 0
+              ? "var(--color-destructive)"
+              : STAFFING_POSITIVE_COLOR,
+        }}
+      >
         Diff {diff === null ? "-" : `${diff > 0 ? "+" : ""}${formatNumber(diff)}`}
       </div>
     </div>
@@ -263,11 +273,11 @@ export function StaffingBrowser({
   const domainChartConfig = {
     onLeave: {
       label: "On leave",
-      color: "oklch(0.66 0.055 8)",
+      color: STAFFING_ON_LEAVE_COLOR,
     },
     open: {
       label: "Open",
-      color: "oklch(0.56 0.032 356)",
+      color: STAFFING_OPEN_COLOR,
     },
   } as const
 

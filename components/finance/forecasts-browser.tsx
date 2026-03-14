@@ -448,7 +448,7 @@ export function ForecastsBrowser({
                 />
               </div>
               <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-                <div className="flex items-center justify-between rounded-xl border border-border/70 bg-background px-4 py-3">
+                <div className="flex items-center justify-between rounded-xl brand-soft-panel px-4 py-3">
                   <div className="pr-4">
                     <div className="text-sm font-medium">Hide inactive statuses</div>
                     <div className="text-xs text-muted-foreground">
@@ -465,7 +465,7 @@ export function ForecastsBrowser({
                     />
                   </div>
                 </div>
-                <div className="flex items-center justify-between rounded-xl border border-border/70 bg-background px-4 py-3">
+                <div className="flex items-center justify-between rounded-xl brand-soft-panel px-4 py-3">
                   <div className="pr-4">
                     <div className="text-sm font-medium">Non-month start dates</div>
                     <div className="text-xs text-muted-foreground">
@@ -479,7 +479,7 @@ export function ForecastsBrowser({
                     <Switch checked={nonMonthStart} onCheckedChange={setNonMonthStart} />
                   </div>
                 </div>
-                <div className="flex items-center justify-between rounded-xl border border-border/70 bg-background px-4 py-3">
+                <div className="flex items-center justify-between rounded-xl brand-soft-panel px-4 py-3">
                   <div className="pr-4">
                     <div className="text-sm font-medium">Non-month end dates</div>
                     <div className="text-xs text-muted-foreground">
@@ -493,7 +493,7 @@ export function ForecastsBrowser({
                     <Switch checked={nonMonthEnd} onCheckedChange={setNonMonthEnd} />
                   </div>
                 </div>
-                <div className="flex items-center justify-between rounded-xl border border-border/70 bg-background px-4 py-3">
+                <div className="flex items-center justify-between rounded-xl brand-soft-panel px-4 py-3">
                   <div className="pr-4">
                     <div className="text-sm font-medium">Reduced on-leave forecasts</div>
                     <div className="text-xs text-muted-foreground">
@@ -569,7 +569,7 @@ export function ForecastsBrowser({
                           "w-full rounded-2xl border p-4 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-300 focus-visible:ring-offset-2",
                           isSelected
                             ? "border-rose-400 brand-selected-row shadow-sm"
-                            : "border-border/70 bg-background hover:bg-accent"
+                            : "border-border/70 brand-soft-panel hover:bg-rose-50/70 dark:hover:bg-rose-950/25"
                         )}
                       >
                         <div className="flex items-start justify-between gap-3">
@@ -648,7 +648,7 @@ export function ForecastsBrowser({
             <CardContent>
               {selectedSeat ? (
                 <div className="space-y-6">
-                  <div className="grid gap-4 rounded-2xl bg-muted/40 p-4 md:grid-cols-2 xl:grid-cols-4">
+                  <div className="grid gap-4 rounded-2xl brand-soft-panel p-4 md:grid-cols-2 xl:grid-cols-4">
                     <div>
                       <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
                         Person
@@ -762,7 +762,9 @@ export function ForecastsBrowser({
                                 {formatCurrency(month?.actualAmountDkk ?? 0)}
                               </div>
                               {hasActual ? (
-                                <div className="text-xs text-emerald-700">Actuals imported</div>
+                                <div className="text-xs text-rose-700 dark:text-rose-300">
+                                  Actuals imported
+                                </div>
                               ) : (
                                 <div className="text-xs text-muted-foreground">No actuals</div>
                               )}
@@ -798,7 +800,7 @@ export function ForecastsBrowser({
                     </TableBody>
                   </Table>
 
-                  <div className="grid gap-3 rounded-2xl border border-dashed border-border px-4 py-3 text-sm md:grid-cols-4">
+                  <div className="grid gap-3 rounded-2xl border border-dashed border-rose-200 bg-rose-50/50 px-4 py-3 text-sm dark:border-rose-900/40 dark:bg-rose-950/20 md:grid-cols-4">
                     <div className="text-muted-foreground">Forecast totals</div>
                     <div>
                       <div className="text-xs text-muted-foreground">Derived</div>

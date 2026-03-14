@@ -156,17 +156,17 @@
   }
 
   .brand-page-shell-staffing {
-    background-color: oklch(0.982 0.01 14);
+    background-color: oklch(0.985 0.012 12);
     background-image:
-      radial-gradient(circle at top left, rgba(174, 142, 98, 0.16), transparent 32%),
-      linear-gradient(180deg, rgba(251, 248, 240, 1) 0%, rgba(241, 236, 223, 1) 100%);
+      radial-gradient(circle at top left, rgba(191, 143, 152, 0.18), transparent 32%),
+      linear-gradient(180deg, rgba(255, 249, 251, 1) 0%, rgba(245, 239, 241, 1) 100%);
   }
 
   .dark .brand-page-shell-staffing {
     background-color: oklch(0.16 0.008 12);
     background-image:
-      radial-gradient(circle at top left, rgba(155, 129, 93, 0.15), transparent 28%),
-      linear-gradient(180deg, rgba(31, 27, 24, 1) 0%, rgba(22, 20, 18, 1) 100%);
+      radial-gradient(circle at top left, rgba(180, 123, 138, 0.18), transparent 28%),
+      linear-gradient(180deg, rgba(30, 23, 28, 1) 0%, rgba(21, 18, 21, 1) 100%);
   }
 
   .brand-card {

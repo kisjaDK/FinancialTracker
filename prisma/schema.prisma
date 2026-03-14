@@ -394,6 +394,8 @@ model TrackerSeat {
   override       TrackerOverride?
 
   @@unique([trackingYearId, sourceKey])
+  @@index([trackingYearId, isActive])
+  @@index([trackingYearId, sourceType, isActive])
   @@index([trackingYearId, budgetAreaId])
   @@index([trackingYearId, seatId])
 }

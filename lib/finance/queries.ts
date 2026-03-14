@@ -51,6 +51,8 @@ import { prisma } from "@/lib/prisma"
 export const INTERNAL_ACTUALS_SERVICE_MESSAGE_KEY: ServiceMessageKey =
   "INTERNAL_ACTUALS"
 
+const trackerSeatDerivationByYear = new Map<number, Promise<void>>()
+
 function normalizeValue(value: string | null | undefined) {
   return value?.trim().toLowerCase() ?? ""
 }
@@ -633,26 +635,48 @@ async function ensureFreshTrackerDerivation(year: number) {
   }
 }
 
-async function ensureSeatMonths(trackerSeatId: string) {
+async function ensureSeatMonthsForSeats(trackerSeatIds: string[]) {
+  if (trackerSeatIds.length === 0) {
+    return
+  }
+
   const existingMonths = await prisma.seatMonth.findMany({
-    where: { trackerSeatId },
-    select: { monthIndex: true },
+    where: {
+      trackerSeatId: {
+        in: trackerSeatIds,
+      },
+    },
+    select: {
+      trackerSeatId: true,
+      monthIndex: true,
+    },
   })
-  const existing = new Set(existingMonths.map((month) => month.monthIndex))
 
-  const missing = Array.from({ length: 12 }, (_, index) => index).filter(
-    (monthIndex) => !existing.has(monthIndex)
-  )
+  const existingBySeatId = new Map<string, Set<number>>()
 
-  if (missing.length === 0) {
+  for (const month of existingMonths) {
+    const existing = existingBySeatId.get(month.trackerSeatId) ?? new Set<number>()
+    existing.add(month.monthIndex)
+    existingBySeatId.set(month.trackerSeatId, existing)
+  }
+
+  const missingMonths = trackerSeatIds.flatMap((trackerSeatId) => {
+    const existing = existingBySeatId.get(trackerSeatId) ?? new Set<number>()
+
+    return Array.from({ length: 12 }, (_, monthIndex) => monthIndex)
+      .filter((monthIndex) => !existing.has(monthIndex))
+      .map((monthIndex) => ({
+        trackerSeatId,
+        monthIndex,
+      }))
+  })
+
+  if (missingMonths.length === 0) {
     return
   }
 
   await prisma.seatMonth.createMany({
-    data: missing.map((monthIndex) => ({
-      trackerSeatId,
-      monthIndex,
-    })),
+    data: missingMonths,
   })
 }
 
@@ -895,6 +919,21 @@ export function resolveRosterSeatAssignment(
 }
 
 export async function deriveTrackerSeatsForYear(year: number) {
+  const existingDerivation = trackerSeatDerivationByYear.get(year)
+  if (existingDerivation) {
+    await existingDerivation
+    return
+  }
+
+  const derivation = deriveTrackerSeatsForYearInternal(year).finally(() => {
+    trackerSeatDerivationByYear.delete(year)
+  })
+
+  trackerSeatDerivationByYear.set(year, derivation)
+  await derivation
+}
+
+async function deriveTrackerSeatsForYearInternal(year: number) {
   const trackingYear = await getOrCreateTrackingYear(year)
   const rosterPeople = await prisma.rosterPerson.findMany({
     where: {
@@ -944,11 +983,20 @@ export async function deriveTrackerSeatsForYear(year: number) {
   const existingSeatBySourceKey = new Map(
     existingRosterSeats.map((seat) => [seat.sourceKey, seat])
   )
+  const latestSourceKeys = latestPeopleBySeatId.map((person) => buildSourceKey(person.seatId))
 
   await prisma.trackerSeat.updateMany({
     where: {
       trackingYearId: trackingYear.id,
       sourceType: "ROSTER",
+      isActive: true,
+      ...(latestSourceKeys.length > 0
+        ? {
+            sourceKey: {
+              notIn: latestSourceKeys,
+            },
+          }
+        : {}),
     },
     data: {
       isActive: false,
@@ -958,6 +1006,8 @@ export async function deriveTrackerSeatsForYear(year: number) {
   if (latestPeopleBySeatId.length === 0) {
     return
   }
+
+  const touchedTrackerSeatIds: string[] = []
 
   for (const person of latestPeopleBySeatId) {
     const existingSeat = existingSeatBySourceKey.get(buildSourceKey(person.seatId))
@@ -1029,8 +1079,10 @@ export async function deriveTrackerSeatsForYear(year: number) {
       },
     })
 
-    await ensureSeatMonths(trackerSeat.id)
+    touchedTrackerSeatIds.push(trackerSeat.id)
   }
+
+  await ensureSeatMonthsForSeats(touchedTrackerSeatIds)
 }
 
 export async function getFinanceWorkspaceData(
@@ -2310,7 +2362,7 @@ async function createExternalActualBatchForMatches(input: {
       },
     })
 
-    for (const [index, match] of matches.entries()) {
+    const matchedEntries = matches.map((match, index) => {
       const originalAmount = originalShares[index]
       const dkkAmount = Math.round(originalAmount * rate.rateToDkk * 100) / 100
       const noteSegments = [
@@ -2320,8 +2372,8 @@ async function createExternalActualBatchForMatches(input: {
         `spend plan ${input.spendPlanId}`,
       ].filter(Boolean)
 
-      await transaction.externalActualEntry.create({
-        data: {
+      return {
+        entry: {
           trackingYearId: trackingYear.id,
           importId: nextBatch.id,
           trackerSeatId: match.trackerSeatId,
@@ -2341,25 +2393,7 @@ async function createExternalActualBatchForMatches(input: {
           rawContent: input.rawContent ?? null,
           usedForecastAmount: match.usedForecastAmount,
         },
-      })
-
-      await transaction.seatMonth.upsert({
-        where: {
-          trackerSeatId_monthIndex: {
-            trackerSeatId: match.trackerSeatId,
-            monthIndex: input.monthIndex,
-          },
-        },
-        update: {
-          actualAmount: dkkAmount <= 0 ? 0 : dkkAmount,
-          actualAmountRaw: originalAmount,
-          actualCurrency: input.currency,
-          exchangeRateUsed: dkkAmount <= 0 ? null : rate.rateToDkk,
-          forecastIncluded: dkkAmount <= 0,
-          usedForecastAmount: dkkAmount <= 0 ? null : match.usedForecastAmount,
-          notes: noteSegments.join(" · "),
-        },
-        create: {
+        seatMonth: {
           trackerSeatId: match.trackerSeatId,
           monthIndex: input.monthIndex,
           actualAmount: dkkAmount <= 0 ? 0 : dkkAmount,
@@ -2369,6 +2403,33 @@ async function createExternalActualBatchForMatches(input: {
           forecastIncluded: dkkAmount <= 0,
           usedForecastAmount: dkkAmount <= 0 ? null : match.usedForecastAmount,
           notes: noteSegments.join(" · "),
+        },
+      }
+    })
+
+    await transaction.externalActualEntry.createMany({
+      data: matchedEntries.map((row) => row.entry),
+    })
+
+    for (const row of matchedEntries) {
+      await transaction.seatMonth.upsert({
+        where: {
+          trackerSeatId_monthIndex: {
+            trackerSeatId: row.seatMonth.trackerSeatId,
+            monthIndex: input.monthIndex,
+          },
+        },
+        update: {
+          actualAmount: row.seatMonth.actualAmount,
+          actualAmountRaw: row.seatMonth.actualAmountRaw,
+          actualCurrency: row.seatMonth.actualCurrency,
+          exchangeRateUsed: row.seatMonth.exchangeRateUsed,
+          forecastIncluded: row.seatMonth.forecastIncluded,
+          usedForecastAmount: row.seatMonth.usedForecastAmount,
+          notes: row.seatMonth.notes,
+        },
+        create: {
+          ...row.seatMonth,
         },
       })
     }
@@ -2692,23 +2753,98 @@ export async function assignSpendPlanToTrackerSeats(input: {
   trackerSeatIds: string[]
   spendPlanId: string
 }, actor?: AuditActor) {
-  if (input.trackerSeatIds.length === 0) {
+  const trackerSeatIds = Array.from(
+    new Set(input.trackerSeatIds.map((seatId) => seatId.trim()).filter(Boolean))
+  )
+
+  if (trackerSeatIds.length === 0) {
     throw new Error("Select at least one seat to map the spend plan to.")
   }
 
-  for (const seatId of input.trackerSeatIds) {
-    await updateTrackerSeat(
-      seatId,
-      {
-        override: {
-          spendPlanId: input.spendPlanId,
+  const [seats, existingOverrides] = await Promise.all([
+    prisma.trackerSeat.findMany({
+      where: {
+        id: {
+          in: trackerSeatIds,
         },
       },
-      actor
-    )
+      select: {
+        id: true,
+        trackingYearId: true,
+      },
+    }),
+    prisma.trackerOverride.findMany({
+      where: {
+        trackerSeatId: {
+          in: trackerSeatIds,
+        },
+      },
+    }),
+  ])
+
+  if (seats.length !== trackerSeatIds.length) {
+    const foundSeatIds = new Set(seats.map((seat) => seat.id))
+    const missingSeatIds = trackerSeatIds.filter((seatId) => !foundSeatIds.has(seatId))
+    throw new Error(`Unknown tracker seat id(s): ${missingSeatIds.join(", ")}`)
   }
 
-  return { updatedCount: input.trackerSeatIds.length }
+  const existingOverrideBySeatId = new Map(
+    existingOverrides.map((override) => [override.trackerSeatId, override])
+  )
+  const existingSeatIds = existingOverrides.map((override) => override.trackerSeatId)
+  const missingSeatIds = trackerSeatIds.filter((seatId) => !existingOverrideBySeatId.has(seatId))
+
+  await prisma.$transaction(async (transaction) => {
+    if (existingSeatIds.length > 0) {
+      await transaction.trackerOverride.updateMany({
+        where: {
+          trackerSeatId: {
+            in: existingSeatIds,
+          },
+        },
+        data: {
+          spendPlanId: input.spendPlanId,
+        },
+      })
+    }
+
+    if (missingSeatIds.length > 0) {
+      await transaction.trackerOverride.createMany({
+        data: missingSeatIds.map((trackerSeatId) => ({
+          trackerSeatId,
+          spendPlanId: input.spendPlanId,
+        })),
+      })
+    }
+  })
+
+  const updatedOverrides = await prisma.trackerOverride.findMany({
+    where: {
+      trackerSeatId: {
+        in: trackerSeatIds,
+      },
+    },
+  })
+  const seatById = new Map(seats.map((seat) => [seat.id, seat]))
+
+  await Promise.all(
+    updatedOverrides.map((override) =>
+      writeAuditLog({
+        trackingYearId: seatById.get(override.trackerSeatId)?.trackingYearId ?? null,
+        entityType: "TrackerOverride",
+        entityId: override.id,
+        action: existingOverrideBySeatId.has(override.trackerSeatId) ? "UPDATE" : "CREATE",
+        actor,
+        changes: buildAuditChanges(
+          existingOverrideBySeatId.get(override.trackerSeatId),
+          override,
+          ["spendPlanId"]
+        ),
+      })
+    )
+  )
+
+  return { updatedCount: trackerSeatIds.length }
 }
 
 export async function getExternalActualImportsPageData(input?: {
