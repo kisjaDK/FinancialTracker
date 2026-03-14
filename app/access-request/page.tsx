@@ -9,7 +9,7 @@ export default async function AccessRequestPage() {
   }
 
   if (viewer.role) {
-    redirect("/welcome")
+    redirect("/tracker")
   }
 
   const adminEmails = await getAdminContactEmails()

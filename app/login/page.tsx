@@ -68,7 +68,7 @@ export default function LoginPage() {
           <form
             action={async () => {
               "use server"
-              await signIn("microsoft-entra-id", { redirectTo: "/welcome" })
+              await signIn("microsoft-entra-id", { redirectTo: "/tracker" })
             }}
             className="mt-6"
           >

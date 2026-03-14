@@ -1,12 +1,13 @@
 import test from "node:test"
 import assert from "node:assert/strict"
 import { parseCsv } from "@/lib/finance/csv"
-import { parseNumber } from "@/lib/finance/imports"
+import { normalizeRosterVendor, parseNumber } from "@/lib/finance/imports"
 import {
   buildCostAssumptionLookup,
   deriveSeatMetrics,
 } from "@/lib/finance/derive"
 import { buildExchangeRateLookup, convertAmountToDkk } from "@/lib/finance/currency"
+import { resolveRosterSeatAssignment } from "@/lib/finance/queries"
 import type { SeatWithRelations } from "@/lib/finance/types"
 import { formatFteAsPercent } from "@/lib/finance/format"
 import { getRichTextPlainText, renderRichTextToHtml } from "@/lib/rich-text"
@@ -46,6 +47,23 @@ test("parseNumber supports parenthesized negatives from Excel exports", () => {
   assert.equal(parseNumber("(3.500.000)"), -3500000)
   assert.equal(parseNumber("(700.000)"), -700000)
   assert.equal(parseNumber("-"), null)
+})
+
+test("normalizeRosterVendor lets internal resource type override conflicting vendor", () => {
+  const normalized = normalizeRosterVendor("Internal", "Other")
+
+  assert.equal(normalized.vendor, null)
+  assert.equal(
+    normalized.importError,
+    "Internal resource type cannot use external vendor 'Other'."
+  )
+})
+
+test("normalizeRosterVendor clears internal vendor values for internal resources", () => {
+  const normalized = normalizeRosterVendor("Internal", "Internal")
+
+  assert.equal(normalized.vendor, null)
+  assert.equal(normalized.importError, null)
 })
 
 test("deriveSeatMetrics uses internal cost assumptions", () => {
@@ -120,6 +138,123 @@ test("deriveSeatMetrics uses internal cost assumptions", () => {
   assert.equal(metrics.yearlyCostInternal, 1200000)
   assert.equal(metrics.monthlyForecast[0], 0)
   assert.equal(metrics.monthlyForecast[1], 100000)
+})
+
+test("deriveSeatMetrics returns zero forecast when start and end dates are the same", () => {
+  const lookup = buildCostAssumptionLookup([
+    {
+      id: "cost-1",
+      trackingYearId: "year-1",
+      band: "4",
+      location: "Denmark",
+      yearlyCost: 1133295,
+      notes: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    },
+  ])
+
+  const boundaryDate = new Date("2026-12-30T23:00:00.000Z")
+  const seat = {
+    id: "seat-2",
+    trackingYearId: "year-1",
+    budgetAreaId: "area-1",
+    rosterPersonId: null,
+    sourceType: "ROSTER",
+    seatId: "300289",
+    sourceKey: "roster:300289",
+    isActive: true,
+    domain: "Data & Analytics",
+    subDomain: "Architecture",
+    funding: "Core Team",
+    pillar: "Architecture",
+    costCenter: "D6861",
+    projectCode: "L68610001",
+    resourceType: "Internal",
+    team: "Architecture",
+    inSeat: "Vacant",
+    description: "Data Architect",
+    band: "4",
+    ppid: null,
+    location: "Denmark",
+    vendor: null,
+    dailyRate: null,
+    ritm: null,
+    sow: null,
+    spendPlanId: null,
+    status: "Open",
+    allocation: 1,
+    startDate: boundaryDate,
+    endDate: boundaryDate,
+    notes: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    months: Array.from({ length: 12 }, (_, monthIndex) => ({
+      id: `month-boundary-${monthIndex}`,
+      trackerSeatId: "seat-2",
+      monthIndex,
+      actualAmount: 0,
+      actualAmountRaw: null,
+      actualCurrency: "DKK",
+      exchangeRateUsed: null,
+      forecastOverrideAmount: null,
+      forecastIncluded: true,
+      notes: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })),
+    override: null,
+    budgetArea: null,
+  } satisfies SeatWithRelations
+
+  const metrics = deriveSeatMetrics(seat, lookup, [], 2026)
+
+  assert.equal(metrics.totalForecast, 0)
+  assert.deepEqual(metrics.monthlyForecast, Array(12).fill(0))
+})
+
+test("resolveRosterSeatAssignment uses mapped budget area pillar for derived project code", () => {
+  const assignment = resolveRosterSeatAssignment(
+    {
+      seatId: "300127",
+      domain: "D6861",
+      productLine: "Architecture Team",
+      fundingType: "D&T Run",
+    },
+    [
+      {
+        id: "area-1",
+        domain: "Data & Analytics",
+        subDomain: "Architecture",
+        funding: "D&T Run",
+        pillar: "Architecture",
+        costCenter: "D6861",
+        projectCode: "L68610001",
+      },
+      {
+        id: "area-2",
+        domain: "Data & Analytics",
+        subDomain: "AI Platform",
+        funding: "D&T Run",
+        pillar: "AI & Automation CoE",
+        costCenter: "D6861",
+        projectCode: "L44530001",
+      },
+    ],
+    {
+      d6861: [
+        {
+          domain: "Data & Analytics",
+          subDomain: "Architecture Team",
+          projectCode: "L44530001",
+        },
+      ],
+    }
+  )
+
+  assert.equal(assignment.projectCode, "L44530001")
+  assert.equal(assignment.budgetArea?.id, "area-2")
+  assert.equal(assignment.pillar, "AI & Automation CoE")
 })
 
 test("convertAmountToDkk uses latest configured exchange rate", () => {

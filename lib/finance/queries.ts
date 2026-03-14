@@ -411,6 +411,78 @@ function findMatchingBudgetArea(
   )
 }
 
+export function resolveRosterSeatAssignment(
+  person: {
+    domain: string | null
+    productLine: string | null
+    fundingType: string | null
+    seatId: string
+  },
+  budgetAreas: {
+    id: string
+    domain: string | null
+    subDomain: string | null
+    funding: string | null
+    pillar: string | null
+    costCenter: string
+    projectCode: string
+  }[],
+  mappingLookup: ReturnType<typeof buildDepartmentMappingLookup>,
+  existingSeat?: {
+    sourceKey: string
+    projectCode: string | null
+    override?: {
+      projectCode: string | null
+    } | null
+  } | null
+) {
+  const fallbackBudgetArea = findMatchingBudgetArea(
+    budgetAreas,
+    person.productLine,
+    person.fundingType
+  )
+  const mappedHierarchy =
+    resolveDepartmentMapping(mappingLookup, {
+      sourceCode: person.domain,
+      subDomain: person.productLine,
+      projectCode: fallbackBudgetArea?.projectCode,
+    }) ||
+    resolveDepartmentMapping(mappingLookup, {
+      sourceCode: fallbackBudgetArea?.costCenter,
+      subDomain: person.productLine,
+      projectCode: fallbackBudgetArea?.projectCode,
+    })
+  const mappedBudgetArea =
+    mappedHierarchy?.projectCode && person.domain
+      ? budgetAreas.find(
+          (area) =>
+            normalizeValue(area.costCenter) === normalizeValue(person.domain) &&
+            normalizeValue(area.projectCode) === normalizeValue(mappedHierarchy.projectCode)
+        )
+      : null
+  const budgetArea = mappedBudgetArea || fallbackBudgetArea
+  const derivedProjectCode = mappedHierarchy?.projectCode || budgetArea?.projectCode || null
+  const projectCode =
+    existingSeat?.override?.projectCode && existingSeat.sourceKey === buildSourceKey(person.seatId)
+      ? existingSeat.projectCode
+      : derivedProjectCode
+
+  return {
+    mappedHierarchy,
+    budgetArea,
+    projectCode,
+    domain: normalizeDomainLabel(
+      mappedHierarchy?.domain || budgetArea?.domain || person.domain || null
+    ),
+    subDomain: normalizeSubDomainLabel(
+      mappedHierarchy?.subDomain || budgetArea?.subDomain || person.productLine || null
+    ),
+    funding: person.fundingType || budgetArea?.funding || null,
+    pillar: budgetArea?.pillar || person.productLine || null,
+    costCenter: budgetArea?.costCenter || null,
+  }
+}
+
 export async function deriveTrackerSeatsForYear(year: number) {
   const trackingYear = await getOrCreateTrackingYear(year)
   const rosterPeople = await prisma.rosterPerson.findMany({
@@ -477,39 +549,13 @@ export async function deriveTrackerSeatsForYear(year: number) {
   }
 
   for (const person of latestPeopleBySeatId) {
-    const fallbackBudgetArea = findMatchingBudgetArea(
-      budgetAreas,
-      person.productLine,
-      person.fundingType
-    )
-    const mappedHierarchy =
-      resolveDepartmentMapping(mappingLookup, {
-        sourceCode: person.domain,
-        subDomain: person.productLine,
-        projectCode: fallbackBudgetArea?.projectCode,
-      }) ||
-      resolveDepartmentMapping(mappingLookup, {
-        sourceCode: fallbackBudgetArea?.costCenter,
-        subDomain: person.productLine,
-        projectCode: fallbackBudgetArea?.projectCode,
-      })
-    const mappedBudgetArea =
-      mappedHierarchy?.projectCode && person.domain
-        ? budgetAreas.find(
-            (area) =>
-              normalizeValue(area.costCenter) === normalizeValue(person.domain) &&
-              normalizeValue(area.projectCode) === normalizeValue(mappedHierarchy.projectCode)
-          )
-        : null
-    const budgetArea =
-      mappedBudgetArea || fallbackBudgetArea
     const existingSeat = existingSeatBySourceKey.get(buildSourceKey(person.seatId))
-    const derivedProjectCode =
-      mappedHierarchy?.projectCode || budgetArea?.projectCode || null
-    const projectCode =
-      existingSeat?.override?.projectCode && existingSeat.sourceKey === buildSourceKey(person.seatId)
-        ? existingSeat.projectCode
-        : derivedProjectCode
+    const assignment = resolveRosterSeatAssignment(
+      person,
+      budgetAreas,
+      mappingLookup,
+      existingSeat
+    )
 
     const trackerSeat = await prisma.trackerSeat.upsert({
       where: {
@@ -520,21 +566,14 @@ export async function deriveTrackerSeatsForYear(year: number) {
       },
       update: {
         rosterPersonId: person.id,
-        budgetAreaId: budgetArea?.id ?? null,
+        budgetAreaId: assignment.budgetArea?.id ?? null,
         isActive: true,
-        domain: normalizeDomainLabel(
-          mappedHierarchy?.domain || budgetArea?.domain || person.domain || null
-        ),
-        subDomain: normalizeSubDomainLabel(
-          mappedHierarchy?.subDomain ||
-            budgetArea?.subDomain ||
-            person.productLine ||
-            null
-        ),
-        funding: person.fundingType || budgetArea?.funding || null,
-        pillar: person.productLine || budgetArea?.pillar || null,
-        costCenter: budgetArea?.costCenter || null,
-        projectCode,
+        domain: assignment.domain,
+        subDomain: assignment.subDomain,
+        funding: assignment.funding,
+        pillar: assignment.pillar,
+        costCenter: assignment.costCenter,
+        projectCode: assignment.projectCode,
         resourceType: person.resourceType,
         team: person.teamName,
         inSeat: person.resourceName,
@@ -552,24 +591,17 @@ export async function deriveTrackerSeatsForYear(year: number) {
       create: {
         trackingYearId: trackingYear.id,
         rosterPersonId: person.id,
-        budgetAreaId: budgetArea?.id ?? null,
+        budgetAreaId: assignment.budgetArea?.id ?? null,
         sourceType: "ROSTER",
         seatId: person.seatId,
         sourceKey: buildSourceKey(person.seatId),
         isActive: true,
-        domain: normalizeDomainLabel(
-          mappedHierarchy?.domain || budgetArea?.domain || person.domain || null
-        ),
-        subDomain: normalizeSubDomainLabel(
-          mappedHierarchy?.subDomain ||
-            budgetArea?.subDomain ||
-            person.productLine ||
-            null
-        ),
-        funding: person.fundingType || budgetArea?.funding || null,
-        pillar: person.productLine || budgetArea?.pillar || null,
-        costCenter: budgetArea?.costCenter || null,
-        projectCode,
+        domain: assignment.domain,
+        subDomain: assignment.subDomain,
+        funding: assignment.funding,
+        pillar: assignment.pillar,
+        costCenter: assignment.costCenter,
+        projectCode: assignment.projectCode,
         resourceType: person.resourceType,
         team: person.teamName,
         inSeat: person.resourceName,
@@ -595,6 +627,7 @@ export async function getFinanceWorkspaceData(
   budgetAreaId?: string,
   trackerTeams?: string[],
   missingActualMonths?: string[],
+  openSeatsOnly?: boolean,
   viewer?: Pick<AppViewer, "role" | "scopes">
 ) {
   const trackingYears = await prisma.trackingYear.findMany({
@@ -669,6 +702,10 @@ export async function getFinanceWorkspaceData(
       .filter((index) => index >= 0)
   )
   const seats = allSeats.filter((seat) => {
+    if (openSeatsOnly && normalizeValue(seat.status) !== normalizeValue("Open")) {
+      return false
+    }
+
     if (teamFilter.size > 0 && !teamFilter.has(normalizeValue(seat.team))) {
       return false
     }
@@ -730,16 +767,21 @@ export async function getFinanceWorkspaceData(
     trackerTeamOptions: collectSortedValues(allSeats.map((seat) => seat.team)),
     missingActualMonthFilters: missingActualMonths ?? [],
     missingActualMonthOptions: MONTH_NAMES,
+    openSeatsOnly: Boolean(openSeatsOnly),
   }
 }
 
 export async function getForecastsPageData(input?: {
   year?: number
-  subDomain?: string
-  team?: string
-  seatId?: string
-  name?: string
-  status?: string
+  subDomains?: string[]
+  teams?: string[]
+  seatIds?: string[]
+  names?: string[]
+  statuses?: string[]
+  hideInactiveStatuses?: boolean
+  nonMonthStart?: boolean
+  nonMonthEnd?: boolean
+  reducedOnLeaveForecast?: boolean
   selectedSeatId?: string
 }, viewer?: Pick<AppViewer, "role" | "scopes">) {
   const trackingYears = await prisma.trackingYear.findMany({
@@ -845,51 +887,104 @@ export async function getForecastsPageData(input?: {
       }),
       totalSpent: metrics.totalSpent,
       totalForecast: metrics.totalForecast,
+      baseTotalForecast: baseMetrics.totalForecast,
       baseMonthlyForecast: baseMetrics.monthlyForecast,
       monthlyForecast: metrics.monthlyForecast,
     }
   })
 
   const filters = {
-    subDomain: input?.subDomain?.trim() ?? "",
-    team: input?.team?.trim() ?? "",
-    seatId: input?.seatId?.trim() ?? "",
-    name: input?.name?.trim() ?? "",
-    status: input?.status?.trim() ?? "",
+    subDomains: (input?.subDomains ?? []).map((value) => value.trim()).filter(Boolean),
+    teams: (input?.teams ?? []).map((value) => value.trim()).filter(Boolean),
+    seatIds: (input?.seatIds ?? []).map((value) => value.trim()).filter(Boolean),
+    names: (input?.names ?? []).map((value) => value.trim()).filter(Boolean),
+    statuses: (input?.statuses ?? []).map((value) => value.trim()).filter(Boolean),
+    hideInactiveStatuses: input?.hideInactiveStatuses !== false,
+    nonMonthStart: Boolean(input?.nonMonthStart),
+    nonMonthEnd: Boolean(input?.nonMonthEnd),
+    reducedOnLeaveForecast: Boolean(input?.reducedOnLeaveForecast),
   }
+  const subDomainFilter = normalizeValues(filters.subDomains)
+  const teamFilter = normalizeValues(filters.teams)
+  const statusFilter = normalizeValues(filters.statuses)
+  const seatIdFilter = normalizeValues(filters.seatIds)
+  const nameFilter = normalizeValues(filters.names)
+  const reducedOnLeaveLocations = new Set(["denmark", "uk", "poland", "usa"])
+  const inactiveForecastStatuses = new Set([
+    "cancelled",
+    "closed",
+    "closed- account still active in ad",
+    "cancelled- account still active in ad",
+  ])
 
   const filteredSeats = mappedSeats
     .filter((seat) => {
       if (
-        filters.subDomain &&
-        normalizeValue(seat.subDomain) !== normalizeValue(filters.subDomain)
+        filters.hideInactiveStatuses &&
+        inactiveForecastStatuses.has(normalizeValue(seat.status))
       ) {
         return false
       }
 
-      if (filters.team && normalizeValue(seat.team) !== normalizeValue(filters.team)) {
+      if (subDomainFilter.size > 0 && !subDomainFilter.has(normalizeValue(seat.subDomain))) {
         return false
       }
 
-      if (
-        filters.status &&
-        normalizeValue(seat.status) !== normalizeValue(filters.status)
-      ) {
+      if (teamFilter.size > 0 && !teamFilter.has(normalizeValue(seat.team))) {
         return false
       }
 
-      if (
-        filters.seatId &&
-        !normalizeValue(seat.seatId).includes(normalizeValue(filters.seatId))
-      ) {
+      if (statusFilter.size > 0 && !statusFilter.has(normalizeValue(seat.status))) {
         return false
       }
 
-      if (
-        filters.name &&
-        !normalizeValue(seat.inSeat).includes(normalizeValue(filters.name))
-      ) {
+      if (seatIdFilter.size > 0 && !seatIdFilter.has(normalizeValue(seat.seatId))) {
         return false
+      }
+
+      if (nameFilter.size > 0 && !nameFilter.has(normalizeValue(seat.inSeat))) {
+        return false
+      }
+
+      if (filters.nonMonthStart) {
+        if (!seat.startDate) {
+          return false
+        }
+
+        const startDate = seat.startDate instanceof Date ? seat.startDate : new Date(seat.startDate)
+        if (
+          Number.isNaN(startDate.getTime()) ||
+          startDate.getFullYear() !== activeYear ||
+          startDate.getDate() === 1
+        ) {
+          return false
+        }
+      }
+
+      if (filters.nonMonthEnd) {
+        if (!seat.endDate) {
+          return false
+        }
+
+        const endDate = seat.endDate instanceof Date ? seat.endDate : new Date(seat.endDate)
+        const lastDayOfMonth = new Date(
+          endDate.getFullYear(),
+          endDate.getMonth() + 1,
+          0
+        ).getDate()
+
+        if (Number.isNaN(endDate.getTime()) || endDate.getDate() === lastDayOfMonth) {
+          return false
+        }
+      }
+
+      if (filters.reducedOnLeaveForecast) {
+        if (
+          normalizeValue(seat.status) !== "on leave" ||
+          !reducedOnLeaveLocations.has(normalizeValue(seat.location))
+        ) {
+          return false
+        }
       }
 
       return true
@@ -916,6 +1011,7 @@ export async function getForecastsPageData(input?: {
     activeYear,
     trackingYears,
     seats: filteredSeats,
+    totalSeatCount: mappedSeats.length,
     selectedSeatId,
     filters,
     filterOptions: {
@@ -2401,6 +2497,11 @@ export async function getTrackerDetail(
         months,
         totalSpent: metrics.totalSpent,
         totalForecast: metrics.totalForecast,
+        hasForecastAdjustments: months.some(
+          (month) =>
+            month.forecastOverrideAmount !== null ||
+            month.forecastIncluded === false
+        ),
         yearlyCostInternal: metrics.yearlyCostInternal,
         yearlyCostExternal: metrics.yearlyCostExternal,
         permFte: metrics.permFte,

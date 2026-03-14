@@ -39,7 +39,7 @@ export default async function UnauthorizedPage() {
 
         <div className="mt-6 flex gap-3">
           <a
-            href="/welcome"
+            href="/tracker"
             className="inline-flex h-10 items-center rounded-full border border-border bg-background px-4 text-sm font-medium transition-colors hover:bg-accent"
           >
             Go to tracker

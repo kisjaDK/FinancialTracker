@@ -121,6 +121,46 @@ function normalizeCostBandLabel(value: string | null | undefined) {
     : trimmed
 }
 
+function isInternalResourceType(value: string | null | undefined) {
+  return normalizeValue(value).includes("internal")
+}
+
+function isInternalVendorValue(value: string | null | undefined) {
+  const normalized = normalizeValue(value)
+  return (
+    normalized.length === 0 ||
+    normalized === "internal" ||
+    normalized === "employee" ||
+    normalized === "permanent"
+  )
+}
+
+export function normalizeRosterVendor(
+  resourceType: string | null | undefined,
+  vendor: string | null | undefined
+) {
+  const trimmedVendor = vendor?.trim() || null
+
+  if (!isInternalResourceType(resourceType)) {
+    return {
+      vendor: trimmedVendor,
+      importError: null as string | null,
+    }
+  }
+
+  if (isInternalVendorValue(trimmedVendor)) {
+    return {
+      vendor: null,
+      importError: null as string | null,
+    }
+  }
+
+  return {
+    vendor: null,
+    importError: `Internal resource type cannot use external vendor '${trimmedVendor}'.`,
+  }
+}
+
 function buildDepartmentCodeKey(sourceCode: string | null | undefined) {
   return normalizeValue(sourceCode)
 }
@@ -187,10 +227,15 @@ function resolveDepartmentMappingByDomain(
 function getRosterImportError(input: {
   departmentCode: string | null
   rosterSubDomain: string | null
+  resourceValidationError?: string | null
   mapping?: {
     subDomain: string
   }
 }) {
+  if (input.resourceValidationError) {
+    return input.resourceValidationError
+  }
+
   if (!input.departmentCode) {
     return "Missing department code"
   }
@@ -345,6 +390,10 @@ export async function importRosterCsv(
       const domain = rosterHeaderValue(row, "Domain") || null
       const rosterSubDomain =
         rosterHeaderValue(row, "Name of Product line / Project", "Sub-Domain") || null
+      const resourceType =
+        rosterHeaderValue(row, "Type of resource", "Resource type") || null
+      const vendor = rosterHeaderValue(row, "Vendor (if external)", "Vendor") || null
+      const resourceValidation = normalizeRosterVendor(resourceType, vendor)
       const mapping =
         resolveDepartmentMapping(departmentMappingLookup as never, {
           sourceCode: departmentCode,
@@ -358,6 +407,7 @@ export async function importRosterCsv(
       return getRosterImportError({
         departmentCode: departmentCode || domain,
         rosterSubDomain,
+        resourceValidationError: resourceValidation.importError,
         mapping,
       })
     })())
@@ -392,6 +442,10 @@ export async function importRosterCsv(
           const rosterSubDomain =
             rosterHeaderValue(row, "Name of Product line / Project", "Sub-Domain") ||
             null
+          const resourceType =
+            rosterHeaderValue(row, "Type of resource", "Resource type") || null
+          const vendor = rosterHeaderValue(row, "Vendor (if external)", "Vendor") || null
+          const resourceValidation = normalizeRosterVendor(resourceType, vendor)
           const mapping =
             resolveDepartmentMapping(departmentMappingLookup as never, {
               sourceCode: departmentCode,
@@ -407,8 +461,11 @@ export async function importRosterCsv(
             importError: getRosterImportError({
               departmentCode: departmentCode || domain,
               rosterSubDomain,
+              resourceValidationError: resourceValidation.importError,
               mapping,
             }),
+            resourceType,
+            vendor: resourceValidation.vendor,
           }
         })(),
         trackingYearId: trackingYear.id,
@@ -431,9 +488,6 @@ export async function importRosterCsv(
         status: rosterHeaderValue(row, "Status") || null,
         allocation:
           parseNumber(rosterHeaderValue(row, "FTE allocation to team (%)", "FTE")) ?? 0,
-        resourceType:
-          rosterHeaderValue(row, "Type of resource", "Resource type") || null,
-        vendor: rosterHeaderValue(row, "Vendor (if external)", "Vendor") || null,
         dailyRate: parseNumber(rosterHeaderValue(row, "Daily rate (if external)")),
         lineManager:
           rosterHeaderValue(row, "Pandora line manager", "Manager") || null,

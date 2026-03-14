@@ -2,6 +2,7 @@ export { auth as middleware } from "@/auth"
 
 export const config = {
   matcher: [
+    "/tracker/:path*",
     "/welcome/:path*",
     "/actuals/:path*",
     "/forecasts/:path*",

@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { ChevronDownIcon, XIcon } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -23,6 +23,38 @@ export function MultiSelectFilter({
   const [search, setSearch] = useState("")
   const [isOpen, setIsOpen] = useState(false)
   const [selected, setSelected] = useState(new Set(selectedValues))
+  const containerRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    function handlePointerDown(event: MouseEvent) {
+      if (!containerRef.current?.contains(event.target as Node)) {
+        setIsOpen(false)
+      }
+    }
+
+    document.addEventListener("mousedown", handlePointerDown)
+
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown)
+    }
+  }, [])
+
+  useEffect(() => {
+    const form = containerRef.current?.closest("form")
+    if (!form) {
+      return
+    }
+
+    function handleSubmit() {
+      setIsOpen(false)
+    }
+
+    form.addEventListener("submit", handleSubmit)
+
+    return () => {
+      form.removeEventListener("submit", handleSubmit)
+    }
+  }, [])
 
   const filteredOptions = useMemo(() => {
     const normalizedSearch = search.trim().toLowerCase()
@@ -55,7 +87,7 @@ export function MultiSelectFilter({
   }
 
   return (
-    <div className="space-y-2">
+    <div ref={containerRef} className="space-y-2">
       <Label>{label}</Label>
       <div className="relative">
         <Input

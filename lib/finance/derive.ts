@@ -115,6 +115,14 @@ function isMonthActiveForSeat(
   startDate: Date | null | undefined,
   endDate: Date | null | undefined
 ) {
+  if (
+    startDate &&
+    endDate &&
+    startDate.getTime() === endDate.getTime()
+  ) {
+    return false
+  }
+
   const monthStart = new Date(targetYear, monthIndex, 1)
   const monthEnd = new Date(targetYear, monthIndex + 1, 0)
 

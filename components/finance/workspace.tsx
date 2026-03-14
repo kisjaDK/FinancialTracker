@@ -1,9 +1,9 @@
 "use client"
 
 import Link from "next/link"
-import { useMemo, useState, useTransition } from "react"
+import { useEffect, useMemo, useState, useTransition } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
-import { Check, ChevronsUpDown } from "lucide-react"
+import { Check, ChevronsUpDown, PenLine } from "lucide-react"
 import { toast } from "sonner"
 import { FinanceHeader } from "@/components/finance/header"
 import { MultiSelectFilter } from "@/components/finance/multi-select-filter"
@@ -27,6 +27,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { Switch } from "@/components/ui/switch"
 import {
   Table,
   TableBody,
@@ -92,12 +93,14 @@ type SeatRow = {
   team: string | null
   inSeat: string | null
   resourceType: string | null
+  description?: string | null
   band: string | null
   location: string | null
   status: string | null
   allocation: number
   totalSpent: number
   totalForecast: number
+  hasForecastAdjustments?: boolean
   yearlyCostInternal: number
   yearlyCostExternal: number
   spendPlanId: string | null
@@ -138,6 +141,7 @@ type WorkspaceProps = {
   trackerTeamOptions: string[]
   missingActualMonthFilters: string[]
   missingActualMonthOptions: readonly string[]
+  openSeatsOnly: boolean
   seatSortField?: string
   seatSortDirection?: string
 }
@@ -216,6 +220,24 @@ function getQuarterlySpent(seat: SeatRow) {
   )
 }
 
+function getSeatStartMonthIndex(seat: SeatRow, activeYear: number) {
+  if (!seat.startDate) {
+    return null
+  }
+
+  const startDate = new Date(seat.startDate)
+
+  if (startDate.getFullYear() > activeYear) {
+    return Number.POSITIVE_INFINITY
+  }
+
+  if (startDate.getFullYear() < activeYear) {
+    return 0
+  }
+
+  return startDate.getMonth()
+}
+
 export function FinanceWorkspace({
   userName,
   userEmail,
@@ -231,6 +253,7 @@ export function FinanceWorkspace({
   trackerTeamOptions,
   missingActualMonthFilters,
   missingActualMonthOptions,
+  openSeatsOnly,
   seatSortField,
   seatSortDirection,
 }: WorkspaceProps) {
@@ -240,10 +263,15 @@ export function FinanceWorkspace({
   const canManageAdminData =
     userRole === "ADMIN" || userRole === "SUPER_ADMIN"
   const [isPending, startTransition] = useTransition()
+  const [isAreaLoading, setIsAreaLoading] = useState(false)
+  const initialSelectedAreaId = selectedAreaId ?? summary[0]?.id ?? null
+  const [activeSummaryAreaId, setActiveSummaryAreaId] = useState(initialSelectedAreaId)
+  const [areaSeats, setAreaSeats] = useState(seats)
   const [selectedSeatId, setSelectedSeatId] = useState(seats[0]?.id ?? "")
   const [showSpentQuarterly, setShowSpentQuarterly] = useState(false)
   const [showForecastQuarterly, setShowForecastQuarterly] = useState(false)
   const [pillarPickerOpen, setPillarPickerOpen] = useState(false)
+  const [openSeatsOnlyDraft, setOpenSeatsOnlyDraft] = useState(openSeatsOnly)
   const [overrideValues, setOverrideValues] = useState({
     budgetAreaId: "",
     spendPlanId: "",
@@ -288,14 +316,67 @@ export function FinanceWorkspace({
   const activeSeatSortDirection: SeatSortDirection =
     seatSortDirection === "desc" ? "desc" : "asc"
 
-  const selectedArea = summary.find((row) => row.id === selectedAreaId) ?? summary[0]
-  const effectiveSelectedAreaId = selectedAreaId ?? selectedArea?.id ?? null
+  useEffect(() => {
+    setActiveSummaryAreaId(initialSelectedAreaId)
+    setAreaSeats(seats)
+  }, [initialSelectedAreaId, seats])
+
+  useEffect(() => {
+    setOpenSeatsOnlyDraft(openSeatsOnly)
+  }, [openSeatsOnly])
+
+  const selectedArea = summary.find((row) => row.id === activeSummaryAreaId) ?? summary[0]
+  const effectiveSelectedAreaId = activeSummaryAreaId ?? selectedArea?.id ?? null
+  const filteredSeats = useMemo(() => {
+    const teamFilter = new Set(
+      trackerTeamFilters.map((team) => (team || "").trim().toLowerCase()).filter(Boolean)
+    )
+    const monthFilter = new Set(
+      missingActualMonthFilters
+        .map((month) => MONTH_NAMES.findIndex((candidate) => candidate === month))
+        .filter((index) => index >= 0)
+    )
+
+    return areaSeats.filter((seat) => {
+      if (teamFilter.size > 0 && !teamFilter.has((seat.team || "").trim().toLowerCase())) {
+        return false
+      }
+
+      if (monthFilter.size > 0) {
+        if ((seat.status || "").trim().toLowerCase() === "open") {
+          return false
+        }
+
+        const seatStartMonthIndex = getSeatStartMonthIndex(seat, activeYear)
+        const eligibleMonthIndexes = Array.from(monthFilter).filter(
+          (monthIndex) => seatStartMonthIndex === null || monthIndex >= seatStartMonthIndex
+        )
+
+        if (eligibleMonthIndexes.length === 0) {
+          return false
+        }
+
+        const hasMissingActualInSelectedMonth = eligibleMonthIndexes.some((monthIndex) => {
+          const month = seat.months.find((entry) => entry.monthIndex === monthIndex)
+          const actualAmount = month?.actualAmountRaw ?? month?.actualAmountDkk ?? 0
+
+          return actualAmount <= 0
+        })
+
+        if (!hasMissingActualInSelectedMonth) {
+          return false
+        }
+      }
+
+      return true
+    })
+  }, [activeYear, areaSeats, missingActualMonthFilters, trackerTeamFilters])
   const sortedSeats = useMemo(() => {
     if (!activeSeatSortField) {
-      return seats
+      return filteredSeats
     }
 
-    const sorted = [...seats]
+    const sorted = [...filteredSeats]
     const factor = activeSeatSortDirection === "asc" ? 1 : -1
     const compareText = (left: string | null | undefined, right: string | null | undefined) =>
       (left || "").localeCompare(right || "", undefined, { sensitivity: "base" })
@@ -321,9 +402,29 @@ export function FinanceWorkspace({
     })
 
     return sorted
-  }, [activeSeatSortDirection, activeSeatSortField, seats])
+  }, [activeSeatSortDirection, activeSeatSortField, filteredSeats])
+
+  useEffect(() => {
+    if (!selectedSeatId || !sortedSeats.some((seat) => seat.id === selectedSeatId)) {
+      setSelectedSeatId(sortedSeats[0]?.id ?? "")
+    }
+  }, [selectedSeatId, sortedSeats])
 
   const selectedSeat = sortedSeats.find((seat) => seat.id === selectedSeatId) ?? sortedSeats[0]
+  const listedSeatTotals = useMemo(
+    () =>
+      sortedSeats.reduce(
+        (totals, seat) => ({
+          spent: totals.spent + seat.totalSpent,
+          forecast: totals.forecast + seat.totalForecast,
+        }),
+        {
+          spent: 0,
+          forecast: 0,
+        }
+      ),
+    [sortedSeats]
+  )
   const pillarOptions = useMemo(
     () =>
       budgetAreas
@@ -390,8 +491,88 @@ export function FinanceWorkspace({
     })
 
     startTransition(() => {
-      router.push(`/welcome?${params.toString()}`)
+      router.replace(`/tracker?${params.toString()}`, { scroll: false })
     })
+  }
+
+  function handleSeatTrackerFilterSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+
+    const formData = new FormData(event.currentTarget)
+    const params = new URLSearchParams()
+    const appendValues = (key: string, values: FormDataEntryValue[]) => {
+      values
+        .map((value) => String(value).trim())
+        .filter(Boolean)
+        .forEach((value) => params.append(key, value))
+    }
+
+    const year = String(formData.get("year") || "").trim()
+    const budgetAreaId = String(formData.get("budgetAreaId") || "").trim()
+    const seatSortField = String(formData.get("seatSortField") || "").trim()
+    const seatSortDirection = String(formData.get("seatSortDirection") || "").trim()
+
+    if (year) {
+      params.set("year", year)
+    }
+
+    if (budgetAreaId) {
+      params.set("budgetAreaId", budgetAreaId)
+    }
+
+    if (seatSortField) {
+      params.set("seatSortField", seatSortField)
+    }
+
+    if (seatSortDirection) {
+      params.set("seatSortDirection", seatSortDirection)
+    }
+
+    appendValues("team", formData.getAll("team"))
+    appendValues("missingActualMonth", formData.getAll("missingActualMonth"))
+    if (formData.get("openSeatsOnly") === "true") {
+      params.set("openSeatsOnly", "true")
+    }
+
+    startTransition(() => {
+      router.replace(`/tracker?${params.toString()}`, { scroll: false })
+    })
+  }
+
+  async function handleAreaSelection(areaId: string) {
+    if (areaId === effectiveSelectedAreaId) {
+      return
+    }
+
+    const params = new URLSearchParams(searchParams.toString())
+    params.set("budgetAreaId", areaId)
+    params.delete("team")
+    params.delete("missingActualMonth")
+    params.delete("openSeatsOnly")
+
+    setActiveSummaryAreaId(areaId)
+    setAreaSeats([])
+    setSelectedSeatId("")
+    resetOverrideValues()
+    setOpenSeatsOnlyDraft(false)
+    setIsAreaLoading(true)
+
+    startTransition(() => {
+      router.replace(`/tracker?${params.toString()}`, { scroll: false })
+    })
+
+    try {
+      const response = await fetchJson(
+        `/api/tracker/detail?year=${activeYear}&budgetAreaId=${encodeURIComponent(areaId)}`
+      )
+      setAreaSeats(response.seats)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to load area details")
+      setActiveSummaryAreaId(initialSelectedAreaId)
+      setAreaSeats(seats)
+    } finally {
+      setIsAreaLoading(false)
+    }
   }
 
   async function handleJsonSubmit(
@@ -423,7 +604,7 @@ export function FinanceWorkspace({
         userEmail={userEmail}
         userRole={userRole}
         activeYear={activeYear}
-        currentPath="/welcome"
+        currentPath="/tracker"
       />
 
       <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-6 py-8">
@@ -510,20 +691,25 @@ export function FinanceWorkspace({
                     return (
                       <TableRow
                         key={row.id}
-                        className={row.id === selectedAreaId ? "bg-amber-50" : undefined}
+                        tabIndex={0}
+                        className={cn(
+                          "cursor-pointer transition-colors hover:bg-amber-50/70 focus-visible:bg-amber-50/70 focus-visible:outline-none",
+                          row.id === effectiveSelectedAreaId && "bg-amber-50"
+                        )}
+                        onClick={() => void handleAreaSelection(row.id)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault()
+                            void handleAreaSelection(row.id)
+                          }
+                        }}
                       >
                         <TableCell>
-                          <button
-                            type="button"
-                            className="text-left"
-                            onClick={() => updateParams({ budgetAreaId: row.id })}
-                          >
-                            <div className="font-medium">{row.displayName}</div>
-                            <div className="text-xs text-muted-foreground">
-                              {(row.domain || "Unmapped domain")} ·{" "}
-                              {row.subDomain || "Unmapped sub-domain"}
-                            </div>
-                          </button>
+                          <div className="font-medium">{row.displayName}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {(row.domain || "Unmapped domain")} ·{" "}
+                            {row.subDomain || "Unmapped sub-domain"}
+                          </div>
                         </TableCell>
                         <TableCell>
                           <div className="font-medium">{row.projectCode || "Unassigned"}</div>
@@ -664,11 +850,17 @@ export function FinanceWorkspace({
             <CardHeader>
               <CardTitle>Seat Tracker</CardTitle>
               <CardDescription>
-                Detail rows derived from the latest approved roster import.
+                {isAreaLoading
+                  ? "Loading area details..."
+                  : "Detail rows derived from the latest approved roster import."}
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <form method="GET" className="mb-4 grid gap-4 lg:grid-cols-[1fr_1fr_auto]">
+              <form
+                method="GET"
+                className="mb-4 grid gap-4 lg:grid-cols-[1fr_1fr_auto]"
+                onSubmit={handleSeatTrackerFilterSubmit}
+              >
                 <input type="hidden" name="year" value={String(activeYear)} />
                 {effectiveSelectedAreaId ? (
                   <input type="hidden" name="budgetAreaId" value={effectiveSelectedAreaId} />
@@ -693,14 +885,33 @@ export function FinanceWorkspace({
                   options={missingActualMonthOptions}
                   selectedValues={missingActualMonthFilters}
                 />
+                <div className="flex items-end">
+                  <div className="flex w-full items-center justify-between rounded-xl border border-border/70 bg-background px-4 py-3">
+                    <div className="pr-4">
+                      <div className="text-sm font-medium">Open seats only</div>
+                      <div className="text-xs text-muted-foreground">
+                        Limit the list to seats with status Open.
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      {openSeatsOnlyDraft ? (
+                        <input type="hidden" name="openSeatsOnly" value="true" />
+                      ) : null}
+                      <Switch
+                        checked={openSeatsOnlyDraft}
+                        onCheckedChange={setOpenSeatsOnlyDraft}
+                      />
+                    </div>
+                  </div>
+                </div>
                 <div className="flex items-end gap-2">
                   <Button type="submit">Apply</Button>
                   <Button asChild variant="outline">
                     <Link
                       href={
                         effectiveSelectedAreaId
-                          ? `/welcome?year=${activeYear}&budgetAreaId=${encodeURIComponent(effectiveSelectedAreaId)}`
-                          : `/welcome?year=${activeYear}`
+                          ? `/tracker?year=${activeYear}&budgetAreaId=${encodeURIComponent(effectiveSelectedAreaId)}`
+                          : `/tracker?year=${activeYear}`
                       }
                     >
                       Reset
@@ -708,6 +919,20 @@ export function FinanceWorkspace({
                   </Button>
                 </div>
               </form>
+              <div className="mb-4 flex flex-wrap items-center gap-x-6 gap-y-2 rounded-xl bg-muted/30 px-4 py-3 text-sm">
+                <div className="flex items-center gap-2">
+                  <span className="text-muted-foreground">Listed spent</span>
+                  <span className="font-medium">{formatCurrency(listedSeatTotals.spent)}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-muted-foreground">Listed forecast</span>
+                  <span className="font-medium">{formatCurrency(listedSeatTotals.forecast)}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-muted-foreground">Seats</span>
+                  <span className="font-medium">{formatNumber(sortedSeats.length)}</span>
+                </div>
+              </div>
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -820,9 +1045,15 @@ export function FinanceWorkspace({
                       <TableCell>
                         <div>{seat.inSeat || "Unassigned"}</div>
                         <div className="text-xs text-muted-foreground">{seat.band}</div>
+                        <div className="text-xs text-muted-foreground">
+                          {seat.location || "No location"}
+                        </div>
                       </TableCell>
                       <TableCell>
                         <div>{seat.resourceType || "n/a"}</div>
+                        <div className="text-xs text-muted-foreground">
+                          {seat.description || "No role"}
+                        </div>
                         <div className="text-xs text-muted-foreground">
                           {formatOptionalDate(seat.startDate)} to {formatOptionalDate(seat.endDate)}
                         </div>
@@ -838,7 +1069,15 @@ export function FinanceWorkspace({
                         </>
                       ) : null}
                       <TableCell>
-                        <div>{formatCurrency(seat.totalForecast)}</div>
+                        <div className="flex items-center gap-1">
+                          <span>{formatCurrency(seat.totalForecast)}</span>
+                          {seat.hasForecastAdjustments ? (
+                            <PenLine
+                              className="size-3.5 text-amber-700"
+                              aria-label="Forecast contains manual adjustments"
+                            />
+                          ) : null}
+                        </div>
                         <div className="text-xs text-muted-foreground">
                           {formatForecastCoverage(seat)}
                         </div>
@@ -890,7 +1129,11 @@ export function FinanceWorkspace({
                         {selectedSeat.seatId} · {selectedSeat.inSeat || "Unassigned"}
                       </div>
                       <div className="mt-1 text-muted-foreground">
-                        {selectedSeat.team || "No team"} · {selectedSeat.band || "No band"}
+                        {selectedSeat.team || "No team"}
+                      </div>
+                      <div className="mt-1 text-muted-foreground">
+                        {(selectedSeat as SeatRow & { description?: string | null }).description || "No role"} ·{" "}
+                        {selectedSeat.band || "No band"}
                       </div>
                     </div>
                     <Table>

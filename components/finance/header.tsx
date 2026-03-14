@@ -13,7 +13,7 @@ type FinanceHeaderProps = {
   userRole: AppRole
   activeYear: number
   currentPath:
-    | "/welcome"
+    | "/tracker"
     | "/budget-movements"
     | "/actuals"
     | "/forecasts"
@@ -26,7 +26,7 @@ type FinanceHeaderProps = {
 
 const NAV_ITEMS = [
   {
-    href: "/welcome",
+    href: "/tracker",
     label: "Tracker",
     minimumRole: "GUEST",
   },
