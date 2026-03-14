@@ -436,6 +436,7 @@ export function PeopleRosterBrowser({
                 >
                   <option value="">All buckets</option>
                   <option value="perm total">PERM total</option>
+                  <option value="ext total">EXT total</option>
                   <option value="active">Active</option>
                   <option value="on leave">On leave</option>
                   <option value="open">Open</option>

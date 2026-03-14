@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState, useTransition } from "react"
+import { useEffect, useMemo, useState, useTransition } from "react"
 import Link from "next/link"
 import { useRouter, useSearchParams } from "next/navigation"
 import { toast } from "sonner"
@@ -42,6 +42,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { Textarea } from "@/components/ui/textarea"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
 type TrackingYearOption = {
@@ -57,6 +58,7 @@ type SummaryRow = {
   domain: string | null
   subDomain: string | null
   displayName: string
+  projectCode?: string | null
   seatCount: number
   activeSeatCount: number
   spentToDate: number
@@ -68,10 +70,13 @@ type SeatRow = {
   seatId: string
   domain: string | null
   subDomain: string | null
+  projectCode?: string | null
   team: string | null
   inSeat: string | null
   band: string | null
   status: string | null
+  permFte?: number
+  extFte?: number
   totalSpent: number
   totalForecast: number
   monthlyForecast: number[]
@@ -102,6 +107,52 @@ type BulkForecastPreview = {
   }[]
 }
 
+type PastedExternalActualPreview = {
+  status: "matched" | "needs_mapping"
+  year: number
+  monthIndex: number | null
+  monthLabel: string | null
+  monthOptions: {
+    monthIndex: number
+    monthLabel: string
+    hasActual: boolean
+    isEligible: boolean
+  }[]
+  suggestedMonthIndex: number | null
+  spendPlanId: string
+  spendPlanReference: string | null
+  suggestedName: string | null
+  invoiceNumber: string | null
+  supplierName: string | null
+  originalAmount: number
+  originalCurrency: "DKK" | "EUR" | "USD"
+  rateToDkk: number
+  totalDkk: number
+  seats: {
+    trackerSeatId: string
+    seatId: string
+    team: string | null
+    inSeat: string | null
+    description: string | null
+    allocation: number
+    dailyRate: number | null
+    originalAmount: number
+    amountDkk: number
+    daysEquivalent: number | null
+    usedForecastAmount: number | null
+  }[]
+}
+
+type ExternalActualNameSearchResult = {
+  trackerSeatId: string
+  seatId: string
+  inSeat: string | null
+  team: string | null
+  status: string | null
+  spendPlanId: string | null
+  allocation: number
+}
+
 type ActualsBrowserProps = {
   userName: string
   userEmail: string
@@ -111,6 +162,12 @@ type ActualsBrowserProps = {
   selectedAreaId: string | null
   summary: SummaryRow[]
   seats: SeatRow[]
+  statusDefinitions: {
+    id: string
+    label: string
+    isActiveStatus: boolean
+    sortOrder: number
+  }[]
   internalActualsMessage: string | null
   filters: ExternalActualImportFilters
   filterOptions: {
@@ -149,6 +206,10 @@ function formatDateTime(value: Date) {
   }).format(new Date(value))
 }
 
+function normalizeValue(value: string | null | undefined) {
+  return value?.trim().toLowerCase() ?? ""
+}
+
 export function ActualsBrowser({
   userName,
   userEmail,
@@ -158,6 +219,7 @@ export function ActualsBrowser({
   selectedAreaId,
   summary,
   seats,
+  statusDefinitions,
   internalActualsMessage,
   filters,
   filterOptions,
@@ -169,6 +231,7 @@ export function ActualsBrowser({
   const searchParams = useSearchParams()
   const [isPending, startTransition] = useTransition()
   const [isImporting, startImportTransition] = useTransition()
+  const [isSubmittingExternal, startExternalSubmitTransition] = useTransition()
   const [isRollingBack, startRollbackTransition] = useTransition()
   const [selectedSeatId, setSelectedSeatId] = useState(seats[0]?.id ?? "")
   const [selectedMonth, setSelectedMonth] = useState("0")
@@ -182,13 +245,134 @@ export function ActualsBrowser({
   const [bulkCopyLoading, setBulkCopyLoading] = useState(false)
   const [selectedYear, setSelectedYear] = useState(String(activeYear))
   const [selectedImportYear, setSelectedImportYear] = useState(String(activeYear))
+  const [selectedExternalMonth, setSelectedExternalMonth] = useState(String(new Date().getMonth()))
+  const [externalEntryMode, setExternalEntryMode] = useState<"csv" | "manual" | "paste">("csv")
   const [fileInput, setFileInput] = useState<File | null>(null)
+  const [manualSpendPlanId, setManualSpendPlanId] = useState("")
+  const [manualAmount, setManualAmount] = useState("")
+  const [manualCurrency, setManualCurrency] = useState<"DKK" | "EUR" | "USD">("DKK")
+  const [manualInvoiceNumber, setManualInvoiceNumber] = useState("")
+  const [manualSupplierName, setManualSupplierName] = useState("")
+  const [manualDescription, setManualDescription] = useState("")
+  const [pastedInvoiceContent, setPastedInvoiceContent] = useState("")
+  const [pastePreviewDialogOpen, setPastePreviewDialogOpen] = useState(false)
+  const [pastedInvoicePreview, setPastedInvoicePreview] =
+    useState<PastedExternalActualPreview | null>(null)
+  const [selectedPastedReviewMonth, setSelectedPastedReviewMonth] = useState("")
+  const [nameSearchQuery, setNameSearchQuery] = useState("")
+  const [nameSearchResults, setNameSearchResults] = useState<ExternalActualNameSearchResult[]>([])
+  const [selectedSeatIdsForSpendPlanMapping, setSelectedSeatIdsForSpendPlanMapping] = useState<
+    string[]
+  >([])
+  const [editingExternalEntry, setEditingExternalEntry] = useState<ExternalActualImportView | null>(
+    null
+  )
+  const [editExternalAmount, setEditExternalAmount] = useState("")
+  const [editExternalInvoiceNumber, setEditExternalInvoiceNumber] = useState("")
+  const [editExternalSupplierName, setEditExternalSupplierName] = useState("")
+  const [deletingExternalEntry, setDeletingExternalEntry] =
+    useState<ExternalActualImportView | null>(null)
   const activeView =
     searchParams.get("view") === "external" ? "external" : "internal"
 
   const selectedArea = summary.find((row) => row.id === selectedAreaId) ?? summary[0]
   const effectiveSelectedAreaId = selectedAreaId ?? selectedArea?.id ?? null
   const selectedSeat = seats.find((seat) => seat.id === selectedSeatId) ?? seats[0]
+  const domainOptions = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          summary
+            .map((row) => row.domain?.trim())
+            .filter((value): value is string => Boolean(value))
+        )
+      ).sort((left, right) => left.localeCompare(right)),
+    [summary]
+  )
+  const selectedDomain = selectedArea?.domain ?? domainOptions[0] ?? ""
+  const subDomainOptions = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          summary
+            .filter((row) => row.domain === selectedDomain)
+            .map((row) => row.subDomain?.trim())
+            .filter((value): value is string => Boolean(value))
+        )
+      ).sort((left, right) => left.localeCompare(right)),
+    [selectedDomain, summary]
+  )
+  const selectedSubDomain = selectedArea?.subDomain ?? subDomainOptions[0] ?? ""
+  const projectCodeOptions = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          summary
+            .filter(
+              (row) =>
+                row.domain === selectedDomain && row.subDomain === selectedSubDomain
+            )
+            .map((row) => row.projectCode?.trim())
+            .filter((value): value is string => Boolean(value))
+        )
+      ).sort((left, right) => left.localeCompare(right)),
+    [selectedDomain, selectedSubDomain, summary]
+  )
+  const showProjectCodeSelector = projectCodeOptions.length > 1
+  const selectedProjectCode = selectedArea?.projectCode ?? projectCodeOptions[0] ?? ""
+  const selectedScopeLabel = [selectedArea?.domain || "Unmapped", selectedArea?.subDomain || "Unmapped"].join(
+    " / "
+  )
+  const selectedScopeDetail = selectedArea?.projectCode
+    ? `${selectedScopeLabel} · ${selectedArea.projectCode}`
+    : selectedScopeLabel
+  const activeStatusSet = useMemo(
+    () =>
+      new Set(
+        statusDefinitions
+          .filter((definition) => definition.isActiveStatus)
+          .map((definition) => normalizeValue(definition.label))
+      ),
+    [statusDefinitions]
+  )
+  const permFteInScope = seats.reduce((sum, seat) => {
+    const normalizedStatus = normalizeValue(seat.status)
+    const normalizedInSeat = normalizeValue(seat.inSeat)
+    const matchesActiveBucket =
+      activeStatusSet.has(normalizedStatus) ||
+      (normalizedStatus.length === 0 &&
+        normalizedInSeat.length > 0 &&
+        normalizedInSeat !== "vacant")
+    const countsInPermTotal =
+      normalizedStatus === "open" ||
+      normalizedStatus === "on leave" ||
+      matchesActiveBucket
+
+    return countsInPermTotal ? sum + (seat.permFte ?? 0) : sum
+  }, 0)
+  const extFteInScope = seats.reduce((sum, seat) => sum + (seat.extFte ?? 0), 0)
+  const permRosterHref = `/people-roster?${new URLSearchParams(
+    Object.fromEntries(
+      [
+        ["year", String(activeYear)],
+        selectedArea?.domain ? ["domain", selectedArea.domain] : null,
+        selectedArea?.subDomain ? ["subDomain", selectedArea.subDomain] : null,
+        selectedArea?.projectCode ? ["projectCode", selectedArea.projectCode] : null,
+        ["staffingBucket", "perm total"],
+      ].filter((entry): entry is [string, string] => Boolean(entry))
+    )
+  ).toString()}`
+  const extRosterHref = `/people-roster?${new URLSearchParams(
+    Object.fromEntries(
+      [
+        ["year", String(activeYear)],
+        selectedArea?.domain ? ["domain", selectedArea.domain] : null,
+        selectedArea?.subDomain ? ["subDomain", selectedArea.subDomain] : null,
+        selectedArea?.projectCode ? ["projectCode", selectedArea.projectCode] : null,
+        ["staffingBucket", "ext total"],
+      ].filter((entry): entry is [string, string] => Boolean(entry))
+    )
+  ).toString()}`
 
   useEffect(() => {
     if (!selectedSeatId || !seats.some((seat) => seat.id === selectedSeatId)) {
@@ -214,6 +398,67 @@ export function ActualsBrowser({
     startTransition(() => {
       router.push(`/actuals?${params.toString()}`)
     })
+  }
+
+  function getFirstScopeForDomain(domain: string) {
+    const rows = summary.filter((row) => row.domain === domain)
+    const nextSubDomain =
+      Array.from(
+        new Set(
+          rows
+            .map((row) => row.subDomain?.trim())
+            .filter((value): value is string => Boolean(value))
+        )
+      ).sort((left, right) => left.localeCompare(right))[0] ?? null
+    const nextProjectCodes =
+      nextSubDomain === null
+        ? []
+        : Array.from(
+            new Set(
+              rows
+                .filter((row) => row.subDomain === nextSubDomain)
+                .map((row) => row.projectCode?.trim())
+                .filter((value): value is string => Boolean(value))
+            )
+          ).sort((left, right) => left.localeCompare(right))
+
+    return {
+      subDomain: nextSubDomain,
+      projectCode: nextProjectCodes[0] ?? null,
+      showProjectCodeSelector: nextProjectCodes.length > 1,
+    }
+  }
+
+  function getFirstProjectCodeForSubDomain(domain: string, subDomain: string) {
+    const nextProjectCodes = Array.from(
+      new Set(
+        summary
+          .filter((row) => row.domain === domain && row.subDomain === subDomain)
+          .map((row) => row.projectCode?.trim())
+          .filter((value): value is string => Boolean(value))
+      )
+    ).sort((left, right) => left.localeCompare(right))
+
+    return {
+      projectCode: nextProjectCodes[0] ?? null,
+      showProjectCodeSelector: nextProjectCodes.length > 1,
+    }
+  }
+
+  function buildExternalViewUrl(yearValue: string) {
+    const nextUrl = new URLSearchParams()
+    nextUrl.set("year", yearValue)
+    nextUrl.set("view", "external")
+    if (selectedDomain) {
+      nextUrl.set("domain", selectedDomain)
+    }
+    if (selectedSubDomain) {
+      nextUrl.set("subDomain", selectedSubDomain)
+    }
+    if (showProjectCodeSelector && selectedProjectCode) {
+      nextUrl.set("projectCode", selectedProjectCode)
+    }
+    return `/actuals?${nextUrl.toString()}`
   }
 
   async function saveSeatMonth() {
@@ -359,14 +604,198 @@ export function ActualsBrowser({
         }
 
         toast.success(`Imported ${fileInput.name}`)
-        const nextUrl = new URLSearchParams()
-        nextUrl.set("year", selectedImportYear)
-        if (effectiveSelectedAreaId) {
-          nextUrl.set("budgetAreaId", effectiveSelectedAreaId)
-        }
-        window.location.href = `/actuals?${nextUrl.toString()}`
+        window.location.href = buildExternalViewUrl(selectedImportYear)
       } catch (error) {
         toast.error(error instanceof Error ? error.message : "Import failed")
+      }
+    })
+  }
+
+  function handleManualExternalActualSubmit() {
+    startExternalSubmitTransition(async () => {
+      try {
+        await fetchJson("/api/external-actuals/manual", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            year: Number(selectedImportYear),
+            monthIndex: Number(selectedExternalMonth),
+            spendPlanId: manualSpendPlanId,
+            amount: Number(manualAmount),
+            currency: manualCurrency,
+            invoiceNumber: manualInvoiceNumber || null,
+            supplierName: manualSupplierName || null,
+            description: manualDescription || null,
+          }),
+        })
+
+        toast.success("Saved manual external actual")
+        window.location.href = buildExternalViewUrl(selectedImportYear)
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Manual external actual failed")
+      }
+    })
+  }
+
+  async function fetchPastedInvoicePreview(monthIndex?: number) {
+    return (await fetchJson("/api/external-actuals/paste/preview", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        year: Number(selectedImportYear),
+        ...(monthIndex === undefined ? {} : { monthIndex }),
+        content: pastedInvoiceContent,
+      }),
+    })) as { preview: PastedExternalActualPreview }
+  }
+
+  function handlePastedExternalActualSubmit() {
+    startExternalSubmitTransition(async () => {
+      try {
+        const response = await fetchPastedInvoicePreview()
+        setPastedInvoicePreview(response.preview)
+        setSelectedPastedReviewMonth("")
+        setNameSearchQuery(response.preview.suggestedName ?? "")
+        setNameSearchResults([])
+        setSelectedSeatIdsForSpendPlanMapping([])
+        setPastePreviewDialogOpen(true)
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Pasted external actual failed")
+      }
+    })
+  }
+
+  function handleSearchExternalSeatsByName() {
+    if (!nameSearchQuery.trim()) {
+      toast.error("Enter a name to search for matching seats.")
+      return
+    }
+
+    startExternalSubmitTransition(async () => {
+      try {
+        const response = (await fetchJson("/api/external-actuals/search-seats", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            year: Number(selectedImportYear),
+            query: nameSearchQuery,
+          }),
+        })) as { seats: ExternalActualNameSearchResult[] }
+
+        setNameSearchResults(response.seats)
+        setSelectedSeatIdsForSpendPlanMapping([])
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Seat search failed")
+      }
+    })
+  }
+
+  function toggleSelectedSeatForSpendPlanMapping(trackerSeatId: string, checked: CheckedState) {
+    setSelectedSeatIdsForSpendPlanMapping((current) =>
+      checked === true
+        ? Array.from(new Set([...current, trackerSeatId]))
+        : current.filter((id) => id !== trackerSeatId)
+    )
+  }
+
+  function handleAssignSpendPlanAndReprocess() {
+    if (!pastedInvoicePreview) {
+      return
+    }
+
+    if (selectedSeatIdsForSpendPlanMapping.length === 0) {
+      toast.error("Select at least one seat to map the spend plan to.")
+      return
+    }
+
+    startExternalSubmitTransition(async () => {
+      try {
+        await fetchJson("/api/external-actuals/assign-spend-plan", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            trackerSeatIds: selectedSeatIdsForSpendPlanMapping,
+            spendPlanId: pastedInvoicePreview.spendPlanId,
+          }),
+        })
+
+        const response = await fetchPastedInvoicePreview()
+        setPastedInvoicePreview(response.preview)
+        setSelectedPastedReviewMonth("")
+        setNameSearchResults([])
+        setSelectedSeatIdsForSpendPlanMapping([])
+        setNameSearchQuery(response.preview.suggestedName ?? "")
+        toast.success("Spend plan mapping updated and invoice reprocessed")
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Spend plan mapping failed")
+      }
+    })
+  }
+
+  function handlePastedReviewMonthChange(value: string) {
+    setSelectedPastedReviewMonth(value)
+
+    if (!value) {
+      setPastedInvoicePreview((current) =>
+        current
+          ? {
+              ...current,
+              monthIndex: null,
+              monthLabel: null,
+              seats: [],
+            }
+          : current
+      )
+      return
+    }
+
+    startExternalSubmitTransition(async () => {
+      try {
+        const response = await fetchPastedInvoicePreview(Number(value))
+        setPastedInvoicePreview(response.preview)
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Month preview failed")
+      }
+    })
+  }
+
+  function confirmPastedExternalActualSubmit() {
+    if (pastedInvoicePreview?.status !== "matched" || !selectedPastedReviewMonth) {
+      return
+    }
+
+    startExternalSubmitTransition(async () => {
+      try {
+        await fetchJson("/api/external-actuals/paste", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            year: Number(selectedImportYear),
+            monthIndex: Number(selectedPastedReviewMonth),
+            content: pastedInvoiceContent,
+          }),
+        })
+
+        toast.success("Saved pasted invoice actual")
+        setPastePreviewDialogOpen(false)
+        setPastedInvoicePreview(null)
+        setSelectedPastedReviewMonth("")
+        setNameSearchQuery("")
+        setNameSearchResults([])
+        setSelectedSeatIdsForSpendPlanMapping([])
+        window.location.href = buildExternalViewUrl(selectedImportYear)
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Pasted external actual failed")
       }
     })
   }
@@ -398,6 +827,63 @@ export function ActualsBrowser({
     })
   }
 
+  function openEditExternalEntry(entry: ExternalActualImportView) {
+    setEditingExternalEntry(entry)
+    setEditExternalAmount(
+      String(entry.originalAmount ?? entry.amount)
+    )
+    setEditExternalInvoiceNumber(entry.invoiceNumber ?? "")
+    setEditExternalSupplierName(entry.supplierName ?? "")
+  }
+
+  function saveExternalEntryEdits() {
+    if (!editingExternalEntry) {
+      return
+    }
+
+    startExternalSubmitTransition(async () => {
+      try {
+        await fetchJson(`/api/external-actual-entries/${editingExternalEntry.id}`, {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            amount: Number(editExternalAmount),
+            invoiceNumber: editExternalInvoiceNumber || null,
+            supplierName: editExternalSupplierName || null,
+          }),
+        })
+
+        toast.success("External actual updated")
+        setEditingExternalEntry(null)
+        router.refresh()
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "External actual update failed")
+      }
+    })
+  }
+
+  function deleteExternalEntry() {
+    if (!deletingExternalEntry) {
+      return
+    }
+
+    startExternalSubmitTransition(async () => {
+      try {
+        await fetchJson(`/api/external-actual-entries/${deletingExternalEntry.id}`, {
+          method: "DELETE",
+        })
+
+        toast.success("External actual deleted")
+        setDeletingExternalEntry(null)
+        router.refresh()
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "External actual delete failed")
+      }
+    })
+  }
+
   return (
     <div className="min-h-screen brand-page-shell">
       <FinanceHeader
@@ -421,7 +907,7 @@ export function ActualsBrowser({
             }
           }}
         >
-          <DialogContent className="max-h-[85vh] max-w-3xl overflow-hidden">
+          <DialogContent className="max-h-[85vh] max-w-6xl overflow-hidden">
             <DialogHeader>
               <div className="flex items-center gap-2">
                 <DialogTitle>Review forecast copy to actuals</DialogTitle>
@@ -538,27 +1024,556 @@ export function ActualsBrowser({
           </DialogContent>
         </Dialog>
 
+        <Dialog
+          open={pastePreviewDialogOpen}
+          onOpenChange={(open) => {
+            setPastePreviewDialogOpen(open)
+            if (!open) {
+              setPastedInvoicePreview(null)
+              setSelectedPastedReviewMonth("")
+              setNameSearchQuery("")
+              setNameSearchResults([])
+              setSelectedSeatIdsForSpendPlanMapping([])
+            }
+          }}
+        >
+          <DialogContent className="max-h-[85vh] max-w-3xl overflow-hidden">
+            <DialogHeader>
+              <DialogTitle>Review pasted invoice actual</DialogTitle>
+              <DialogDescription>
+                Confirm the parsed invoice details and seat split before saving.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="max-h-[55vh] space-y-4 overflow-y-auto pr-2">
+              {pastedInvoicePreview ? (
+                <>
+                  <div className="grid gap-3 rounded-lg border border-border p-4 md:grid-cols-2">
+                    <div>
+                      <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                        Spend Plan
+                      </div>
+                      <div className="mt-1 font-medium">{pastedInvoicePreview.spendPlanId}</div>
+                      {pastedInvoicePreview.spendPlanReference ? (
+                        <div className="text-xs text-muted-foreground">
+                          Reference: {pastedInvoicePreview.spendPlanReference}
+                        </div>
+                      ) : null}
+                    </div>
+                    <div>
+                      <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                        Month
+                      </div>
+                      <div className="mt-1 font-medium">
+                        {pastedInvoicePreview.monthLabel || "Choose a month below"}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                        Invoice Number
+                      </div>
+                      <div className="mt-1 font-medium">
+                        {pastedInvoicePreview.invoiceNumber || "Not provided"}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                        Supplier
+                      </div>
+                      <div className="mt-1 font-medium">
+                        {pastedInvoicePreview.supplierName || "Not provided"}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                        Original Amount
+                      </div>
+                      <div className="mt-1 font-medium">
+                        {formatNumber(pastedInvoicePreview.originalAmount)}{" "}
+                        {pastedInvoicePreview.originalCurrency}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                        Total In DKK
+                      </div>
+                      <div className="mt-1 font-medium">
+                        {formatCurrency(pastedInvoicePreview.totalDkk)}
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        FX rate: {formatNumber(pastedInvoicePreview.rateToDkk)}
+                      </div>
+                    </div>
+                  </div>
+
+                  {pastedInvoicePreview.status === "matched" ? (
+                    <div className="grid gap-3 rounded-lg border border-border p-4 md:grid-cols-[1fr_auto] md:items-end">
+                      <div className="space-y-2">
+                        <Label htmlFor="paste-review-month">Posting Month</Label>
+                        <select
+                          id="paste-review-month"
+                          value={selectedPastedReviewMonth}
+                          onChange={(event) => handlePastedReviewMonthChange(event.target.value)}
+                          className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
+                        >
+                          <option value="">Select month</option>
+                          {pastedInvoicePreview.monthOptions.map((option) => (
+                            <option
+                              key={option.monthIndex}
+                              value={option.monthIndex}
+                              disabled={!option.isEligible}
+                            >
+                              {option.monthLabel}
+                              {!option.isEligible ? " (not eligible)" : ""}
+                              {option.hasActual ? " (actual already exists)" : ""}
+                              {option.monthIndex === pastedInvoicePreview.suggestedMonthIndex
+                                ? " - suggested"
+                                : ""}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="text-sm text-muted-foreground">
+                        {pastedInvoicePreview.suggestedMonthIndex !== null
+                          ? `Suggested: ${
+                              pastedInvoicePreview.monthOptions.find(
+                                (option) =>
+                                  option.monthIndex === pastedInvoicePreview.suggestedMonthIndex
+                              )?.monthLabel ?? "n/a"
+                            }`
+                          : "No month without actuals was found before the current month."}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {pastedInvoicePreview.status === "matched" &&
+                  pastedInvoicePreview.monthIndex !== null ? (
+                    <div className="space-y-3">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Seat</TableHead>
+                            <TableHead>Allocation</TableHead>
+                            <TableHead>Original</TableHead>
+                            <TableHead>DKK</TableHead>
+                            <TableHead>Daily Rate</TableHead>
+                            <TableHead>Days</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {pastedInvoicePreview.seats.map((seat) => (
+                            <TableRow key={seat.trackerSeatId}>
+                              <TableCell className="min-w-[200px]">
+                                <div className="font-medium">{seat.seatId}</div>
+                                <div className="text-xs text-muted-foreground">
+                                  {seat.inSeat || "Unassigned"}
+                                </div>
+                                <div className="text-xs text-muted-foreground">
+                                  {seat.team || "No team"}
+                                </div>
+                              </TableCell>
+                              <TableCell>{formatNumber(seat.allocation)}</TableCell>
+                              <TableCell>
+                                {formatNumber(seat.originalAmount)}{" "}
+                                {pastedInvoicePreview.originalCurrency}
+                              </TableCell>
+                              <TableCell>{formatCurrency(seat.amountDkk)}</TableCell>
+                              <TableCell>
+                                {seat.dailyRate && seat.dailyRate > 0
+                                  ? `${formatNumber(seat.dailyRate)} ${pastedInvoicePreview.originalCurrency}`
+                                  : "Not set"}
+                              </TableCell>
+                              <TableCell>
+                                {seat.daysEquivalent !== null
+                                  ? `${formatNumber(seat.daysEquivalent)} days`
+                                  : "Unavailable"}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                      <div className="rounded-lg border border-border/70 bg-muted/30 p-3 text-sm text-muted-foreground">
+                        Validation uses the invoice amount divided by the mapped seat daily rate to
+                        show the implied number of billed days. Other invoice expenses beyond
+                        billable hours can skew this check.
+                      </div>
+                    </div>
+                  ) : pastedInvoicePreview.status === "matched" ? (
+                    <div className="rounded-lg border border-dashed border-border p-4 text-sm text-muted-foreground">
+                      Select the posting month to review the split and enable save.
+                    </div>
+                  ) : (
+                    <div className="space-y-4 rounded-lg border border-border p-4">
+                      <div className="space-y-1">
+                        <div className="font-medium">No spend-plan match found yet</div>
+                        <div className="text-sm text-muted-foreground">
+                          Search by person name, select the matching seat or seats, then map the
+                          spend plan and reprocess this invoice.
+                        </div>
+                      </div>
+                      <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-end">
+                        <div className="space-y-2">
+                          <Label htmlFor="paste-name-search">Name Search</Label>
+                          <Input
+                            id="paste-name-search"
+                            value={nameSearchQuery}
+                            onChange={(event) => setNameSearchQuery(event.target.value)}
+                            placeholder="Search on the FTE name"
+                          />
+                        </div>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          disabled={isSubmittingExternal}
+                          onClick={handleSearchExternalSeatsByName}
+                        >
+                          {isSubmittingExternal ? "Searching..." : "Search Matches"}
+                        </Button>
+                      </div>
+                      {nameSearchResults.length > 0 ? (
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead className="w-12">Use</TableHead>
+                              <TableHead>Seat</TableHead>
+                              <TableHead>Status</TableHead>
+                              <TableHead>Current Spend Plan</TableHead>
+                              <TableHead>Allocation</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {nameSearchResults.map((seat) => (
+                              <TableRow key={seat.trackerSeatId}>
+                                <TableCell>
+                                  <Checkbox
+                                    checked={selectedSeatIdsForSpendPlanMapping.includes(
+                                      seat.trackerSeatId
+                                    )}
+                                    onCheckedChange={(checked) =>
+                                      toggleSelectedSeatForSpendPlanMapping(
+                                        seat.trackerSeatId,
+                                        checked
+                                      )
+                                    }
+                                  />
+                                </TableCell>
+                                <TableCell>
+                                  <div className="font-medium">{seat.seatId}</div>
+                                  <div className="text-xs text-muted-foreground">
+                                    {seat.inSeat || "Unassigned"} · {seat.team || "No team"}
+                                  </div>
+                                </TableCell>
+                                <TableCell>{seat.status || "Unknown"}</TableCell>
+                                <TableCell>{seat.spendPlanId || "Not set"}</TableCell>
+                                <TableCell>{formatNumber(seat.allocation)}</TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      ) : nameSearchQuery ? (
+                        <div className="text-sm text-muted-foreground">
+                          No seats found for the current name search.
+                        </div>
+                      ) : null}
+                    </div>
+                  )}
+                </>
+              ) : null}
+            </div>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  setPastePreviewDialogOpen(false)
+                  setPastedInvoicePreview(null)
+                  setSelectedPastedReviewMonth("")
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                variant={pastedInvoicePreview?.status === "matched" ? "default" : "secondary"}
+                disabled={
+                  !pastedInvoicePreview ||
+                  isSubmittingExternal ||
+                  (pastedInvoicePreview.status === "matched"
+                    ? !selectedPastedReviewMonth || pastedInvoicePreview.monthIndex === null
+                    : selectedSeatIdsForSpendPlanMapping.length === 0)
+                }
+                onClick={
+                  pastedInvoicePreview?.status === "matched"
+                    ? confirmPastedExternalActualSubmit
+                    : handleAssignSpendPlanAndReprocess
+                }
+              >
+                {isSubmittingExternal
+                  ? pastedInvoicePreview?.status === "matched"
+                    ? "Saving..."
+                    : "Applying..."
+                  : pastedInvoicePreview?.status === "matched"
+                    ? "Confirm And Save"
+                    : "Apply Spend Plan And Reprocess"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
+          open={Boolean(editingExternalEntry)}
+          onOpenChange={(open) => {
+            if (!open) {
+              setEditingExternalEntry(null)
+            }
+          }}
+        >
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Edit external actual</DialogTitle>
+              <DialogDescription>
+                Update the amount, vendor, and invoice reference for this external actual row.
+              </DialogDescription>
+            </DialogHeader>
+            {editingExternalEntry ? (
+              <div className="space-y-4">
+                <div className="rounded-lg border border-border p-3 text-sm">
+                  <div className="font-medium">{editingExternalEntry.seatId}</div>
+                  <div className="text-muted-foreground">
+                    {editingExternalEntry.monthLabel} · {editingExternalEntry.fileName}
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="edit-external-amount">
+                    Amount ({editingExternalEntry.originalCurrency || "DKK"})
+                  </Label>
+                  <Input
+                    id="edit-external-amount"
+                    type="number"
+                    step="0.01"
+                    value={editExternalAmount}
+                    onChange={(event) => setEditExternalAmount(event.target.value)}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="edit-external-supplier">Vendor</Label>
+                  <Input
+                    id="edit-external-supplier"
+                    value={editExternalSupplierName}
+                    onChange={(event) => setEditExternalSupplierName(event.target.value)}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="edit-external-invoice">Invoice ID</Label>
+                  <Input
+                    id="edit-external-invoice"
+                    value={editExternalInvoiceNumber}
+                    onChange={(event) => setEditExternalInvoiceNumber(event.target.value)}
+                  />
+                </div>
+              </div>
+            ) : null}
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setEditingExternalEntry(null)}>
+                Cancel
+              </Button>
+              <Button type="button" disabled={isSubmittingExternal} onClick={saveExternalEntryEdits}>
+                {isSubmittingExternal ? "Saving..." : "Save Changes"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
+          open={Boolean(deletingExternalEntry)}
+          onOpenChange={(open) => {
+            if (!open) {
+              setDeletingExternalEntry(null)
+            }
+          }}
+        >
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>Delete external actual</DialogTitle>
+              <DialogDescription>
+                This removes the selected external actual row and updates the linked seat month. This cannot be undone.
+              </DialogDescription>
+            </DialogHeader>
+            {deletingExternalEntry ? (
+              <div className="rounded-lg border border-border p-3 text-sm">
+                <div className="font-medium">
+                  {deletingExternalEntry.supplierName || "No vendor"}
+                </div>
+                <div className="text-muted-foreground">
+                  {deletingExternalEntry.invoiceNumber || "No invoice ID"} ·{" "}
+                  {deletingExternalEntry.seatId} · {deletingExternalEntry.monthLabel}
+                </div>
+              </div>
+            ) : null}
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setDeletingExternalEntry(null)}>
+                Cancel
+              </Button>
+              <Button type="button" variant="destructive" disabled={isSubmittingExternal} onClick={deleteExternalEntry}>
+                {isSubmittingExternal ? "Deleting..." : "Delete"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
         <section className="space-y-4">
+          <Card className="brand-card">
+            <CardHeader>
+              <CardTitle>Scope</CardTitle>
+              <CardDescription>
+                Choose the page year and internal scope before working with actuals.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="grid gap-4 md:grid-cols-3 xl:grid-cols-[180px_1fr_1fr_220px]">
+              <div className="space-y-2">
+                <Label htmlFor="actuals-year">Year</Label>
+                <select
+                  id="actuals-year"
+                  value={selectedYear}
+                  disabled={isPending}
+                  onChange={(event) => {
+                    setSelectedYear(event.target.value)
+                    updateParams({ year: event.target.value })
+                  }}
+                  className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
+                >
+                  {trackingYears.map((year) => (
+                    <option key={year.id} value={year.year}>
+                      {year.year}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="actuals-domain">Domain</Label>
+                <select
+                  id="actuals-domain"
+                  value={selectedDomain}
+                  disabled={isPending || domainOptions.length === 0}
+                  onChange={(event) => {
+                    const nextDomain = event.target.value
+                    const nextScope = getFirstScopeForDomain(nextDomain)
+
+                    updateParams({
+                      domain: nextDomain || null,
+                      subDomain: nextScope.subDomain,
+                      projectCode: nextScope.showProjectCodeSelector
+                        ? nextScope.projectCode
+                        : null,
+                    })
+                  }}
+                  className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
+                >
+                  {domainOptions.map((domain) => (
+                    <option key={domain} value={domain}>
+                      {domain}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="actuals-subdomain">Sub-domain</Label>
+                <select
+                  id="actuals-subdomain"
+                  value={selectedSubDomain}
+                  disabled={isPending || subDomainOptions.length === 0}
+                  onChange={(event) => {
+                    const nextSubDomain = event.target.value
+                    const nextProject = getFirstProjectCodeForSubDomain(
+                      selectedDomain,
+                      nextSubDomain
+                    )
+
+                    updateParams({
+                      domain: selectedDomain || null,
+                      subDomain: nextSubDomain || null,
+                      projectCode: nextProject.showProjectCodeSelector
+                        ? nextProject.projectCode
+                        : null,
+                    })
+                  }}
+                  className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
+                >
+                  {subDomainOptions.map((subDomain) => (
+                    <option key={subDomain} value={subDomain}>
+                      {subDomain}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {showProjectCodeSelector ? (
+                <div className="space-y-2">
+                  <Label htmlFor="actuals-project-code">Project Code</Label>
+                  <select
+                    id="actuals-project-code"
+                    value={selectedProjectCode}
+                    disabled={isPending || projectCodeOptions.length === 0}
+                    onChange={(event) =>
+                      updateParams({
+                        domain: selectedDomain || null,
+                        subDomain: selectedSubDomain || null,
+                        projectCode: event.target.value || null,
+                      })
+                    }
+                    className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
+                  >
+                    {projectCodeOptions.map((projectCode) => (
+                      <option key={projectCode} value={projectCode}>
+                        {projectCode}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : null}
+            </CardContent>
+          </Card>
+
           <div>
             <h2 className="text-2xl font-semibold tracking-tight">
               Manual month entries and forecast copy
             </h2>
             <p className="mt-1 text-sm text-muted-foreground">
-              Choose the year and sub-domain you are working on, then update seat actuals or copy monthly forecast into internal actuals.
+              Work in the selected scope, then update seat actuals or copy monthly forecast into internal actuals.
             </p>
           </div>
 
           <section className="grid gap-4 md:grid-cols-4">
             <Card className="brand-card">
               <CardHeader className="gap-1">
-                <CardDescription>Selected Sub-domain</CardDescription>
-                <CardTitle>{selectedArea?.subDomain || "Unmapped"}</CardTitle>
+                <CardDescription>Selected Scope</CardDescription>
+                <CardTitle>{selectedArea?.subDomain || selectedArea?.domain || "Unmapped"}</CardTitle>
+                <div className="text-sm text-muted-foreground">{selectedScopeDetail}</div>
               </CardHeader>
             </Card>
             <Card className="brand-card">
               <CardHeader className="gap-1">
-                <CardDescription>Seats In Scope</CardDescription>
-                <CardTitle>{formatNumber(selectedArea?.seatCount ?? 0)}</CardTitle>
+                <CardDescription>FTE In Scope</CardDescription>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                      PERM
+                    </div>
+                    <CardTitle>
+                      <Link href={permRosterHref} className="transition-colors hover:text-primary">
+                        {formatNumber(permFteInScope)}
+                      </Link>
+                    </CardTitle>
+                  </div>
+                  <div>
+                    <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                      EXT
+                    </div>
+                    <CardTitle>
+                      <Link href={extRosterHref} className="transition-colors hover:text-primary">
+                        {formatNumber(extFteInScope)}
+                      </Link>
+                    </CardTitle>
+                  </div>
+                </div>
               </CardHeader>
             </Card>
             <Card className="brand-card">
@@ -615,47 +1630,13 @@ export function ActualsBrowser({
                     />
                   </div>
                   <CardDescription>
-                    Scope the internal actuals work before editing seat-month values.
+                    The internal workflow below follows the selected top-level scope.
                   </CardDescription>
                 </div>
               </CardHeader>
-              <CardContent className="grid gap-4 md:grid-cols-[180px_1fr]">
-                <div className="space-y-2">
-                  <Label htmlFor="internal-year">Year</Label>
-                  <select
-                    id="internal-year"
-                    value={selectedYear}
-                    disabled={isPending}
-                    onChange={(event) => {
-                      setSelectedYear(event.target.value)
-                      updateParams({ year: event.target.value })
-                    }}
-                    className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
-                  >
-                    {trackingYears.map((year) => (
-                      <option key={year.id} value={year.year}>
-                        {year.year}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="internal-subdomain">Sub-domain</Label>
-                  <select
-                    id="internal-subdomain"
-                    value={effectiveSelectedAreaId ?? ""}
-                    disabled={isPending || summary.length === 0}
-                    onChange={(event) =>
-                      updateParams({ budgetAreaId: event.target.value || null })
-                    }
-                    className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
-                  >
-                    {summary.map((row) => (
-                      <option key={row.id} value={row.id}>
-                        {row.displayName} ({row.domain || "Unmapped"} / {row.subDomain || "Unmapped"})
-                      </option>
-                    ))}
-                  </select>
+              <CardContent>
+                <div className="rounded-xl bg-muted/40 p-3 text-sm text-muted-foreground">
+                  Working in {selectedScopeDetail}.
                 </div>
               </CardContent>
             </Card>
@@ -665,7 +1646,7 @@ export function ActualsBrowser({
               <CardHeader>
                 <CardTitle>Internal Seats</CardTitle>
                 <CardDescription>
-                  Seats currently mapped to {selectedArea?.subDomain || "the selected sub-domain"}.
+                  Seats currently mapped to {selectedScopeDetail}.
                 </CardDescription>
               </CardHeader>
               <CardContent>
@@ -704,7 +1685,7 @@ export function ActualsBrowser({
                     {seats.length === 0 ? (
                       <TableRow>
                         <TableCell colSpan={4} className="py-8 text-center text-muted-foreground">
-                          No internal seats are available for the selected sub-domain and year.
+                          No internal seats are available for the selected scope and year.
                         </TableCell>
                       </TableRow>
                     ) : null}
@@ -874,7 +1855,7 @@ export function ActualsBrowser({
                     <div className="font-medium">Bulk copy forecast to actuals</div>
                     <div className="mt-1 text-muted-foreground">
                       Copy the selected month&apos;s forecast into actuals for all internal seats in{" "}
-                      {selectedArea?.subDomain || "the selected sub-domain"}.
+                      {selectedScopeDetail}.
                     </div>
                     <Button
                       type="button"
@@ -930,41 +1911,225 @@ export function ActualsBrowser({
 
             <Card className="brand-card">
             <CardHeader>
-              <CardTitle>Import CSV</CardTitle>
+              <CardTitle>Add External Actuals</CardTitle>
               <CardDescription>
-                Match imported amounts to seat ID and month columns like Jan-26 ID, Feb-26 ID, and later months.
+                Choose one of the 3 supported ingestion methods and unfold the detail you need.
               </CardDescription>
             </CardHeader>
-            <CardContent className="grid gap-4 md:grid-cols-[140px_1fr_auto]">
-              <div className="space-y-2">
-                <Label htmlFor="external-year">Year</Label>
-                <select
-                  id="external-year"
-                  value={selectedImportYear}
-                  onChange={(event) => setSelectedImportYear(event.target.value)}
-                  className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
+            <CardContent className="space-y-4">
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  variant={externalEntryMode === "csv" ? "default" : "outline"}
+                  onClick={() => setExternalEntryMode("csv")}
                 >
-                  {trackingYears.map((year) => (
-                    <option key={year.id} value={year.year}>
-                      {year.year}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="external-file">CSV file</Label>
-                <Input
-                  id="external-file"
-                  type="file"
-                  accept=".csv,text/csv"
-                  onChange={(event) => setFileInput(event.target.files?.[0] ?? null)}
-                />
-              </div>
-              <div className="flex items-end">
-                <Button type="button" onClick={handleImport} disabled={isImporting}>
-                  {isImporting ? "Importing..." : "Import"}
+                  CSV Import
+                </Button>
+                <Button
+                  type="button"
+                  variant={externalEntryMode === "manual" ? "default" : "outline"}
+                  onClick={() => setExternalEntryMode("manual")}
+                >
+                  Manual Form
+                </Button>
+                <Button
+                  type="button"
+                  variant={externalEntryMode === "paste" ? "default" : "outline"}
+                  onClick={() => setExternalEntryMode("paste")}
+                >
+                  Paste Invoice
                 </Button>
               </div>
+
+              {externalEntryMode === "csv" ? (
+                <div className="grid gap-4 rounded-xl border border-border/70 p-4 md:grid-cols-[140px_1fr_auto]">
+                  <div className="space-y-2">
+                    <Label htmlFor="external-year">Year</Label>
+                    <select
+                      id="external-year"
+                      value={selectedImportYear}
+                      onChange={(event) => setSelectedImportYear(event.target.value)}
+                      className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
+                    >
+                      {trackingYears.map((year) => (
+                        <option key={year.id} value={year.year}>
+                          {year.year}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="external-file">CSV file</Label>
+                    <Input
+                      id="external-file"
+                      type="file"
+                      accept=".csv,text/csv"
+                      onChange={(event) => setFileInput(event.target.files?.[0] ?? null)}
+                    />
+                  </div>
+                  <div className="flex items-end">
+                    <Button type="button" onClick={handleImport} disabled={isImporting}>
+                      {isImporting ? "Importing..." : "Import"}
+                    </Button>
+                  </div>
+                </div>
+              ) : null}
+
+              {externalEntryMode === "manual" ? (
+                <div className="grid gap-4 rounded-xl border border-border/70 p-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label htmlFor="manual-external-year">Year</Label>
+                    <select
+                      id="manual-external-year"
+                      value={selectedImportYear}
+                      onChange={(event) => setSelectedImportYear(event.target.value)}
+                      className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
+                    >
+                      {trackingYears.map((year) => (
+                        <option key={year.id} value={year.year}>
+                          {year.year}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="manual-external-month">Month</Label>
+                    <select
+                      id="manual-external-month"
+                      value={selectedExternalMonth}
+                      onChange={(event) => setSelectedExternalMonth(event.target.value)}
+                      className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
+                    >
+                      {MONTH_NAMES.map((month, index) => (
+                        <option key={month} value={index}>
+                          {month}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="manual-spend-plan">Spend Plan ID</Label>
+                    <Input
+                      id="manual-spend-plan"
+                      value={manualSpendPlanId}
+                      onChange={(event) => setManualSpendPlanId(event.target.value)}
+                      placeholder="63072"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="manual-amount">Amount</Label>
+                    <Input
+                      id="manual-amount"
+                      type="number"
+                      inputMode="decimal"
+                      value={manualAmount}
+                      onChange={(event) => setManualAmount(event.target.value)}
+                      placeholder="128480"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="manual-currency">Currency</Label>
+                    <select
+                      id="manual-currency"
+                      value={manualCurrency}
+                      onChange={(event) =>
+                        setManualCurrency(event.target.value as "DKK" | "EUR" | "USD")
+                      }
+                      className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
+                    >
+                      {SUPPORTED_CURRENCIES.map((currency) => (
+                        <option key={currency} value={currency}>
+                          {currency}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="manual-invoice-number">Invoice Number</Label>
+                    <Input
+                      id="manual-invoice-number"
+                      value={manualInvoiceNumber}
+                      onChange={(event) => setManualInvoiceNumber(event.target.value)}
+                      placeholder="DENI226002586"
+                    />
+                  </div>
+                  <div className="space-y-2 md:col-span-2">
+                    <Label htmlFor="manual-supplier-name">Supplier Name</Label>
+                    <Input
+                      id="manual-supplier-name"
+                      value={manualSupplierName}
+                      onChange={(event) => setManualSupplierName(event.target.value)}
+                      placeholder="Tata Consultancy Services Ltd."
+                    />
+                  </div>
+                  <div className="space-y-2 md:col-span-2">
+                    <Label htmlFor="manual-description">Description</Label>
+                    <Textarea
+                      id="manual-description"
+                      value={manualDescription}
+                      onChange={(event) => setManualDescription(event.target.value)}
+                      placeholder="Optional note for the external actual"
+                    />
+                  </div>
+                  <div className="md:col-span-2 flex justify-end">
+                    <Button
+                      type="button"
+                      disabled={isSubmittingExternal}
+                      onClick={handleManualExternalActualSubmit}
+                    >
+                      {isSubmittingExternal ? "Saving..." : "Save Manual External Actual"}
+                    </Button>
+                  </div>
+                </div>
+              ) : null}
+
+              {externalEntryMode === "paste" ? (
+                <div className="grid gap-4 rounded-xl border border-border/70 p-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label htmlFor="paste-external-year">Year</Label>
+                    <select
+                      id="paste-external-year"
+                      value={selectedImportYear}
+                      onChange={(event) => setSelectedImportYear(event.target.value)}
+                      className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
+                    >
+                      {trackingYears.map((year) => (
+                        <option key={year.id} value={year.year}>
+                          {year.year}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="paste-external-month-note">Month</Label>
+                    <div
+                      id="paste-external-month-note"
+                      className="flex min-h-9 items-center rounded-md border border-dashed border-border px-3 text-sm text-muted-foreground"
+                    >
+                      Choose the month in the review step.
+                    </div>
+                  </div>
+                  <div className="space-y-2 md:col-span-2">
+                    <Label htmlFor="paste-external-content">Invoice Text</Label>
+                    <Textarea
+                      id="paste-external-content"
+                      value={pastedInvoiceContent}
+                      onChange={(event) => setPastedInvoiceContent(event.target.value)}
+                      placeholder="Paste the invoice email or invoice text here"
+                      className="min-h-52"
+                    />
+                  </div>
+                  <div className="md:col-span-2 flex justify-end">
+                    <Button
+                      type="button"
+                      disabled={isSubmittingExternal}
+                      onClick={handlePastedExternalActualSubmit}
+                    >
+                      {isSubmittingExternal ? "Saving..." : "Parse And Save Invoice Actual"}
+                    </Button>
+                  </div>
+                </div>
+              ) : null}
             </CardContent>
             </Card>
 
@@ -1047,7 +2212,14 @@ export function ActualsBrowser({
             </CardHeader>
             <CardContent>
               <form method="GET" className="grid gap-4 lg:grid-cols-[0.8fr_1fr_1fr_1fr_1fr_1fr_1fr_auto]">
-                <input type="hidden" name="budgetAreaId" value={effectiveSelectedAreaId ?? ""} />
+                <input type="hidden" name="view" value="external" />
+                <input type="hidden" name="domain" value={selectedDomain} />
+                <input type="hidden" name="subDomain" value={selectedSubDomain} />
+                <input
+                  type="hidden"
+                  name="projectCode"
+                  value={showProjectCodeSelector ? selectedProjectCode : ""}
+                />
                 <div className="space-y-2">
                   <Label htmlFor="year">Year</Label>
                   <select
@@ -1123,11 +2295,23 @@ export function ActualsBrowser({
                   <Button type="submit">Apply</Button>
                   <Button asChild variant="outline">
                     <Link
-                      href={
-                        effectiveSelectedAreaId
-                          ? `/actuals?year=${activeYear}&budgetAreaId=${encodeURIComponent(effectiveSelectedAreaId)}`
-                          : `/actuals?year=${activeYear}`
-                      }
+                      href={`/actuals?${new URLSearchParams(
+                        Object.fromEntries(
+                          [
+                            ["year", String(activeYear)],
+                            ["view", "external"],
+                            selectedDomain ? ["domain", selectedDomain] : null,
+                            selectedSubDomain ? ["subDomain", selectedSubDomain] : null,
+                            showProjectCodeSelector && selectedProjectCode
+                              ? ["projectCode", selectedProjectCode]
+                              : null,
+                          ].filter(
+                            (
+                              entry
+                            ): entry is [string, string] => Boolean(entry)
+                          )
+                        )
+                      ).toString()}`}
                     >
                       Reset
                     </Link>
@@ -1149,25 +2333,18 @@ export function ActualsBrowser({
                 <TableHeader>
                   <TableRow>
                     <TableHead>Imported</TableHead>
-                    <TableHead>File</TableHead>
-                    <TableHead>User</TableHead>
                     <TableHead>Seat</TableHead>
                     <TableHead>Month</TableHead>
                     <TableHead>Amount</TableHead>
+                    <TableHead>Invoice</TableHead>
                     <TableHead>Status</TableHead>
+                    <TableHead className="text-right">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {entries.map((entry) => (
                     <TableRow key={entry.id}>
                       <TableCell>{formatDateTime(entry.importedAt)}</TableCell>
-                      <TableCell>{entry.fileName}</TableCell>
-                      <TableCell>
-                        <div className="font-medium">{entry.importedByName || "Unknown user"}</div>
-                        <div className="text-xs text-muted-foreground">
-                          {entry.importedByEmail || "No email"}
-                        </div>
-                      </TableCell>
                       <TableCell>
                         <div className="font-medium">{entry.seatId}</div>
                         <div className="text-xs text-muted-foreground">
@@ -1177,7 +2354,37 @@ export function ActualsBrowser({
                       <TableCell>{entry.monthLabel}</TableCell>
                       <TableCell>{formatCurrency(entry.amount)}</TableCell>
                       <TableCell>
+                        <div className="font-medium">{entry.supplierName || "No vendor"}</div>
+                        <div className="text-xs text-muted-foreground">
+                          {entry.invoiceNumber || "No invoice ID"}
+                        </div>
+                      </TableCell>
+                      <TableCell>
                         {entry.matchedTrackerSeatId ? "Matched" : "No tracker seat match"}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        {entry.importedByEmail?.toLowerCase() === userEmail.toLowerCase() ? (
+                          <div className="flex justify-end gap-2">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => openEditExternalEntry(entry)}
+                            >
+                              Edit
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => setDeletingExternalEntry(entry)}
+                            >
+                              Delete
+                            </Button>
+                          </div>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">Only creator can edit</span>
+                        )}
                       </TableCell>
                     </TableRow>
                   ))}

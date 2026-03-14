@@ -9,6 +9,7 @@ import {
 import { buildExchangeRateLookup, convertAmountToDkk } from "@/lib/finance/currency"
 import {
   buildStaffingOverviewRows,
+  resolveActualsScopeSelection,
   resolveRosterSeatAssignment,
   validateStaffingTargetInput,
 } from "@/lib/finance/queries"
@@ -549,4 +550,117 @@ test("validateStaffingTargetInput rejects invalid scope combinations", () => {
       }),
     /PERM target must be zero or greater/
   )
+})
+
+test("resolveActualsScopeSelection cascades domain and sub-domain options", () => {
+  const summary = [
+    {
+      id: "architecture-core",
+      domain: "Data & Analytics",
+      subDomain: "Architecture",
+      projectCode: "L68610001",
+    },
+    {
+      id: "ai-core",
+      domain: "Data & Analytics",
+      subDomain: "AI & Automation",
+      projectCode: "L44530001",
+    },
+    {
+      id: "platform-core",
+      domain: "Platform",
+      subDomain: "Cloud",
+      projectCode: "P100",
+    },
+  ]
+
+  const resolved = resolveActualsScopeSelection(summary, {
+    domain: "Data & Analytics",
+  })
+
+  assert.equal(resolved.selectedAreaId, "architecture-core")
+  assert.equal(resolved.selectedDomain, "Data & Analytics")
+  assert.equal(resolved.selectedSubDomain, "Architecture")
+  assert.equal(resolved.selectedProjectCode, "L68610001")
+  assert.equal(resolved.showProjectCodeSelector, false)
+})
+
+test("resolveActualsScopeSelection auto-selects a single project code for a sub-domain", () => {
+  const summary = [
+    {
+      id: "architecture-core",
+      domain: "Data & Analytics",
+      subDomain: "Architecture",
+      projectCode: "L68610001",
+    },
+    {
+      id: "ai-core",
+      domain: "Data & Analytics",
+      subDomain: "AI & Automation",
+      projectCode: "L44530001",
+    },
+  ]
+
+  const resolved = resolveActualsScopeSelection(summary, {
+    domain: "Data & Analytics",
+    subDomain: "Architecture",
+  })
+
+  assert.equal(resolved.selectedAreaId, "architecture-core")
+  assert.equal(resolved.selectedProjectCode, "L68610001")
+  assert.equal(resolved.showProjectCodeSelector, false)
+})
+
+test("resolveActualsScopeSelection requires project code when multiple rows share a sub-domain", () => {
+  const summary = [
+    {
+      id: "architecture-core",
+      domain: "Data & Analytics",
+      subDomain: "Architecture",
+      projectCode: "L68610001",
+    },
+    {
+      id: "architecture-growth",
+      domain: "Data & Analytics",
+      subDomain: "Architecture",
+      projectCode: "L68610002",
+    },
+  ]
+
+  const resolved = resolveActualsScopeSelection(summary, {
+    domain: "Data & Analytics",
+    subDomain: "Architecture",
+    projectCode: "L68610002",
+  })
+
+  assert.equal(resolved.selectedAreaId, "architecture-growth")
+  assert.equal(resolved.selectedProjectCode, "L68610002")
+  assert.equal(resolved.showProjectCodeSelector, true)
+  assert.deepEqual(resolved.projectCodeOptions, ["L68610001", "L68610002"])
+})
+
+test("resolveActualsScopeSelection falls back to legacy budgetAreaId", () => {
+  const summary = [
+    {
+      id: "architecture-core",
+      domain: "Data & Analytics",
+      subDomain: "Architecture",
+      projectCode: "L68610001",
+    },
+    {
+      id: "platform-core",
+      domain: "Platform",
+      subDomain: "Cloud",
+      projectCode: "P100",
+    },
+  ]
+
+  const resolved = resolveActualsScopeSelection(summary, {
+    budgetAreaId: "platform-core",
+  })
+
+  assert.equal(resolved.selectedAreaId, "platform-core")
+  assert.equal(resolved.selectedDomain, "Platform")
+  assert.equal(resolved.selectedSubDomain, "Cloud")
+  assert.equal(resolved.selectedProjectCode, "P100")
 })

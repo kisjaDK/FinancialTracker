@@ -82,6 +82,8 @@ export type SeatMonthView = {
   exchangeRateUsed: number | null
   forecastOverrideAmount: number | null
   forecastIncluded: boolean
+  usedForecastAmount: number | null
+  comparisonForecastAmount: number
   notes: string | null
 }
 
@@ -191,8 +193,13 @@ export type ExternalActualImportView = {
   team: string | null
   inSeat: string | null
   description: string | null
+  monthIndex: number
   monthLabel: string
   amount: number
+  originalAmount: number | null
+  originalCurrency: CurrencyCode | null
+  invoiceNumber: string | null
+  supplierName: string | null
   matchedTrackerSeatId: string | null
 }
 

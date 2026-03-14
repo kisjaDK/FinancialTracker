@@ -10,6 +10,10 @@ type PageProps = {
   searchParams?: Promise<{
     year?: string
     budgetAreaId?: string
+    domain?: string
+    subDomain?: string
+    projectCode?: string
+    view?: string
     user?: string
     fileName?: string
     seatId?: string
@@ -33,7 +37,13 @@ export default async function ActualsPage({ searchParams }: PageProps) {
       [],
       [],
       false,
-      viewer
+      viewer,
+      {
+        budgetAreaId: resolvedSearchParams?.budgetAreaId,
+        domain: resolvedSearchParams?.domain,
+        subDomain: resolvedSearchParams?.subDomain,
+        projectCode: resolvedSearchParams?.projectCode,
+      }
     ),
     getExternalActualImportsPageData(
       {
@@ -60,6 +70,7 @@ export default async function ActualsPage({ searchParams }: PageProps) {
         selectedAreaId={internalData.selectedAreaId}
         summary={internalData.summary}
         seats={internalData.seats}
+        statusDefinitions={internalData.statusDefinitions}
         internalActualsMessage={internalData.internalActualsMessage}
         filters={externalData.filters}
         filterOptions={externalData.filterOptions}

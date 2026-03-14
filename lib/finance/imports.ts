@@ -1,6 +1,12 @@
-import { ImportStatus, SeatSourceType } from "@/lib/generated/prisma/enums"
+import {
+  ExternalActualSourceKind,
+  ImportStatus,
+  SeatSourceType,
+} from "@/lib/generated/prisma/enums"
 import type { AuditActor } from "@/lib/finance/audit"
 import { writeAuditLog } from "@/lib/finance/audit"
+import { buildCostAssumptionLookup, deriveSeatMetrics } from "@/lib/finance/derive"
+import type { SeatWithRelations } from "@/lib/finance/types"
 import { prisma } from "@/lib/prisma"
 import { parseCsv } from "@/lib/finance/csv"
 import { deriveTrackerSeatsForYear } from "@/lib/finance/queries"
@@ -1039,16 +1045,39 @@ export async function importExternalActualsCsv(
   }
 
   const trackingYear = await getOrCreateTrackingYear(year)
-  const trackerSeats = await prisma.trackerSeat.findMany({
-    where: {
-      trackingYearId: trackingYear.id,
-      isActive: true,
-    },
-    select: {
-      id: true,
-      seatId: true,
-    },
-  })
+  const [trackerSeats, assumptions, exchangeRates] = await Promise.all([
+    prisma.trackerSeat.findMany({
+      where: {
+        trackingYearId: trackingYear.id,
+        isActive: true,
+      },
+      include: {
+        months: {
+          orderBy: { monthIndex: "asc" },
+        },
+        override: true,
+        budgetArea: true,
+      },
+    }),
+    prisma.costAssumption.findMany({
+      where: { trackingYearId: trackingYear.id },
+    }),
+    prisma.exchangeRate.findMany({
+      where: { trackingYearId: trackingYear.id },
+      orderBy: { effectiveDate: "desc" },
+    }),
+  ])
+  const assumptionLookup = buildCostAssumptionLookup(assumptions)
+  const usedForecastBySeatMonth = new Map<string, number>()
+  for (const seat of trackerSeats as SeatWithRelations[]) {
+    const metrics = deriveSeatMetrics(seat, assumptionLookup, exchangeRates, year)
+    for (let monthIndex = 0; monthIndex < 12; monthIndex += 1) {
+      usedForecastBySeatMonth.set(
+        `${seat.id}:${monthIndex}`,
+        metrics.monthlyForecast[monthIndex] ?? 0
+      )
+    }
+  }
   const trackerSeatBySeatId = new Map(
     trackerSeats.map((seat) => [seat.seatId.trim(), seat])
   )
@@ -1078,6 +1107,12 @@ export async function importExternalActualsCsv(
           monthIndex: monthHeader.monthIndex,
           monthLabel: monthHeader.monthLabel,
           amount,
+          usedForecastAmount:
+            trackerSeatBySeatId.get(seatId)?.id
+              ? usedForecastBySeatMonth.get(
+                  `${trackerSeatBySeatId.get(seatId)?.id}:${monthHeader.monthIndex}`
+                ) ?? 0
+              : null,
           trackerSeatId: trackerSeatBySeatId.get(seatId)?.id ?? null,
         },
       ]
@@ -1093,6 +1128,7 @@ export async function importExternalActualsCsv(
       data: {
         trackingYearId: trackingYear.id,
         fileName,
+        sourceKind: ExternalActualSourceKind.CSV,
         importedByName: actor?.name ?? null,
         importedByEmail: actor?.email ?? null,
         rowCount: rows.length,
@@ -1105,6 +1141,7 @@ export async function importExternalActualsCsv(
         trackingYearId: trackingYear.id,
         importId: nextBatch.id,
         trackerSeatId: row.trackerSeatId,
+        sourceKind: ExternalActualSourceKind.CSV,
         seatId: row.seatId,
         team: row.team,
         inSeat: row.inSeat,
@@ -1112,6 +1149,9 @@ export async function importExternalActualsCsv(
         monthIndex: row.monthIndex,
         monthLabel: row.monthLabel,
         amount: row.amount,
+        originalAmount: row.amount,
+        originalCurrency: "DKK",
+        usedForecastAmount: row.usedForecastAmount,
       })),
     })
 
@@ -1135,6 +1175,7 @@ export async function importExternalActualsCsv(
           actualCurrency: "DKK",
           exchangeRateUsed: isClearingActual ? null : 1,
           forecastIncluded: isClearingActual,
+          usedForecastAmount: isClearingActual ? null : row.usedForecastAmount,
           notes: `Imported from external actuals: ${fileName} (${nextBatch.id})`,
         },
         create: {
@@ -1145,6 +1186,7 @@ export async function importExternalActualsCsv(
           actualCurrency: "DKK",
           exchangeRateUsed: isClearingActual ? null : 1,
           forecastIncluded: isClearingActual,
+          usedForecastAmount: isClearingActual ? null : row.usedForecastAmount,
           notes: `Imported from external actuals: ${fileName} (${nextBatch.id})`,
         },
       })

@@ -113,6 +113,32 @@ function normalizeAllocation(value: number | null | undefined) {
   return value > 1 ? value / 100 : value
 }
 
+async function computeSeatMonthForecastSnapshot(input: {
+  seat: SeatWithRelations
+  year: number
+  monthIndex: number
+}) {
+  const [assumptions, exchangeRates] = await Promise.all([
+    prisma.costAssumption.findMany({
+      where: { trackingYear: { year: input.year } },
+    }),
+    prisma.exchangeRate.findMany({
+      where: { trackingYear: { year: input.year } },
+      orderBy: { effectiveDate: "desc" },
+    }),
+  ])
+
+  const assumptionLookup = buildCostAssumptionLookup(assumptions)
+  const metrics = deriveSeatMetrics(
+    input.seat,
+    assumptionLookup,
+    exchangeRates,
+    input.year
+  )
+
+  return metrics.monthlyForecast[input.monthIndex] ?? 0
+}
+
 function computeAreaDisplayName(area: {
   displayName: string | null
   subDomain?: string | null
@@ -638,6 +664,96 @@ function collectSortedValues(values: (string | null | undefined)[]) {
   ).sort((left, right) => left.localeCompare(right))
 }
 
+export type ActualsScopeSelectionInput = {
+  budgetAreaId?: string | null
+  domain?: string | null
+  subDomain?: string | null
+  projectCode?: string | null
+}
+
+export function resolveActualsScopeSelection(
+  summary: Pick<BudgetAreaSummary, "id" | "domain" | "subDomain" | "projectCode">[],
+  input?: ActualsScopeSelectionInput
+) {
+  const requestedArea =
+    input?.budgetAreaId && summary.find((row) => row.id === input.budgetAreaId)
+      ? summary.find((row) => row.id === input?.budgetAreaId) ?? null
+      : null
+
+  const requestedDomain = input?.domain?.trim() || null
+  const selectedDomain =
+    (requestedDomain &&
+    summary.some((row) => normalizeValue(row.domain) === normalizeValue(requestedDomain))
+      ? summary.find((row) => normalizeValue(row.domain) === normalizeValue(requestedDomain))
+          ?.domain ?? requestedDomain
+      : requestedArea?.domain) ??
+    summary[0]?.domain ??
+    null
+
+  const rowsForDomain = summary.filter(
+    (row) => normalizeValue(row.domain) === normalizeValue(selectedDomain)
+  )
+
+  const requestedSubDomain = input?.subDomain?.trim() || null
+  const selectedSubDomain =
+    (requestedSubDomain &&
+    rowsForDomain.some(
+      (row) => normalizeValue(row.subDomain) === normalizeValue(requestedSubDomain)
+    )
+      ? rowsForDomain.find(
+          (row) => normalizeValue(row.subDomain) === normalizeValue(requestedSubDomain)
+        )?.subDomain ?? requestedSubDomain
+      : requestedArea &&
+          normalizeValue(requestedArea.domain) === normalizeValue(selectedDomain)
+        ? requestedArea.subDomain
+        : null) ??
+    rowsForDomain[0]?.subDomain ??
+    null
+
+  const rowsForSubDomain = rowsForDomain.filter(
+    (row) => normalizeValue(row.subDomain) === normalizeValue(selectedSubDomain)
+  )
+
+  const requestedProjectCode = input?.projectCode?.trim() || null
+  const selectedProjectCode =
+    (requestedProjectCode &&
+    rowsForSubDomain.some(
+      (row) => normalizeValue(row.projectCode) === normalizeValue(requestedProjectCode)
+    )
+      ? rowsForSubDomain.find(
+          (row) => normalizeValue(row.projectCode) === normalizeValue(requestedProjectCode)
+        )?.projectCode ?? requestedProjectCode
+      : requestedArea &&
+          normalizeValue(requestedArea.domain) === normalizeValue(selectedDomain) &&
+          normalizeValue(requestedArea.subDomain) === normalizeValue(selectedSubDomain)
+        ? requestedArea.projectCode
+        : null) ??
+    rowsForSubDomain[0]?.projectCode ??
+    null
+
+  const selectedRow =
+    rowsForSubDomain.find(
+      (row) => normalizeValue(row.projectCode) === normalizeValue(selectedProjectCode)
+    ) ??
+    rowsForSubDomain[0] ??
+    requestedArea ??
+    summary[0] ??
+    null
+
+  const projectCodeOptions = collectSortedValues(
+    rowsForSubDomain.map((row) => row.projectCode)
+  )
+
+  return {
+    selectedAreaId: selectedRow?.id ?? null,
+    selectedDomain: selectedRow?.domain ?? selectedDomain,
+    selectedSubDomain: selectedRow?.subDomain ?? selectedSubDomain,
+    selectedProjectCode: selectedRow?.projectCode ?? selectedProjectCode,
+    projectCodeOptions,
+    showProjectCodeSelector: projectCodeOptions.length > 1,
+  }
+}
+
 function normalizeValues(values: string[]) {
   return new Set(values.map((value) => normalizeValue(value)).filter(Boolean))
 }
@@ -923,7 +1039,8 @@ export async function getFinanceWorkspaceData(
   trackerTeams?: string[],
   missingActualMonths?: string[],
   openSeatsOnly?: boolean,
-  viewer?: Pick<AppViewer, "role" | "scopes">
+  viewer?: Pick<AppViewer, "role" | "scopes">,
+  actualsScopeInput?: ActualsScopeSelectionInput
 ) {
   const trackingYears = await prisma.trackingYear.findMany({
     orderBy: { year: "asc" },
@@ -983,10 +1100,19 @@ export async function getFinanceWorkspaceData(
     (area) => ({ domain: area.domain, subDomain: area.subDomain })
   )
   const availableAreaIds = new Set(summary.map((entry) => entry.id))
+  const resolvedActualsScope = resolveActualsScopeSelection(summary, {
+    budgetAreaId: selectedAreaId,
+    domain: actualsScopeInput?.domain,
+    subDomain: actualsScopeInput?.subDomain,
+    projectCode: actualsScopeInput?.projectCode,
+  })
   const effectiveAreaId =
-    selectedAreaId && availableAreaIds.has(selectedAreaId)
-      ? selectedAreaId
-      : summary[0]?.id ?? null
+    resolvedActualsScope.selectedAreaId &&
+    availableAreaIds.has(resolvedActualsScope.selectedAreaId)
+      ? resolvedActualsScope.selectedAreaId
+      : selectedAreaId && availableAreaIds.has(selectedAreaId)
+        ? selectedAreaId
+        : summary[0]?.id ?? null
   const allSeats = effectiveAreaId
     ? await getTrackerDetail(activeYear, effectiveAreaId, viewer)
     : []
@@ -1177,6 +1303,9 @@ export async function getForecastsPageData(input?: {
           exchangeRateUsed: converted.exchangeRateUsed ?? null,
           forecastOverrideAmount: month.forecastOverrideAmount ?? null,
           forecastIncluded: month.forecastIncluded,
+          usedForecastAmount: month.usedForecastAmount ?? null,
+          comparisonForecastAmount:
+            month.usedForecastAmount ?? (metrics.monthlyForecast[month.monthIndex] ?? 0),
           notes: month.notes,
         }
       }),
@@ -1831,6 +1960,757 @@ export async function deleteBudgetMovement(input: {
   return before
 }
 
+function splitAmountByWeights(amount: number, weights: number[]) {
+  if (weights.length === 0) {
+    return []
+  }
+
+  const totalWeight = weights.reduce((sum, weight) => sum + weight, 0)
+  if (totalWeight <= 0) {
+    throw new Error("Matching seats must have allocation greater than zero.")
+  }
+
+  const rawShares = weights.map((weight) => (amount * weight) / totalWeight)
+  const roundedShares = rawShares.map((share) => Math.round(share * 100) / 100)
+  const roundedTotal = roundedShares.reduce((sum, share) => sum + share, 0)
+  const remainder = Math.round((amount - roundedTotal) * 100) / 100
+
+  if (Math.abs(remainder) >= 0.01) {
+    const targetIndex = weights.reduce(
+      (bestIndex, weight, index, collection) =>
+        weight > collection[bestIndex] ? index : bestIndex,
+      0
+    )
+    roundedShares[targetIndex] =
+      Math.round((roundedShares[targetIndex] + remainder) * 100) / 100
+  }
+
+  return roundedShares
+}
+
+function parseCurrencyCode(value: string) {
+  const normalized = value.trim().toUpperCase()
+  if (normalized !== "DKK" && normalized !== "EUR" && normalized !== "USD") {
+    throw new Error(`Unsupported currency '${value}'.`)
+  }
+
+  return normalized as CurrencyCode
+}
+
+async function getLatestExchangeRateOnOrBeforeNow(
+  trackingYearId: string,
+  currency: CurrencyCode
+) {
+  if (currency === "DKK") {
+    return {
+      rateToDkk: 1,
+      effectiveDate: new Date(),
+    }
+  }
+
+  const rate = await prisma.exchangeRate.findFirst({
+    where: {
+      trackingYearId,
+      currency,
+      effectiveDate: { lte: new Date() },
+    },
+    orderBy: [{ effectiveDate: "desc" }],
+  })
+
+  if (!rate) {
+    throw new Error(`No exchange rate is configured for ${currency} on or before today.`)
+  }
+
+  return rate
+}
+
+type ExternalActualSpendPlanMatch = {
+  trackerSeatId: string
+  seatId: string
+  team: string | null
+  inSeat: string | null
+  description: string | null
+  allocation: number
+  dailyRate: number | null
+  usedForecastAmount: number | null
+}
+
+type ExternalActualSpendPlanSeatCandidate = {
+  seat: SeatWithRelations
+  effectiveSeat: ReturnType<typeof getEffectiveSeat>
+  metrics: ReturnType<typeof deriveSeatMetrics>
+}
+
+type ExternalActualNameSearchResult = {
+  trackerSeatId: string
+  seatId: string
+  inSeat: string | null
+  team: string | null
+  status: string | null
+  spendPlanId: string | null
+  allocation: number
+}
+
+async function getExternalActualSpendPlanMatches(input: {
+  year: number
+  spendPlanId: string
+  monthIndex: number
+}, viewer?: Pick<AppViewer, "role" | "scopes">): Promise<ExternalActualSpendPlanMatch[]> {
+  const trackingYear = await getOrCreateTrackingYear(input.year)
+  const [seats, assumptions, exchangeRates] = await Promise.all([
+    prisma.trackerSeat.findMany({
+      where: {
+        trackingYearId: trackingYear.id,
+        isActive: true,
+      },
+      include: {
+        months: {
+          orderBy: { monthIndex: "asc" },
+        },
+        override: true,
+        budgetArea: true,
+      },
+    }),
+    prisma.costAssumption.findMany({
+      where: { trackingYearId: trackingYear.id },
+    }),
+    prisma.exchangeRate.findMany({
+      where: { trackingYearId: trackingYear.id },
+      orderBy: { effectiveDate: "desc" },
+    }),
+  ])
+
+  const assumptionLookup = buildCostAssumptionLookup(assumptions)
+  const now = new Date()
+  const scopedSeats = filterScopedItems(
+    seats as SeatWithRelations[],
+    viewer,
+    (seat) => {
+      const effectiveSeat = getEffectiveSeat(seat)
+      return { domain: effectiveSeat.domain, subDomain: effectiveSeat.subDomain }
+    }
+  )
+
+  const candidates = scopedSeats
+    .map<ExternalActualSpendPlanSeatCandidate | null>((seat) => {
+      const effectiveSeat = getEffectiveSeat(seat)
+      if (!isExternalSeat(effectiveSeat)) {
+        return null
+      }
+
+      if (normalizeValue(effectiveSeat.spendPlanId) !== normalizeValue(input.spendPlanId)) {
+        return null
+      }
+
+      if (!effectiveSeat.startDate || effectiveSeat.startDate > now) {
+        return null
+      }
+
+      return {
+        seat,
+        effectiveSeat,
+        metrics: deriveSeatMetrics(seat, assumptionLookup, exchangeRates, input.year),
+      }
+    })
+    .filter((candidate): candidate is ExternalActualSpendPlanSeatCandidate => candidate !== null)
+
+  const matches = candidates
+    .map<ExternalActualSpendPlanMatch | null>(({ seat, effectiveSeat, metrics }) => {
+      const hasEligibleForecast = Array.from(
+        { length: input.monthIndex + 1 },
+        (_, monthIndex) => monthIndex
+      ).some((monthIndex) => {
+        const month = seat.months.find((entry) => entry.monthIndex === monthIndex)
+        return (
+          (metrics.monthlyForecast[monthIndex] ?? 0) > 0 ||
+          (month?.usedForecastAmount ?? 0) > 0
+        )
+      })
+
+      if (!hasEligibleForecast) {
+        return null
+      }
+
+      return {
+        trackerSeatId: seat.id,
+        seatId: seat.seatId,
+        team: effectiveSeat.team,
+        inSeat: effectiveSeat.inSeat,
+        description: effectiveSeat.description,
+        allocation: normalizeAllocation(effectiveSeat.allocation),
+        dailyRate: effectiveSeat.dailyRate ?? null,
+        usedForecastAmount:
+          seat.months.find((month) => month.monthIndex === input.monthIndex)?.usedForecastAmount ??
+          (metrics.monthlyForecast[input.monthIndex] ?? 0),
+      }
+    })
+    .filter((seat): seat is ExternalActualSpendPlanMatch => seat !== null)
+
+  return matches
+}
+
+async function getExternalActualSpendPlanCandidates(input: {
+  year: number
+  spendPlanId: string
+}, viewer?: Pick<AppViewer, "role" | "scopes">): Promise<ExternalActualSpendPlanSeatCandidate[]> {
+  const trackingYear = await getOrCreateTrackingYear(input.year)
+  const [seats, assumptions, exchangeRates] = await Promise.all([
+    prisma.trackerSeat.findMany({
+      where: {
+        trackingYearId: trackingYear.id,
+        isActive: true,
+      },
+      include: {
+        months: {
+          orderBy: { monthIndex: "asc" },
+        },
+        override: true,
+        budgetArea: true,
+      },
+    }),
+    prisma.costAssumption.findMany({
+      where: { trackingYearId: trackingYear.id },
+    }),
+    prisma.exchangeRate.findMany({
+      where: { trackingYearId: trackingYear.id },
+      orderBy: { effectiveDate: "desc" },
+    }),
+  ])
+
+  const assumptionLookup = buildCostAssumptionLookup(assumptions)
+  const now = new Date()
+
+  return filterScopedItems(
+    seats as SeatWithRelations[],
+    viewer,
+    (seat) => {
+      const effectiveSeat = getEffectiveSeat(seat)
+      return { domain: effectiveSeat.domain, subDomain: effectiveSeat.subDomain }
+    }
+  )
+    .map<ExternalActualSpendPlanSeatCandidate | null>((seat) => {
+      const effectiveSeat = getEffectiveSeat(seat)
+      if (!isExternalSeat(effectiveSeat)) {
+        return null
+      }
+
+      if (normalizeValue(effectiveSeat.spendPlanId) !== normalizeValue(input.spendPlanId)) {
+        return null
+      }
+
+      if (!effectiveSeat.startDate || effectiveSeat.startDate > now) {
+        return null
+      }
+
+      return {
+        seat,
+        effectiveSeat,
+        metrics: deriveSeatMetrics(seat, assumptionLookup, exchangeRates, input.year),
+      }
+    })
+    .filter((candidate): candidate is ExternalActualSpendPlanSeatCandidate => candidate !== null)
+}
+
+function getExternalActualMonthLimit(year: number) {
+  const now = new Date()
+  const currentYear = now.getFullYear()
+  const currentMonthIndex = now.getMonth()
+
+  if (year < currentYear) {
+    return 11
+  }
+
+  return currentMonthIndex
+}
+
+async function getExternalActualMonthSelection(input: {
+  year: number
+  spendPlanId: string
+}, viewer?: Pick<AppViewer, "role" | "scopes">) {
+  const candidates = await getExternalActualSpendPlanCandidates(input, viewer)
+  const maxMonthIndex = getExternalActualMonthLimit(input.year)
+  const monthOptions = Array.from({ length: maxMonthIndex + 1 }, (_, monthIndex) => {
+    const hasActual = candidates.some(({ seat }) => {
+      const month = seat.months.find((entry) => entry.monthIndex === monthIndex)
+      const rawActual = month?.actualAmountRaw
+      const actualAmount = month?.actualAmount ?? 0
+      return rawActual !== null && rawActual !== undefined ? rawActual > 0 : actualAmount > 0
+    })
+    const isEligible = candidates.some(({ seat, metrics }) =>
+      Array.from({ length: monthIndex + 1 }, (_, candidateMonthIndex) => candidateMonthIndex).some(
+        (candidateMonthIndex) => {
+          const month = seat.months.find((entry) => entry.monthIndex === candidateMonthIndex)
+          return (
+            (metrics.monthlyForecast[candidateMonthIndex] ?? 0) > 0 ||
+            (month?.usedForecastAmount ?? 0) > 0
+          )
+        }
+      )
+    )
+
+    return {
+      monthIndex,
+      monthLabel: monthLabel(input.year, monthIndex),
+      hasActual,
+      isEligible,
+    }
+  })
+
+  return {
+    candidates,
+    monthOptions,
+    suggestedMonthIndex:
+      monthOptions.find((option) => option.isEligible && !option.hasActual)?.monthIndex ?? null,
+  }
+}
+
+async function createExternalActualBatchForMatches(input: {
+  year: number
+  monthIndex: number
+  spendPlanId: string
+  amount: number
+  currency: CurrencyCode
+  sourceKind: "MANUAL" | "PASTE"
+  fileName: string
+  invoiceNumber?: string | null
+  supplierName?: string | null
+  description?: string | null
+  rawContent?: string | null
+}, actor?: AuditActor, viewer?: Pick<AppViewer, "role" | "scopes">) {
+  const trackingYear = await getOrCreateTrackingYear(input.year)
+  const matches = await getExternalActualSpendPlanMatches(
+    {
+      year: input.year,
+      spendPlanId: input.spendPlanId,
+      monthIndex: input.monthIndex,
+    },
+    viewer
+  )
+
+  if (matches.length === 0) {
+    throw new Error("No matching external seats were found for that spend plan and month.")
+  }
+
+  const rate = await getLatestExchangeRateOnOrBeforeNow(trackingYear.id, input.currency)
+  const originalShares = splitAmountByWeights(
+    input.amount,
+    matches.map((seat) => seat.allocation)
+  )
+
+  const batch = await prisma.$transaction(async (transaction) => {
+    const nextBatch = await transaction.externalActualImport.create({
+      data: {
+        trackingYearId: trackingYear.id,
+        fileName: input.fileName,
+        sourceKind: input.sourceKind,
+        importedByName: actor?.name ?? null,
+        importedByEmail: actor?.email ?? null,
+        rowCount: 1,
+        entryCount: matches.length,
+      },
+    })
+
+    for (const [index, match] of matches.entries()) {
+      const originalAmount = originalShares[index]
+      const dkkAmount = Math.round(originalAmount * rate.rateToDkk * 100) / 100
+      const noteSegments = [
+        input.sourceKind === "PASTE" ? "Pasted external actual" : "Manual external actual",
+        input.invoiceNumber ? `invoice ${input.invoiceNumber}` : null,
+        input.supplierName ? input.supplierName : null,
+        `spend plan ${input.spendPlanId}`,
+      ].filter(Boolean)
+
+      await transaction.externalActualEntry.create({
+        data: {
+          trackingYearId: trackingYear.id,
+          importId: nextBatch.id,
+          trackerSeatId: match.trackerSeatId,
+          sourceKind: input.sourceKind,
+          seatId: match.seatId,
+          team: match.team,
+          inSeat: match.inSeat,
+          description: input.description ?? match.description,
+          monthIndex: input.monthIndex,
+          monthLabel: monthLabel(input.year, input.monthIndex),
+          amount: dkkAmount,
+          originalAmount,
+          originalCurrency: input.currency,
+          spendPlanId: input.spendPlanId,
+          invoiceNumber: input.invoiceNumber ?? null,
+          supplierName: input.supplierName ?? null,
+          rawContent: input.rawContent ?? null,
+          usedForecastAmount: match.usedForecastAmount,
+        },
+      })
+
+      await transaction.seatMonth.upsert({
+        where: {
+          trackerSeatId_monthIndex: {
+            trackerSeatId: match.trackerSeatId,
+            monthIndex: input.monthIndex,
+          },
+        },
+        update: {
+          actualAmount: dkkAmount <= 0 ? 0 : dkkAmount,
+          actualAmountRaw: originalAmount,
+          actualCurrency: input.currency,
+          exchangeRateUsed: dkkAmount <= 0 ? null : rate.rateToDkk,
+          forecastIncluded: dkkAmount <= 0,
+          usedForecastAmount: dkkAmount <= 0 ? null : match.usedForecastAmount,
+          notes: noteSegments.join(" · "),
+        },
+        create: {
+          trackerSeatId: match.trackerSeatId,
+          monthIndex: input.monthIndex,
+          actualAmount: dkkAmount <= 0 ? 0 : dkkAmount,
+          actualAmountRaw: originalAmount,
+          actualCurrency: input.currency,
+          exchangeRateUsed: dkkAmount <= 0 ? null : rate.rateToDkk,
+          forecastIncluded: dkkAmount <= 0,
+          usedForecastAmount: dkkAmount <= 0 ? null : match.usedForecastAmount,
+          notes: noteSegments.join(" · "),
+        },
+      })
+    }
+
+    return nextBatch
+  })
+
+  await writeAuditLog({
+    trackingYearId: trackingYear.id,
+    entityType: "ExternalActualImport",
+    entityId: batch.id,
+    action: "IMPORT",
+    actor,
+    changes: [
+      {
+        field: "externalActualImport",
+        newValue: JSON.stringify({
+          fileName: input.fileName,
+          sourceKind: input.sourceKind,
+          spendPlanId: input.spendPlanId,
+          entryCount: matches.length,
+          originalAmount: input.amount,
+          currency: input.currency,
+        }),
+      },
+    ],
+  })
+
+  return batch
+}
+
+async function previewExternalActualBatchForMatches(input: {
+  year: number
+  monthIndex: number
+  spendPlanId: string
+  amount: number
+  currency: CurrencyCode
+  invoiceNumber?: string | null
+  supplierName?: string | null
+  description?: string | null
+  rawContent?: string | null
+}, viewer?: Pick<AppViewer, "role" | "scopes">) {
+  const trackingYear = await getOrCreateTrackingYear(input.year)
+  const matches = await getExternalActualSpendPlanMatches(
+    {
+      year: input.year,
+      spendPlanId: input.spendPlanId,
+      monthIndex: input.monthIndex,
+    },
+    viewer
+  )
+
+  const rate = await getLatestExchangeRateOnOrBeforeNow(trackingYear.id, input.currency)
+  if (matches.length === 0) {
+    return {
+      status: "needs_mapping" as const,
+      year: input.year,
+      monthIndex: input.monthIndex,
+      monthLabel: monthLabel(input.year, input.monthIndex),
+      spendPlanId: input.spendPlanId,
+      invoiceNumber: input.invoiceNumber ?? null,
+      supplierName: input.supplierName ?? null,
+      originalAmount: input.amount,
+      originalCurrency: input.currency,
+      rateToDkk: rate.rateToDkk,
+      totalDkk: Math.round(input.amount * rate.rateToDkk * 100) / 100,
+      seats: [],
+    }
+  }
+
+  const originalShares = splitAmountByWeights(input.amount, matches.map((seat) => seat.allocation))
+
+  return {
+    status: "matched" as const,
+    year: input.year,
+    monthIndex: input.monthIndex,
+    monthLabel: monthLabel(input.year, input.monthIndex),
+    spendPlanId: input.spendPlanId,
+    invoiceNumber: input.invoiceNumber ?? null,
+    supplierName: input.supplierName ?? null,
+    originalAmount: input.amount,
+    originalCurrency: input.currency,
+    rateToDkk: rate.rateToDkk,
+    totalDkk: Math.round(input.amount * rate.rateToDkk * 100) / 100,
+    seats: matches.map((match, index) => ({
+      trackerSeatId: match.trackerSeatId,
+      seatId: match.seatId,
+      team: match.team,
+      inSeat: match.inSeat,
+      description: input.description ?? match.description,
+      allocation: match.allocation,
+      dailyRate: match.dailyRate,
+      originalAmount: originalShares[index],
+      amountDkk: Math.round(originalShares[index] * rate.rateToDkk * 100) / 100,
+      daysEquivalent:
+        match.dailyRate && match.dailyRate > 0
+          ? Math.round((originalShares[index] / match.dailyRate) * 100) / 100
+          : null,
+      usedForecastAmount: match.usedForecastAmount,
+    })),
+  }
+}
+
+function parsePastedInvoiceText(content: string) {
+  const getValue = (label: string) => {
+    const match = content.match(new RegExp(`${label}\\s*:\\s*(.+)`, "i"))
+    return match?.[1]?.trim() ?? null
+  }
+
+  const spendPlanId = getValue("Spend plan")
+  const spendPlanReference = getValue("Spend plan reference")
+  const invoiceNumber = getValue("InvoiceNO")
+  const supplierName = getValue("Supplier Name")
+  const netTotal = getValue("Net Total")
+  const currencyValue = getValue("Currency")
+
+  if (!spendPlanId) {
+    throw new Error("Could not find a spend plan in the pasted content.")
+  }
+
+  if (!netTotal) {
+    throw new Error("Could not find a net total in the pasted content.")
+  }
+
+  if (!currencyValue) {
+    throw new Error("Could not find a currency in the pasted content.")
+  }
+
+  const amount = Number(netTotal.replace(/\./g, "").replace(",", "."))
+  if (!Number.isFinite(amount)) {
+    throw new Error("Could not parse the net total from the pasted content.")
+  }
+
+  return {
+    spendPlanId,
+    spendPlanReference,
+    invoiceNumber,
+    supplierName,
+    amount,
+    currency: parseCurrencyCode(currencyValue),
+  }
+}
+
+export async function createManualExternalActual(input: {
+  year: number
+  monthIndex: number
+  spendPlanId: string
+  amount: number
+  currency: CurrencyCode
+  invoiceNumber?: string | null
+  supplierName?: string | null
+  description?: string | null
+}, actor?: AuditActor, viewer?: Pick<AppViewer, "role" | "scopes">) {
+  return createExternalActualBatchForMatches(
+    {
+      ...input,
+      fileName: "Manual external actual",
+      sourceKind: "MANUAL",
+    },
+    actor,
+    viewer
+  )
+}
+
+export async function createPastedExternalActual(input: {
+  year: number
+  monthIndex: number
+  content: string
+}, actor?: AuditActor, viewer?: Pick<AppViewer, "role" | "scopes">) {
+  const parsed = parsePastedInvoiceText(input.content)
+
+  return createExternalActualBatchForMatches(
+    {
+      year: input.year,
+      monthIndex: input.monthIndex,
+      spendPlanId: parsed.spendPlanId,
+      amount: parsed.amount,
+      currency: parsed.currency,
+      invoiceNumber: parsed.invoiceNumber,
+      supplierName: parsed.supplierName,
+      rawContent: input.content,
+      fileName: "Pasted invoice actual",
+      sourceKind: "PASTE",
+    },
+    actor,
+    viewer
+  )
+}
+
+export async function previewPastedExternalActual(input: {
+  year: number
+  monthIndex?: number
+  content: string
+}, viewer?: Pick<AppViewer, "role" | "scopes">) {
+  const parsed = parsePastedInvoiceText(input.content)
+  const trackingYear = await getOrCreateTrackingYear(input.year)
+  const rate = await getLatestExchangeRateOnOrBeforeNow(trackingYear.id, parsed.currency)
+  const totalDkk = Math.round(parsed.amount * rate.rateToDkk * 100) / 100
+  const monthSelection = await getExternalActualMonthSelection(
+    {
+      year: input.year,
+      spendPlanId: parsed.spendPlanId,
+    },
+    viewer
+  )
+
+  const preview =
+    monthSelection.candidates.length === 0
+      ? {
+          status: "needs_mapping" as const,
+          year: input.year,
+          monthIndex: null,
+          monthLabel: null,
+          spendPlanId: parsed.spendPlanId,
+          invoiceNumber: parsed.invoiceNumber ?? null,
+          supplierName: parsed.supplierName ?? null,
+          originalAmount: parsed.amount,
+          originalCurrency: parsed.currency,
+          rateToDkk: rate.rateToDkk,
+          totalDkk,
+          seats: [],
+        }
+      : input.monthIndex === undefined
+        ? {
+            status: "matched" as const,
+            year: input.year,
+            monthIndex: null,
+            monthLabel: null,
+            spendPlanId: parsed.spendPlanId,
+            invoiceNumber: parsed.invoiceNumber ?? null,
+            supplierName: parsed.supplierName ?? null,
+            originalAmount: parsed.amount,
+            originalCurrency: parsed.currency,
+            rateToDkk: rate.rateToDkk,
+            totalDkk,
+            seats: [],
+          }
+        : await previewExternalActualBatchForMatches(
+            {
+              year: input.year,
+              monthIndex: input.monthIndex,
+              spendPlanId: parsed.spendPlanId,
+              amount: parsed.amount,
+              currency: parsed.currency,
+              invoiceNumber: parsed.invoiceNumber,
+              supplierName: parsed.supplierName,
+              rawContent: input.content,
+            },
+            viewer
+          )
+
+  const suggestedName =
+    parsed.spendPlanReference?.includes("-")
+      ? parsed.spendPlanReference.split("-").at(-1)?.trim() || null
+      : null
+
+  return {
+    ...preview,
+    monthOptions: monthSelection.monthOptions,
+    suggestedMonthIndex: monthSelection.suggestedMonthIndex,
+    spendPlanReference: parsed.spendPlanReference ?? null,
+    suggestedName,
+  }
+}
+
+export async function searchExternalSeatsByName(input: {
+  year: number
+  query: string
+}, viewer?: Pick<AppViewer, "role" | "scopes">): Promise<ExternalActualNameSearchResult[]> {
+  const trackingYear = await getOrCreateTrackingYear(input.year)
+  const seats = await prisma.trackerSeat.findMany({
+    where: {
+      trackingYearId: trackingYear.id,
+      isActive: true,
+    },
+    include: {
+      months: true,
+      override: true,
+      budgetArea: true,
+    },
+    orderBy: [{ inSeat: "asc" }, { seatId: "asc" }],
+  })
+
+  const normalizedQuery = normalizeValue(input.query)
+  if (!normalizedQuery) {
+    return []
+  }
+
+  return filterScopedItems(
+    seats as SeatWithRelations[],
+    viewer,
+    (seat) => {
+      const effectiveSeat = getEffectiveSeat(seat)
+      return { domain: effectiveSeat.domain, subDomain: effectiveSeat.subDomain }
+    }
+  )
+    .map((seat) => {
+      const effectiveSeat = getEffectiveSeat(seat)
+      if (!isExternalSeat(effectiveSeat)) {
+        return null
+      }
+
+      if (!normalizeValue(effectiveSeat.inSeat).includes(normalizedQuery)) {
+        return null
+      }
+
+      return {
+        trackerSeatId: seat.id,
+        seatId: seat.seatId,
+        inSeat: effectiveSeat.inSeat,
+        team: effectiveSeat.team,
+        status: effectiveSeat.status,
+        spendPlanId: effectiveSeat.spendPlanId,
+        allocation: normalizeAllocation(effectiveSeat.allocation),
+      }
+    })
+    .filter((seat): seat is ExternalActualNameSearchResult => seat !== null)
+}
+
+export async function assignSpendPlanToTrackerSeats(input: {
+  trackerSeatIds: string[]
+  spendPlanId: string
+}, actor?: AuditActor) {
+  if (input.trackerSeatIds.length === 0) {
+    throw new Error("Select at least one seat to map the spend plan to.")
+  }
+
+  for (const seatId of input.trackerSeatIds) {
+    await updateTrackerSeat(
+      seatId,
+      {
+        override: {
+          spendPlanId: input.spendPlanId,
+        },
+      },
+      actor
+    )
+  }
+
+  return { updatedCount: input.trackerSeatIds.length }
+}
+
 export async function getExternalActualImportsPageData(input?: {
   year?: number
   user?: string
@@ -1948,8 +2828,13 @@ export async function getExternalActualImportsPageData(input?: {
         team: entry.team,
         inSeat: entry.inSeat,
         description: entry.description,
+        monthIndex: entry.monthIndex,
         monthLabel: entry.monthLabel,
         amount: entry.amount,
+        originalAmount: entry.originalAmount,
+        originalCurrency: entry.originalCurrency,
+        invoiceNumber: entry.invoiceNumber,
+        supplierName: entry.supplierName,
         matchedTrackerSeatId: entry.trackerSeatId,
       }))
       .filter((entry) => {
@@ -1985,6 +2870,258 @@ export async function getExternalActualImportsPageData(input?: {
       matchedCount: views.filter((entry) => entry.matchedTrackerSeatId).length,
     },
   }
+}
+
+async function syncSeatMonthFromLatestExternalActualEntry(
+  transaction: Prisma.TransactionClient,
+  trackerSeatId: string,
+  monthIndex: number
+) {
+  const replacement = await transaction.externalActualEntry.findFirst({
+    where: {
+      trackerSeatId,
+      monthIndex,
+    },
+    include: {
+      import: true,
+    },
+    orderBy: [{ import: { importedAt: "desc" } }, { createdAt: "desc" }],
+  })
+
+  await transaction.seatMonth.upsert({
+    where: {
+      trackerSeatId_monthIndex: {
+        trackerSeatId,
+        monthIndex,
+      },
+    },
+    update: replacement
+      ? {
+          actualAmount: replacement.amount <= 0 ? 0 : replacement.amount,
+          actualAmountRaw: replacement.originalAmount ?? replacement.amount,
+          actualCurrency: replacement.originalCurrency ?? "DKK",
+          exchangeRateUsed:
+            replacement.amount <= 0
+              ? null
+              : replacement.originalCurrency &&
+                  replacement.originalCurrency !== "DKK" &&
+                  replacement.originalAmount &&
+                  replacement.originalAmount > 0
+                ? replacement.amount / replacement.originalAmount
+                : 1,
+          forecastIncluded: replacement.amount <= 0,
+          usedForecastAmount: replacement.usedForecastAmount,
+          notes: `Imported from external actuals: ${replacement.import.fileName} (${replacement.import.id})`,
+        }
+      : {
+          actualAmount: 0,
+          actualAmountRaw: null,
+          actualCurrency: "DKK",
+          exchangeRateUsed: null,
+          forecastIncluded: true,
+          usedForecastAmount: null,
+          notes: null,
+        },
+    create: replacement
+      ? {
+          trackerSeatId,
+          monthIndex,
+          actualAmount: replacement.amount <= 0 ? 0 : replacement.amount,
+          actualAmountRaw: replacement.originalAmount ?? replacement.amount,
+          actualCurrency: replacement.originalCurrency ?? "DKK",
+          exchangeRateUsed:
+            replacement.amount <= 0
+              ? null
+              : replacement.originalCurrency &&
+                  replacement.originalCurrency !== "DKK" &&
+                  replacement.originalAmount &&
+                  replacement.originalAmount > 0
+                ? replacement.amount / replacement.originalAmount
+                : 1,
+          forecastIncluded: replacement.amount <= 0,
+          usedForecastAmount: replacement.usedForecastAmount,
+          notes: `Imported from external actuals: ${replacement.import.fileName} (${replacement.import.id})`,
+        }
+      : {
+          trackerSeatId,
+          monthIndex,
+          actualAmount: 0,
+          actualAmountRaw: null,
+          actualCurrency: "DKK",
+          exchangeRateUsed: null,
+          forecastIncluded: true,
+          usedForecastAmount: null,
+          notes: null,
+        },
+  })
+}
+
+export async function updateExternalActualEntry(
+  input: {
+    entryId: string
+    amount: number
+    invoiceNumber?: string | null
+    supplierName?: string | null
+  },
+  actor?: AuditActor
+) {
+  const entry = await prisma.externalActualEntry.findUniqueOrThrow({
+    where: { id: input.entryId },
+    include: {
+      import: true,
+    },
+  })
+
+  const actorEmail = normalizeValue(actor?.email)
+  if (!actorEmail || actorEmail !== normalizeValue(entry.import.importedByEmail)) {
+    throw new Error("Only the user who created this external actual can edit it.")
+  }
+
+  const currency = entry.originalCurrency ?? "DKK"
+  const exchangeRate =
+    currency !== "DKK" && entry.originalAmount && entry.originalAmount > 0
+      ? entry.amount / entry.originalAmount
+      : 1
+  const originalAmount = input.amount
+  const amount =
+    currency !== "DKK"
+      ? Math.round(originalAmount * exchangeRate * 100) / 100
+      : originalAmount
+
+  const updated = await prisma.$transaction(async (transaction) => {
+    const nextEntry = await transaction.externalActualEntry.update({
+      where: { id: input.entryId },
+      data: {
+        amount,
+        originalAmount,
+        originalCurrency: currency,
+        invoiceNumber: input.invoiceNumber ?? null,
+        supplierName: input.supplierName ?? null,
+      },
+      include: {
+        import: true,
+      },
+    })
+
+    if (nextEntry.trackerSeatId) {
+      await syncSeatMonthFromLatestExternalActualEntry(
+        transaction,
+        nextEntry.trackerSeatId,
+        nextEntry.monthIndex
+      )
+    }
+
+    await transaction.externalActualImport.update({
+      where: { id: nextEntry.importId },
+      data: {
+        entryCount: await transaction.externalActualEntry.count({
+          where: { importId: nextEntry.importId },
+        }),
+      },
+    })
+
+    return nextEntry
+  })
+
+  await writeAuditLog({
+    trackingYearId: entry.trackingYearId,
+    entityType: "ExternalActualEntry",
+    entityId: entry.id,
+    action: "UPDATE",
+    actor,
+    changes: buildAuditChanges(
+      {
+        amount: entry.amount,
+        originalAmount: entry.originalAmount,
+        invoiceNumber: entry.invoiceNumber,
+        supplierName: entry.supplierName,
+      },
+      {
+        amount: updated.amount,
+        originalAmount: updated.originalAmount,
+        invoiceNumber: updated.invoiceNumber,
+        supplierName: updated.supplierName,
+      }
+    ),
+  })
+
+  return updated
+}
+
+export async function deleteExternalActualEntry(
+  input: {
+    entryId: string
+  },
+  actor?: AuditActor
+) {
+  const entry = await prisma.externalActualEntry.findUniqueOrThrow({
+    where: { id: input.entryId },
+    include: {
+      import: true,
+    },
+  })
+
+  const actorEmail = normalizeValue(actor?.email)
+  if (!actorEmail || actorEmail !== normalizeValue(entry.import.importedByEmail)) {
+    throw new Error("Only the user who created this external actual can delete it.")
+  }
+
+  await prisma.$transaction(async (transaction) => {
+    await transaction.externalActualEntry.delete({
+      where: { id: input.entryId },
+    })
+
+    if (entry.trackerSeatId) {
+      await syncSeatMonthFromLatestExternalActualEntry(
+        transaction,
+        entry.trackerSeatId,
+        entry.monthIndex
+      )
+    }
+
+    const remainingCount = await transaction.externalActualEntry.count({
+      where: { importId: entry.importId },
+    })
+
+    if (remainingCount === 0) {
+      await transaction.externalActualImport.delete({
+        where: { id: entry.importId },
+      })
+      return
+    }
+
+    await transaction.externalActualImport.update({
+      where: { id: entry.importId },
+      data: {
+        entryCount: remainingCount,
+      },
+    })
+  })
+
+  await writeAuditLog({
+    trackingYearId: entry.trackingYearId,
+    entityType: "ExternalActualEntry",
+    entityId: entry.id,
+    action: "DELETE",
+    actor,
+    changes: [
+      {
+        field: "externalActualEntry",
+        oldValue: JSON.stringify({
+          amount: entry.amount,
+          originalAmount: entry.originalAmount,
+          originalCurrency: entry.originalCurrency,
+          invoiceNumber: entry.invoiceNumber,
+          supplierName: entry.supplierName,
+          importId: entry.importId,
+          trackerSeatId: entry.trackerSeatId,
+          monthIndex: entry.monthIndex,
+        }),
+      },
+    ],
+  })
+
+  return { deletedId: entry.id }
 }
 
 export async function getPeopleRosterPageData(input?: {
@@ -2228,12 +3365,18 @@ export async function getPeopleRosterPageData(input?: {
     }
 
     if (staffingBucket) {
-      if (!isPermRosterPerson(person)) {
+      const normalizedStatus = normalizeValue(person.effectiveStatus)
+      const normalizedInSeat = normalizeValue(person.effectiveInSeat)
+      const isPermPerson = isPermRosterPerson(person)
+
+      if (staffingBucket === "ext total" || staffingBucket === "ext-total") {
+        return !isPermPerson
+      }
+
+      if (!isPermPerson) {
         return false
       }
 
-      const normalizedStatus = normalizeValue(person.effectiveStatus)
-      const normalizedInSeat = normalizeValue(person.effectiveInSeat)
       const matchesBucket =
         staffingBucket === "perm total" || staffingBucket === "perm-total"
           ? (
@@ -3127,6 +4270,9 @@ export async function getTrackerDetail(
           exchangeRateUsed: converted.exchangeRateUsed ?? null,
           forecastOverrideAmount: month.forecastOverrideAmount ?? null,
           forecastIncluded: month.forecastIncluded,
+          usedForecastAmount: month.usedForecastAmount ?? null,
+          comparisonForecastAmount:
+            month.usedForecastAmount ?? (metrics.monthlyForecast[month.monthIndex] ?? 0),
           notes: month.notes,
         }
       })
@@ -4032,6 +5178,7 @@ export async function resetTrackingYearDataset(
             { actualAmountRaw: { not: null } },
             { actualAmount: { not: 0 } },
             { exchangeRateUsed: { not: null } },
+            { usedForecastAmount: { not: null } },
             { notes: { not: null } },
           ],
         },
@@ -4049,6 +5196,7 @@ export async function resetTrackingYearDataset(
             { actualAmountRaw: { not: null } },
             { actualAmount: { not: 0 } },
             { exchangeRateUsed: { not: null } },
+            { usedForecastAmount: { not: null } },
             { notes: { not: null } },
           ],
         },
@@ -4058,6 +5206,7 @@ export async function resetTrackingYearDataset(
           actualCurrency: "DKK",
           exchangeRateUsed: null,
           forecastIncluded: true,
+          usedForecastAmount: null,
           notes: null,
         },
       })
@@ -4124,6 +5273,13 @@ export async function updateTrackerSeat(
 ) {
   const seat = await prisma.trackerSeat.findUniqueOrThrow({
     where: { id: seatId },
+    include: {
+      months: {
+        orderBy: { monthIndex: "asc" },
+      },
+      override: true,
+      budgetArea: true,
+    },
   })
 
   if (payload.monthIndex !== undefined) {
@@ -4160,6 +5316,22 @@ export async function updateTrackerSeat(
       payload.forecastOverrideAmount === undefined
         ? beforeMonth?.forecastOverrideAmount ?? null
         : payload.forecastOverrideAmount
+    const usedForecastAmount =
+      payload.actualAmount !== undefined && isClearingActual
+        ? null
+        : forecastIncluded
+          ? null
+          : (beforeMonth?.usedForecastAmount ??
+            (await computeSeatMonthForecastSnapshot({
+              seat: seat as SeatWithRelations,
+              year: (
+                await prisma.trackingYear.findUniqueOrThrow({
+                  where: { id: seat.trackingYearId },
+                  select: { year: true },
+                })
+              ).year,
+              monthIndex: payload.monthIndex,
+            })))
 
     const month = await prisma.seatMonth.upsert({
       where: {
@@ -4175,6 +5347,7 @@ export async function updateTrackerSeat(
         exchangeRateUsed: converted.exchangeRateUsed,
         forecastOverrideAmount,
         forecastIncluded,
+        usedForecastAmount,
         notes,
       },
       create: {
@@ -4186,6 +5359,7 @@ export async function updateTrackerSeat(
         exchangeRateUsed: converted.exchangeRateUsed,
         forecastOverrideAmount,
         forecastIncluded,
+        usedForecastAmount,
         notes,
       },
     })
@@ -4204,6 +5378,7 @@ export async function updateTrackerSeat(
         "exchangeRateUsed",
         "forecastOverrideAmount",
         "forecastIncluded",
+        "usedForecastAmount",
         "notes",
       ]),
     })
@@ -4422,6 +5597,7 @@ export async function applyForecastCopyToActualsForSubDomain(input: {
         actualCurrency: "DKK",
         exchangeRateUsed: amount <= 0 ? null : 1,
         forecastIncluded: false,
+        usedForecastAmount: candidate.amount,
       },
       create: {
         trackerSeatId: candidate.trackerSeatId,
@@ -4431,6 +5607,7 @@ export async function applyForecastCopyToActualsForSubDomain(input: {
         actualCurrency: "DKK",
         exchangeRateUsed: amount <= 0 ? null : 1,
         forecastIncluded: false,
+        usedForecastAmount: candidate.amount,
       },
     })
   })
@@ -4539,10 +5716,19 @@ export async function rollbackExternalActualImport(
         update: replacement
           ? {
               actualAmount: replacement.amount <= 0 ? 0 : replacement.amount,
-              actualAmountRaw: replacement.amount,
-              actualCurrency: "DKK",
-              exchangeRateUsed: replacement.amount <= 0 ? null : 1,
+              actualAmountRaw: replacement.originalAmount ?? replacement.amount,
+              actualCurrency: replacement.originalCurrency ?? "DKK",
+              exchangeRateUsed:
+                replacement.amount <= 0
+                  ? null
+                  : replacement.originalCurrency &&
+                      replacement.originalCurrency !== "DKK" &&
+                      replacement.originalAmount &&
+                      replacement.originalAmount > 0
+                    ? replacement.amount / replacement.originalAmount
+                    : 1,
               forecastIncluded: replacement.amount <= 0,
+              usedForecastAmount: replacement.usedForecastAmount,
               notes: `Imported from external actuals: ${replacement.import.fileName} (${replacement.import.id})`,
             }
           : {
@@ -4551,6 +5737,7 @@ export async function rollbackExternalActualImport(
               actualCurrency: "DKK",
               exchangeRateUsed: null,
               forecastIncluded: true,
+              usedForecastAmount: null,
               notes: null,
             },
         create: replacement
@@ -4558,10 +5745,19 @@ export async function rollbackExternalActualImport(
               trackerSeatId: impacted.trackerSeatId,
               monthIndex: impacted.monthIndex,
               actualAmount: replacement.amount <= 0 ? 0 : replacement.amount,
-              actualAmountRaw: replacement.amount,
-              actualCurrency: "DKK",
-              exchangeRateUsed: replacement.amount <= 0 ? null : 1,
+              actualAmountRaw: replacement.originalAmount ?? replacement.amount,
+              actualCurrency: replacement.originalCurrency ?? "DKK",
+              exchangeRateUsed:
+                replacement.amount <= 0
+                  ? null
+                  : replacement.originalCurrency &&
+                      replacement.originalCurrency !== "DKK" &&
+                      replacement.originalAmount &&
+                      replacement.originalAmount > 0
+                    ? replacement.amount / replacement.originalAmount
+                    : 1,
               forecastIncluded: replacement.amount <= 0,
+              usedForecastAmount: replacement.usedForecastAmount,
               notes: `Imported from external actuals: ${replacement.import.fileName} (${replacement.import.id})`,
             }
           : {
@@ -4572,6 +5768,7 @@ export async function rollbackExternalActualImport(
               actualCurrency: "DKK",
               exchangeRateUsed: null,
               forecastIncluded: true,
+              usedForecastAmount: null,
               notes: null,
             },
       })

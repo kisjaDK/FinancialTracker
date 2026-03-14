@@ -46,6 +46,12 @@ enum StaffingTargetScopeLevel {
   PROJECT
 }
 
+enum ExternalActualSourceKind {
+  CSV
+  MANUAL
+  PASTE
+}
+
 model AppUser {
   id        String            @id @default(cuid())
   email     String            @unique
@@ -303,6 +309,7 @@ model ExternalActualImport {
   id             String               @id @default(cuid())
   trackingYearId String
   fileName       String
+  sourceKind     ExternalActualSourceKind @default(CSV)
   importedAt     DateTime             @default(now())
   importedByName String?
   importedByEmail String?
@@ -320,6 +327,7 @@ model ExternalActualEntry {
   trackingYearId  String
   importId        String
   trackerSeatId   String?
+  sourceKind      ExternalActualSourceKind @default(CSV)
   seatId          String
   team            String?
   inSeat          String?
@@ -327,6 +335,13 @@ model ExternalActualEntry {
   monthIndex      Int
   monthLabel      String
   amount          Float
+  originalAmount  Float?
+  originalCurrency CurrencyCode?
+  spendPlanId     String?
+  invoiceNumber   String?
+  supplierName    String?
+  rawContent      String?
+  usedForecastAmount Float?
   createdAt       DateTime             @default(now())
   trackingYear    TrackingYear         @relation(fields: [trackingYearId], references: [id], onDelete: Cascade)
   import          ExternalActualImport @relation(fields: [importId], references: [id], onDelete: Cascade)
@@ -393,6 +408,7 @@ model SeatMonth {
   exchangeRateUsed Float?
   forecastOverrideAmount Float?
   forecastIncluded Boolean     @default(true)
+  usedForecastAmount Float?
   notes            String?
   createdAt        DateTime    @default(now())
   updatedAt        DateTime    @updatedAt
