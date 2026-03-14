@@ -1339,7 +1339,7 @@ export function FinanceWorkspace({
                         <TableHead>F Q4</TableHead>
                       </>
                     ) : null}
-                    <TableHead className="w-[112px] text-right">
+                    <TableHead className="w-[112px] text-right align-top">
                       Actions
                     </TableHead>
                   </TableRow>
@@ -1429,7 +1429,7 @@ export function FinanceWorkspace({
                               </TableCell>
                             </>
                           ) : null}
-                          <TableCell>
+                          <TableCell className="align-top">
                             <div className="flex items-center gap-1">
                               <span>{formatCurrency(seat.totalForecast)}</span>
                               {seat.hasForecastAdjustments ? (
@@ -1439,7 +1439,7 @@ export function FinanceWorkspace({
                                 />
                               ) : null}
                             </div>
-                            <div className="text-xs text-muted-foreground">
+                            <div className="max-w-[12rem] whitespace-normal break-words text-xs leading-5 text-muted-foreground">
                               {formatForecastCoverage(seat)}
                             </div>
                           </TableCell>
@@ -1459,8 +1459,8 @@ export function FinanceWorkspace({
                               </TableCell>
                             </>
                           ) : null}
-                          <TableCell className="text-right">
-                            <div className="flex justify-end gap-2">
+                          <TableCell className="align-top text-right">
+                            <div className="flex flex-col items-end gap-2">
                               <Button
                                 type="button"
                                 variant="outline"
