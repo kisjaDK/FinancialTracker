@@ -150,6 +150,8 @@ type WorkspaceProps = {
 type SeatSortField = "seat" | "resource" | "type" | "alloc"
 type SeatSortDirection = "asc" | "desc"
 
+const UNMAPPED_DOMAIN_FILTER = "__unmapped__"
+
 async function fetchJson(input: RequestInfo, init?: RequestInit) {
   const response = await fetch(input, init)
   const body = await response.json()
@@ -202,6 +204,11 @@ function isCodeLikeAreaLabel(value: string | null | undefined) {
   }
 
   return /^[A-Z]\d+\s*·\s*[A-Z]\d+$/i.test(trimmed)
+}
+
+function getDomainFilterValue(domain: string | null | undefined) {
+  const trimmed = domain?.trim()
+  return trimmed ? trimmed : UNMAPPED_DOMAIN_FILTER
 }
 
 function sumQuarter(values: number[], quarterIndex: number) {
@@ -305,6 +312,26 @@ export function FinanceWorkspace({
       ),
     [summary]
   )
+  const activeDomainFilter = searchParams.get("domain")?.trim() ?? ""
+  const domainOptions = useMemo(
+    () =>
+      Array.from(
+        new Map(
+          summary.map((row) => [
+            getDomainFilterValue(row.domain),
+            row.domain?.trim() || "Unmapped",
+          ])
+        )
+      ).sort((left, right) => left[1].localeCompare(right[1], undefined, { sensitivity: "base" })),
+    [summary]
+  )
+  const filteredSummary = useMemo(() => {
+    if (!activeDomainFilter) {
+      return summary
+    }
+
+    return summary.filter((row) => getDomainFilterValue(row.domain) === activeDomainFilter)
+  }, [activeDomainFilter, summary])
 
   const activeSeatSortField: SeatSortField | null =
     seatSortField === "seat" ||
@@ -326,7 +353,10 @@ export function FinanceWorkspace({
     setOpenSeatsOnlyDraft(openSeatsOnly)
   }, [openSeatsOnly])
 
-  const selectedArea = summary.find((row) => row.id === activeSummaryAreaId) ?? summary[0]
+  const selectedArea =
+    summary.find((row) => row.id === activeSummaryAreaId) ??
+    filteredSummary[0] ??
+    summary[0]
   const effectiveSelectedAreaId = activeSummaryAreaId ?? selectedArea?.id ?? null
   const filteredSeats = useMemo(() => {
     const teamFilter = new Set(
@@ -533,12 +563,17 @@ export function FinanceWorkspace({
     }
 
     const year = String(formData.get("year") || "").trim()
+    const domain = String(formData.get("domain") || "").trim()
     const budgetAreaId = String(formData.get("budgetAreaId") || "").trim()
     const seatSortField = String(formData.get("seatSortField") || "").trim()
     const seatSortDirection = String(formData.get("seatSortDirection") || "").trim()
 
     if (year) {
       params.set("year", year)
+    }
+
+    if (domain) {
+      params.set("domain", domain)
     }
 
     if (budgetAreaId) {
@@ -565,11 +600,14 @@ export function FinanceWorkspace({
   }
 
   async function handleAreaSelection(areaId: string) {
+    await handleAreaSelectionWithParams(areaId, new URLSearchParams(searchParams.toString()))
+  }
+
+  async function handleAreaSelectionWithParams(areaId: string, params: URLSearchParams) {
     if (areaId === effectiveSelectedAreaId) {
       return
     }
 
-    const params = new URLSearchParams(searchParams.toString())
     params.set("budgetAreaId", areaId)
     params.delete("team")
     params.delete("missingActualMonth")
@@ -598,6 +636,30 @@ export function FinanceWorkspace({
     } finally {
       setIsAreaLoading(false)
     }
+  }
+
+  function handleDomainFilterChange(nextDomainFilter: string) {
+    const params = new URLSearchParams(searchParams.toString())
+
+    if (nextDomainFilter) {
+      params.set("domain", nextDomainFilter)
+    } else {
+      params.delete("domain")
+    }
+
+    const nextSummary = nextDomainFilter
+      ? summary.filter((row) => getDomainFilterValue(row.domain) === nextDomainFilter)
+      : summary
+    const currentSelectionStillVisible = nextSummary.some((row) => row.id === effectiveSelectedAreaId)
+
+    if (currentSelectionStillVisible || !nextSummary[0]) {
+      startTransition(() => {
+        router.replace(`/tracker?${params.toString()}`, { scroll: false })
+      })
+      return
+    }
+
+    void handleAreaSelectionWithParams(nextSummary[0].id, params)
   }
 
   async function handleJsonSubmit(
@@ -673,7 +735,7 @@ export function FinanceWorkspace({
                 </CardDescription>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <Label htmlFor="year-select" className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
                   Year
                 </Label>
@@ -692,6 +754,25 @@ export function FinanceWorkspace({
                     <option value={activeYear}>{activeYear}</option>
                   ) : null}
                 </select>
+                <Label
+                  htmlFor="domain-select"
+                  className="ml-2 text-xs uppercase tracking-[0.18em] text-muted-foreground"
+                >
+                  Domain
+                </Label>
+                <select
+                  id="domain-select"
+                  className="h-9 rounded-md border border-border bg-background px-3 text-sm"
+                  value={activeDomainFilter}
+                  onChange={(event) => handleDomainFilterChange(event.target.value)}
+                >
+                  <option value="">All domains</option>
+                  {domainOptions.map(([value, label]) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
               </div>
             </CardHeader>
             <CardContent>
@@ -708,7 +789,7 @@ export function FinanceWorkspace({
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {summary.map((row) => {
+                  {filteredSummary.map((row) => {
                     const remainingBudget = row.amountGivenBudget - row.spentToDate
                     const forecastSpentToEndOfYear = row.totalForecast - row.spentToDate
                     const endOfYearBalance = remainingBudget - forecastSpentToEndOfYear
@@ -754,10 +835,12 @@ export function FinanceWorkspace({
                       </TableRow>
                     )
                   })}
-                  {summary.length === 0 ? (
+                  {filteredSummary.length === 0 ? (
                     <TableRow>
                       <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">
-                        Import budget movements and roster data to populate the tracker.
+                        {activeDomainFilter
+                          ? "No budget areas found for the selected domain."
+                          : "Import budget movements and roster data to populate the tracker."}
                       </TableCell>
                     </TableRow>
                   ) : null}
@@ -887,6 +970,9 @@ export function FinanceWorkspace({
                 onSubmit={handleSeatTrackerFilterSubmit}
               >
                 <input type="hidden" name="year" value={String(activeYear)} />
+                {activeDomainFilter ? (
+                  <input type="hidden" name="domain" value={activeDomainFilter} />
+                ) : null}
                 {effectiveSelectedAreaId ? (
                   <input type="hidden" name="budgetAreaId" value={effectiveSelectedAreaId} />
                 ) : null}
@@ -935,8 +1021,8 @@ export function FinanceWorkspace({
                     <Link
                       href={
                         effectiveSelectedAreaId
-                          ? `/tracker?year=${activeYear}&budgetAreaId=${encodeURIComponent(effectiveSelectedAreaId)}`
-                          : `/tracker?year=${activeYear}`
+                          ? `/tracker?year=${activeYear}${activeDomainFilter ? `&domain=${encodeURIComponent(activeDomainFilter)}` : ""}&budgetAreaId=${encodeURIComponent(effectiveSelectedAreaId)}`
+                          : `/tracker?year=${activeYear}${activeDomainFilter ? `&domain=${encodeURIComponent(activeDomainFilter)}` : ""}`
                       }
                     >
                       Reset
