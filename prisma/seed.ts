@@ -1,41 +1,23 @@
 import "dotenv/config"
-import fs from "node:fs"
-import path from "node:path"
 import { PrismaClient } from "../lib/generated/prisma/client"
 import {
   ALLOWED_SEAT_STATUSES,
   DEFAULT_ACTIVE_SEAT_STATUSES,
 } from "../lib/finance/constants"
 
-function resolveDatabaseUrl() {
-  const databaseUrl = process.env.DATABASE_URL
-  const fallbackPath = path.resolve(process.cwd(), "prisma", "dev.db")
-
-  if (!databaseUrl) {
-    return `file:${fallbackPath}`
-  }
-
-  if (!databaseUrl.startsWith("file:./")) {
-    return databaseUrl
-  }
-
-  const relativePath = databaseUrl.slice("file:".length)
-  const cwdCandidate = path.resolve(process.cwd(), relativePath)
-  const schemaCandidate = path.resolve(process.cwd(), "prisma", relativePath)
-  const resolvedPath = [cwdCandidate, schemaCandidate].find((candidate) =>
-    fs.existsSync(candidate)
-  )
-
-  return resolvedPath ? `file:${resolvedPath}` : databaseUrl
-}
-
 const prisma = new PrismaClient({
-  datasources: {
-    db: {
-      url: resolveDatabaseUrl(),
-    },
-  },
+  datasources: process.env.DATABASE_URL
+    ? {
+        db: {
+          url: process.env.DATABASE_URL,
+        },
+      }
+    : undefined,
 })
+
+export async function disconnectSeedDatabase() {
+  await prisma.$disconnect()
+}
 
 const INITIAL_2026_COST_ASSUMPTIONS = [
   ["Australia", "5", 840000],
@@ -67,7 +49,7 @@ const INITIAL_2026_COST_ASSUMPTIONS = [
   ["USA", "5", 1047000],
 ] as const
 
-async function main() {
+export async function seedDatabase() {
   console.log("Seeding finance tracker...")
 
   await prisma.seatMonth.deleteMany()
@@ -449,11 +431,13 @@ async function main() {
   console.log("Finance tracker seed complete.")
 }
 
-main()
-  .catch((error) => {
-    console.error(error)
-    process.exit(1)
-  })
-  .finally(async () => {
-    await prisma.$disconnect()
-  })
+if (process.argv[1]?.endsWith("prisma/seed.ts")) {
+  seedDatabase()
+    .catch((error) => {
+      console.error(error)
+      process.exit(1)
+    })
+    .finally(async () => {
+      await disconnectSeedDatabase()
+    })
+}

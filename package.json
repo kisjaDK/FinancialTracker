@@ -10,9 +10,14 @@
     "test": "tsx --test tests/**/*.test.ts",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
+    "db:migrate:deploy": "prisma migrate deploy",
     "db:push": "prisma db push",
     "db:studio": "prisma studio",
     "db:seed": "npx tsx prisma/seed.ts",
+    "db:seed:if-empty": "npx tsx scripts/seed-if-empty.ts",
+    "docker:dev": "docker compose up --build",
+    "docker:dev:down": "docker compose down",
+    "docker:dev:reset-db": "docker compose down -v",
     "postinstall": "prisma generate"
   },
   "dependencies": {

@@ -1,0 +1,10 @@
+.env
+.env.docker
+.git
+.gitignore
+.next
+coverage
+node_modules
+npm-debug.log
+prisma/dev.db
+prisma/dev.db-journal

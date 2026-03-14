@@ -1,36 +1,64 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Pandora Finance Tracker
 
-## Getting Started
+Local development now runs against Postgres in Docker Compose. SQLite is no longer part of the supported dev workflow.
 
-First, run the development server:
+## Prerequisites
+
+- Docker Desktop or a compatible Docker Engine with Compose support
+- Node.js 20+ if you want to run app commands on the host
+
+## Environment Files
+
+- `.env.example`: tracked template with placeholder values
+- `.env`: host-based settings, including a `localhost` Postgres `DATABASE_URL`
+- `.env.docker`: container settings, including a Compose-hostname `DATABASE_URL`
+
+Create or update `.env.docker` before the first Docker boot. It should mirror `.env.example`, but use `postgres` as the database host in `DATABASE_URL`.
+If port `3000` is already in use on your machine, change `APP_PORT` in `.env` before starting the stack.
+
+For local login flows, `AUTH_URL` should stay aligned with the URL you open in the browser, which is `http://localhost:3000` in the default setup.
+
+## Start Local Development
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm run docker:dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+That command builds the app image, starts Postgres, installs dependencies in the mounted workspace, generates the Prisma client, applies migrations, seeds the database if it is empty, and starts Next.js on `http://localhost:${APP_PORT}`.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Stop Or Reset
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Stop the stack:
 
-## Learn More
+```bash
+npm run docker:dev:down
+```
 
-To learn more about Next.js, take a look at the following resources:
+Reset the local Postgres volume:
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```bash
+npm run docker:dev:reset-db
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+The reset command is destructive. The next `npm run docker:dev` will recreate the database and seed it again.
 
-## Deploy on Vercel
+## Prisma Workflow
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Common commands:
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```bash
+npm run db:generate
+npm run db:migrate
+npm run db:migrate:deploy
+npm run db:seed
+```
+
+- Use `db:migrate` when creating a new migration during development.
+- Use `db:migrate:deploy` when applying committed migrations to an existing database.
+- Use `db:seed` to reload the sample data manually.
+
+## Notes
+
+- Prisma now uses the `postgresql` provider for both local development and production.
+- The committed migration history has been replaced with a Postgres baseline migration so new environments start from the current schema.
+- Existing Azure production configuration should keep using its production `DATABASE_URL`.
