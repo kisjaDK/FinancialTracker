@@ -107,25 +107,27 @@ function buildTrackerSeatScopeWhere(
     return undefined
   }
 
-  const scopeFilters = viewer.scopes
-    .map((scope) => {
+  const scopeFilters: Prisma.TrackerSeatWhereInput[] = []
+
+  for (const scope of viewer.scopes) {
       const domain = scope.domain.trim()
       const subDomain = scope.subDomain?.trim() || null
 
       if (!domain) {
-        return null
+        continue
       }
 
-      return subDomain
-        ? {
+      scopeFilters.push(
+        subDomain
+          ? {
             domain: { equals: domain, mode: "insensitive" as const },
             subDomain: { equals: subDomain, mode: "insensitive" as const },
           }
-        : {
+          : {
             domain: { equals: domain, mode: "insensitive" as const },
-          }
-    })
-    .filter((scope): scope is Prisma.TrackerSeatWhereInput => Boolean(scope))
+          },
+      )
+    }
 
   if (scopeFilters.length === 0) {
     return undefined
