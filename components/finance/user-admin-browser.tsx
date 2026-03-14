@@ -203,7 +203,7 @@ export function UserAdminBrowser({
   }
 
   return (
-    <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(187,108,37,0.16),_transparent_32%),linear-gradient(180deg,_rgba(255,250,243,1)_0%,_rgba(246,240,232,1)_100%)]">
+    <div className="min-h-screen brand-page-shell">
       <FinanceHeader
         title="User Admin"
         subtitle="Assign members, guests, and delegated admins to the finance tracker."
@@ -216,7 +216,7 @@ export function UserAdminBrowser({
 
       <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-6 py-8">
         <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
-          <Card className="w-full border-amber-200/70 bg-white/90 lg:w-[30rem] lg:flex-none">
+          <Card className="w-full brand-card lg:w-[30rem] lg:flex-none">
             <CardHeader>
               <CardTitle>{editingEmail ? "Edit User" : "Add User"}</CardTitle>
               <CardDescription>
@@ -382,7 +382,7 @@ export function UserAdminBrowser({
             </CardContent>
           </Card>
 
-          <Card className="min-w-0 flex-1 border-amber-200/70 bg-white/90">
+          <Card className="min-w-0 flex-1 brand-card">
             <CardHeader>
               <CardTitle>Assigned Users</CardTitle>
               <CardDescription>

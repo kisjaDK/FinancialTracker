@@ -32,6 +32,7 @@ export default async function ActualsPage({ searchParams }: PageProps) {
       resolvedSearchParams?.budgetAreaId,
       [],
       [],
+      false,
       viewer
     ),
     getExternalActualImportsPageData(

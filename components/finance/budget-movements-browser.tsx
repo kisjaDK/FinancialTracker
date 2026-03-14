@@ -281,7 +281,7 @@ export function BudgetMovementsBrowser({
   }
 
   return (
-    <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(187,108,37,0.16),_transparent_32%),linear-gradient(180deg,_rgba(255,250,243,1)_0%,_rgba(246,240,232,1)_100%)]">
+    <div className="min-h-screen brand-page-shell">
       <FinanceHeader
         title="Budget Movements"
         subtitle="Import CSV batches, maintain manual adjustments, and review movement rows by hierarchy and notes."
@@ -325,19 +325,19 @@ export function BudgetMovementsBrowser({
         </AlertDialog>
 
         <section className="grid gap-4 md:grid-cols-3">
-          <Card className="border-amber-200/70 bg-white/90">
+          <Card className="brand-card">
             <CardHeader className="gap-1">
               <CardDescription>Filtered Movements</CardDescription>
               <CardTitle>{formatNumber(totals.movementCount)}</CardTitle>
             </CardHeader>
           </Card>
-          <Card className="border-amber-200/70 bg-white/90">
+          <Card className="brand-card">
             <CardHeader className="gap-1">
               <CardDescription>Finance View Total</CardDescription>
               <CardTitle>{formatCurrency(totals.financeViewAmount)}</CardTitle>
             </CardHeader>
           </Card>
-          <Card className="border-amber-200/70 bg-white/90">
+          <Card className="brand-card">
             <CardHeader className="gap-1">
               <CardDescription>Amount Given Total</CardDescription>
               <CardTitle>{formatCurrency(totals.amountGiven)}</CardTitle>
@@ -346,7 +346,7 @@ export function BudgetMovementsBrowser({
         </section>
 
         <section className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
-          <Card className="border-amber-200/70 bg-white/90">
+          <Card className="brand-card">
             <CardHeader>
               <CardTitle>Import CSV</CardTitle>
               <CardDescription>
@@ -371,7 +371,7 @@ export function BudgetMovementsBrowser({
             </CardContent>
           </Card>
 
-          <Card className="border-amber-200/70 bg-white/90">
+          <Card className="brand-card">
             <CardHeader>
               <CardTitle>Import History</CardTitle>
               <CardDescription>Recent CSV batches for {activeYear}.</CardDescription>
@@ -400,7 +400,7 @@ export function BudgetMovementsBrowser({
           </Card>
         </section>
 
-        <Card className="border-amber-200/70 bg-white/90">
+        <Card className="brand-card">
           <CardHeader>
             <CardTitle>{isEditing ? "Edit Movement" : "Add Manual Movement"}</CardTitle>
             <CardDescription>
@@ -572,7 +572,7 @@ export function BudgetMovementsBrowser({
           </CardContent>
         </Card>
 
-        <Card className="border-amber-200/70 bg-white/90">
+        <Card className="brand-card">
           <CardHeader>
             <CardTitle>Filters</CardTitle>
             <CardDescription>
@@ -668,7 +668,7 @@ export function BudgetMovementsBrowser({
           </CardContent>
         </Card>
 
-        <Card className="border-amber-200/70 bg-white/90">
+        <Card className="brand-card">
           <CardHeader>
             <CardTitle>Movements</CardTitle>
             <CardDescription>

@@ -42,8 +42,10 @@ type PeopleRosterBrowserProps = {
     seatIds: string[]
     names: string[]
     emails: string[]
+    domains: string[]
     teams: string[]
     subDomains: string[]
+    projectCodes: string[]
     vendors: string[]
     locations: string[]
     statuses: string[]
@@ -53,6 +55,9 @@ type PeopleRosterBrowserProps = {
   people: PeopleRosterView[]
   totals: {
     rowCount: number
+    totalSeatCount: number
+    filteredFte: number
+    totalFte: number
     uniqueTeams: number
     externalCount: number
     errorCount: number
@@ -157,7 +162,7 @@ export function PeopleRosterBrowser({
   }
 
   return (
-    <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(187,108,37,0.16),_transparent_32%),linear-gradient(180deg,_rgba(255,250,243,1)_0%,_rgba(246,240,232,1)_100%)]">
+    <div className="min-h-screen brand-page-shell">
       <FinanceHeader
         title="People Roster"
         subtitle="Browse imported roster rows and filter them by seat, person, team, hierarchy, vendor, and location."
@@ -170,25 +175,25 @@ export function PeopleRosterBrowser({
 
       <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-6 py-8">
         <section className="grid gap-4 md:grid-cols-3">
-          <Card className="border-amber-200/70 bg-white/90">
+          <Card className="brand-card">
             <CardHeader className="gap-1">
               <CardDescription>Filtered Rows</CardDescription>
               <CardTitle>{formatNumber(totals.rowCount)}</CardTitle>
             </CardHeader>
           </Card>
-          <Card className="border-amber-200/70 bg-white/90">
+          <Card className="brand-card">
             <CardHeader className="gap-1">
               <CardDescription>Teams</CardDescription>
               <CardTitle>{formatNumber(totals.uniqueTeams)}</CardTitle>
             </CardHeader>
           </Card>
-          <Card className="border-amber-200/70 bg-white/90">
+          <Card className="brand-card">
             <CardHeader className="gap-1">
               <CardDescription>External Resources</CardDescription>
               <CardTitle>{formatNumber(totals.externalCount)}</CardTitle>
             </CardHeader>
           </Card>
-          <Card className="border-amber-200/70 bg-white/90">
+          <Card className="brand-card">
             <CardHeader className="gap-1">
               <CardDescription>Error Rows</CardDescription>
               <CardTitle>{formatNumber(totals.errorCount)}</CardTitle>
@@ -196,7 +201,7 @@ export function PeopleRosterBrowser({
           </Card>
         </section>
 
-        <Card className="border-amber-200/70 bg-white/90">
+        <Card className="brand-card">
           <CardHeader>
             <CardTitle>Roster Import</CardTitle>
             <CardDescription>
@@ -241,7 +246,7 @@ export function PeopleRosterBrowser({
           </CardContent>
         </Card>
 
-        <Card className="border-amber-200/70 bg-white/90">
+        <Card className="brand-card">
           <CardHeader>
             <CardTitle>Import History</CardTitle>
             <CardDescription>
@@ -296,12 +301,18 @@ export function PeopleRosterBrowser({
           </CardContent>
         </Card>
 
-        <Card className="border-amber-200/70 bg-white/90">
+        <Card className="brand-card">
           <CardHeader>
             <CardTitle>Filters</CardTitle>
             <CardDescription>
               Search each field to narrow the dropdown, then select one or more values.
             </CardDescription>
+            <div className="text-sm font-medium text-foreground">
+              Showing {formatNumber(totals.rowCount)} of {formatNumber(totals.totalSeatCount)} Seats
+            </div>
+            <div className="text-xs text-muted-foreground">
+              FTE {formatNumber(totals.filteredFte)} of {formatNumber(totals.totalFte)}
+            </div>
           </CardHeader>
           <CardContent>
             <form className="grid gap-4 lg:grid-cols-3" method="GET">
@@ -342,6 +353,12 @@ export function PeopleRosterBrowser({
                 selectedValues={filters.emails}
               />
               <MultiSelectFilter
+                label="Domain"
+                name="domain"
+                options={filterOptions.domains}
+                selectedValues={filters.domains}
+              />
+              <MultiSelectFilter
                 label="Team"
                 name="team"
                 options={filterOptions.teams}
@@ -352,6 +369,12 @@ export function PeopleRosterBrowser({
                 name="subDomain"
                 options={filterOptions.subDomains}
                 selectedValues={filters.subDomains}
+              />
+              <MultiSelectFilter
+                label="Project code"
+                name="projectCode"
+                options={filterOptions.projectCodes}
+                selectedValues={filters.projectCodes}
               />
               <MultiSelectFilter
                 label="Vendor"
@@ -384,6 +407,41 @@ export function PeopleRosterBrowser({
                 selectedValues={filters.bands}
               />
               <div className="space-y-2">
+                <label htmlFor="month" className="text-sm font-medium">
+                  Month
+                </label>
+                <select
+                  id="month"
+                  name="month"
+                  defaultValue={filters.month}
+                  className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
+                >
+                  <option value="">All months</option>
+                  {["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"].map((month) => (
+                    <option key={month} value={month}>
+                      {month}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="space-y-2">
+                <label htmlFor="staffingBucket" className="text-sm font-medium">
+                  Staffing bucket
+                </label>
+                <select
+                  id="staffingBucket"
+                  name="staffingBucket"
+                  defaultValue={filters.staffingBucket}
+                  className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
+                >
+                  <option value="">All buckets</option>
+                  <option value="perm total">PERM total</option>
+                  <option value="active">Active</option>
+                  <option value="on leave">On leave</option>
+                  <option value="open">Open</option>
+                </select>
+              </div>
+              <div className="space-y-2">
                 <label htmlFor="validation" className="text-sm font-medium">
                   Validation
                 </label>
@@ -409,7 +467,7 @@ export function PeopleRosterBrowser({
           </CardContent>
         </Card>
 
-        <Card className="border-amber-200/70 bg-white/90">
+        <Card className="brand-card">
           <CardHeader>
             <CardTitle>Imported Roster Rows</CardTitle>
             <CardDescription>
@@ -437,7 +495,12 @@ export function PeopleRosterBrowser({
                 {people.map((person) => (
                   <TableRow key={person.id}>
                     <TableCell>
-                      <div className="font-medium">{person.seatId}</div>
+                      <Link
+                        href={`/forecasts?year=${activeYear}&seatId=${encodeURIComponent(person.seatId)}`}
+                        className="brand-inline-link"
+                      >
+                        {person.seatId}
+                      </Link>
                       <div className="text-xs text-muted-foreground">
                         {person.departmentCode || "No department code"}
                       </div>

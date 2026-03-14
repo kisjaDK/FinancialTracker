@@ -15,8 +15,8 @@ export default async function AccessRequestPage() {
   const adminEmails = await getAdminContactEmails()
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-[radial-gradient(circle_at_top_left,_rgba(187,108,37,0.16),_transparent_32%),linear-gradient(180deg,_rgba(255,250,243,1)_0%,_rgba(246,240,232,1)_100%)] px-6 py-12">
-      <div className="w-full max-w-2xl rounded-3xl border border-amber-200/70 bg-white/90 p-8 shadow-xl shadow-amber-950/5">
+    <main className="flex min-h-screen items-center justify-center bg-[radial-gradient(circle_at_top_left,_rgba(191,143,152,0.18),_transparent_32%),linear-gradient(180deg,_rgba(255,249,251,1)_0%,_rgba(245,239,241,1)_100%)] px-6 py-12">
+      <div className="w-full max-w-2xl rounded-3xl border brand-card p-8 shadow-xl shadow-rose-950/5">
         <p className="text-xs uppercase tracking-[0.26em] text-muted-foreground">
           Pandora Finance
         </p>

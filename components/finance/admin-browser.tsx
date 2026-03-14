@@ -278,7 +278,7 @@ export function AdminBrowser({
   }
 
   return (
-    <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(187,108,37,0.16),_transparent_32%),linear-gradient(180deg,_rgba(255,250,243,1)_0%,_rgba(246,240,232,1)_100%)]">
+    <div className="min-h-screen brand-page-shell">
       <FinanceHeader
         title="Admin"
         subtitle="Maintain tracker configuration, hierarchy mappings, and exchange rates."
@@ -356,7 +356,7 @@ export function AdminBrowser({
           </AlertDialogContent>
         </AlertDialog>
 
-        <Card className="border-amber-200/70 bg-white/90">
+        <Card className="brand-card">
           <CardHeader>
             <CardTitle>Year</CardTitle>
             <CardDescription>Select the tracker year to administer.</CardDescription>
@@ -379,7 +379,7 @@ export function AdminBrowser({
           </CardContent>
         </Card>
 
-        <Card className="border-amber-200/70 bg-white/90">
+        <Card className="brand-card">
           <CardHeader>
             <CardTitle>Reset Year Data</CardTitle>
             <CardDescription>
@@ -407,7 +407,7 @@ export function AdminBrowser({
         </Card>
 
         <section className="grid gap-6 xl:grid-cols-2">
-          <Card className="border-amber-200/70 bg-white/90">
+          <Card className="brand-card">
             <CardHeader>
               <CardTitle>Status Definitions</CardTitle>
               <CardDescription>
@@ -451,7 +451,7 @@ export function AdminBrowser({
             </CardContent>
           </Card>
 
-          <Card className="border-amber-200/70 bg-white/90">
+          <Card className="brand-card">
             <CardHeader>
               <CardTitle>Hierarchy Mapping</CardTitle>
               <CardDescription>
@@ -647,7 +647,7 @@ export function AdminBrowser({
             </CardContent>
           </Card>
 
-          <Card className="border-amber-200/70 bg-white/90">
+          <Card className="brand-card">
             <CardHeader>
               <CardTitle>Exchange Rates</CardTitle>
               <CardDescription>

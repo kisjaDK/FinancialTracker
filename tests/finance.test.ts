@@ -7,7 +7,11 @@ import {
   deriveSeatMetrics,
 } from "@/lib/finance/derive"
 import { buildExchangeRateLookup, convertAmountToDkk } from "@/lib/finance/currency"
-import { resolveRosterSeatAssignment } from "@/lib/finance/queries"
+import {
+  buildStaffingOverviewRows,
+  resolveRosterSeatAssignment,
+  validateStaffingTargetInput,
+} from "@/lib/finance/queries"
 import type { SeatWithRelations } from "@/lib/finance/types"
 import { formatFteAsPercent } from "@/lib/finance/format"
 import { getRichTextPlainText, renderRichTextToHtml } from "@/lib/rich-text"
@@ -304,4 +308,245 @@ test("formatFteAsPercent converts FTE fractions to percent", () => {
   assert.equal(formatFteAsPercent(0.4), "40%")
   assert.equal(formatFteAsPercent(1), "100%")
   assert.equal(formatFteAsPercent(40), "40%")
+})
+
+test("buildStaffingOverviewRows buckets internal seats into active, on leave, and open", () => {
+  const baseSeat = {
+    trackingYearId: "year-1",
+    budgetAreaId: null,
+    rosterPersonId: null,
+    sourceType: "ROSTER",
+    sourceKey: "roster",
+    isActive: true,
+    domain: "Data & Analytics",
+    subDomain: "Architecture",
+    funding: "D&T Run",
+    pillar: "Architecture",
+    costCenter: "D6861",
+    projectCode: "L68610001",
+    team: "Architecture",
+    description: null,
+    band: "Band 5",
+    ppid: null,
+    location: "Denmark",
+    vendor: null,
+    dailyRate: null,
+    ritm: null,
+    sow: null,
+    spendPlanId: null,
+    allocation: 1,
+    startDate: null,
+    endDate: null,
+    notes: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    months: Array.from({ length: 12 }, (_, monthIndex) => ({
+      id: `month-${monthIndex}`,
+      trackerSeatId: "seat",
+      monthIndex,
+      actualAmount: 0,
+      actualAmountRaw: null,
+      actualCurrency: "DKK",
+      exchangeRateUsed: null,
+      forecastOverrideAmount: null,
+      forecastIncluded: true,
+      notes: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })),
+    override: null,
+    budgetArea: null,
+  } satisfies Omit<SeatWithRelations, "id" | "seatId" | "resourceType" | "inSeat" | "status">
+
+  const rows = buildStaffingOverviewRows({
+    year: 2026,
+    activeStatuses: new Set(["active"]),
+    mappingLookup: {},
+    targets: [],
+    seats: [
+      {
+        ...baseSeat,
+        id: "seat-active",
+        seatId: "1001",
+        resourceType: "Internal",
+        inSeat: "Jane Doe",
+        status: "Active",
+      },
+      {
+        ...baseSeat,
+        id: "seat-leave",
+        seatId: "1002",
+        resourceType: "Internal",
+        inSeat: "John Doe",
+        status: "On leave",
+      },
+      {
+        ...baseSeat,
+        id: "seat-open",
+        seatId: "1003",
+        resourceType: "Internal",
+        inSeat: "Vacant",
+        status: "Open",
+      },
+    ] satisfies SeatWithRelations[],
+  })
+
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].months[0].active, 1)
+  assert.equal(rows[0].months[0].onLeave, 1)
+  assert.equal(rows[0].months[0].open, 1)
+})
+
+test("buildStaffingOverviewRows excludes external seats and months outside the seat date range", () => {
+  const rows = buildStaffingOverviewRows({
+    year: 2026,
+    activeStatuses: new Set(["active"]),
+    mappingLookup: {},
+    targets: [],
+    seats: [
+      {
+        id: "seat-internal",
+        trackingYearId: "year-1",
+        budgetAreaId: null,
+        rosterPersonId: null,
+        sourceType: "ROSTER",
+        seatId: "2001",
+        sourceKey: "roster:2001",
+        isActive: true,
+        domain: "Data & Analytics",
+        subDomain: "Architecture",
+        funding: "D&T Run",
+        pillar: "Architecture",
+        costCenter: "D6861",
+        projectCode: "L68610001",
+        resourceType: "Internal",
+        team: "Architecture",
+        inSeat: "Jane Doe",
+        description: null,
+        band: "Band 5",
+        ppid: null,
+        location: "Denmark",
+        vendor: null,
+        dailyRate: null,
+        ritm: null,
+        sow: null,
+        spendPlanId: null,
+        status: "Active",
+        allocation: 1,
+        startDate: new Date("2026-03-01T00:00:00.000Z"),
+        endDate: new Date("2026-04-30T00:00:00.000Z"),
+        notes: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        months: [],
+        override: null,
+        budgetArea: null,
+      },
+      {
+        id: "seat-external",
+        trackingYearId: "year-1",
+        budgetAreaId: null,
+        rosterPersonId: null,
+        sourceType: "ROSTER",
+        seatId: "2002",
+        sourceKey: "roster:2002",
+        isActive: true,
+        domain: "Data & Analytics",
+        subDomain: "Architecture",
+        funding: "D&T Run",
+        pillar: "Architecture",
+        costCenter: "D6861",
+        projectCode: "L68610001",
+        resourceType: "External T&M",
+        team: "Architecture",
+        inSeat: "Vendor",
+        description: null,
+        band: "External",
+        ppid: null,
+        location: "Denmark",
+        vendor: "Vendor",
+        dailyRate: 5000,
+        ritm: null,
+        sow: null,
+        spendPlanId: null,
+        status: "Active",
+        allocation: 1,
+        startDate: null,
+        endDate: null,
+        notes: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        months: [],
+        override: null,
+        budgetArea: null,
+      },
+    ] satisfies SeatWithRelations[],
+  })
+
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].months[0].active, 0)
+  assert.equal(rows[0].months[2].active, 1)
+  assert.equal(rows[0].months[4].active, 0)
+})
+
+test("validateStaffingTargetInput normalizes scope-specific fields", () => {
+  assert.deepEqual(
+    validateStaffingTargetInput({
+      scopeLevel: "DOMAIN",
+      domain: "Data & Analytics",
+      subDomain: "Architecture",
+      projectCode: "L68610001",
+      permTarget: 5,
+    }),
+    {
+      scopeLevel: "DOMAIN",
+      domain: "Data & Analytics",
+      subDomain: null,
+      projectCode: null,
+      permTarget: 5,
+    }
+  )
+
+  assert.deepEqual(
+    validateStaffingTargetInput({
+      scopeLevel: "PROJECT",
+      domain: "Data & Analytics",
+      subDomain: "Architecture",
+      projectCode: "L68610001",
+      permTarget: 3.5,
+    }),
+    {
+      scopeLevel: "PROJECT",
+      domain: "Data & Analytics",
+      subDomain: "Architecture",
+      projectCode: "L68610001",
+      permTarget: 3.5,
+    }
+  )
+})
+
+test("validateStaffingTargetInput rejects invalid scope combinations", () => {
+  assert.throws(
+    () =>
+      validateStaffingTargetInput({
+        scopeLevel: "SUB_DOMAIN",
+        domain: "Data & Analytics",
+        subDomain: "",
+        projectCode: "",
+        permTarget: 2,
+      }),
+    /Sub-domain is required/
+  )
+
+  assert.throws(
+    () =>
+      validateStaffingTargetInput({
+        scopeLevel: "PROJECT",
+        domain: "Data & Analytics",
+        subDomain: "Architecture",
+        projectCode: "",
+        permTarget: -1,
+      }),
+    /PERM target must be zero or greater/
+  )
 })

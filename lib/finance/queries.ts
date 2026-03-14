@@ -3,6 +3,7 @@ import type {
   ExchangeRate,
   Prisma,
   ServiceMessageKey,
+  StaffingTargetScopeLevel,
 } from "@/lib/generated/prisma/client"
 import {
   ALLOWED_SEAT_STATUSES,
@@ -18,6 +19,7 @@ import {
   buildCostAssumptionLookup,
   deriveSeatMetrics,
   getEffectiveSeat,
+  isMonthActiveForSeat,
   isTrackerCancelledSeat,
   isExternalSeat,
   monthLabel,
@@ -37,6 +39,10 @@ import type {
   PeopleRosterView,
   SeatMonthView,
   SeatWithRelations,
+  StaffingMonthBucket,
+  StaffingOverviewGroup,
+  StaffingOverviewRow,
+  StaffingTargetView,
   StatusDefinitionView,
 } from "@/lib/finance/types"
 import { filterByScopes, hasScopeRestrictions, type AppViewer } from "@/lib/authz"
@@ -206,6 +212,24 @@ function normalizeOptionalNumber(value: number | null | undefined) {
   return typeof value === "number" && Number.isFinite(value) ? value : null
 }
 
+function isPermRosterPerson(person: Pick<PeopleRosterView, "band" | "resourceType" | "vendor">) {
+  const band = normalizeValue(person.band)
+  const resourceType = normalizeValue(person.resourceType)
+  const vendor = normalizeValue(person.vendor)
+  const hasExternalVendor =
+    vendor.length > 0 &&
+    vendor !== "internal" &&
+    vendor !== "employee" &&
+    vendor !== "permanent"
+
+  return !(
+    band === "external" ||
+    resourceType.includes("external") ||
+    resourceType.includes("managed services") ||
+    hasExternalVendor
+  )
+}
+
 function normalizeBudgetMovementDate(value: Date | string | null | undefined) {
   if (!value) {
     return null
@@ -288,6 +312,277 @@ function buildActiveStatusLookup(statusDefinitions: StatusDefinitionView[]) {
       .filter((status) => status.isActiveStatus)
       .map((status) => normalizeValue(status.label))
   )
+}
+
+export function emptyStaffingMonthBuckets(): StaffingMonthBucket[] {
+  return Array.from({ length: 12 }, () => ({
+    active: 0,
+    onLeave: 0,
+    open: 0,
+  }))
+}
+
+function sumStaffingMonthBuckets(
+  left: StaffingMonthBucket[],
+  right: StaffingMonthBucket[]
+) {
+  return left.map((month, index) => ({
+    active: month.active + (right[index]?.active ?? 0),
+    onLeave: month.onLeave + (right[index]?.onLeave ?? 0),
+    open: month.open + (right[index]?.open ?? 0),
+  }))
+}
+
+function matchesActiveBucket(
+  normalizedStatus: string,
+  normalizedInSeat: string,
+  activeStatuses: Set<string>
+) {
+  return (
+    activeStatuses.has(normalizedStatus) ||
+    (normalizedStatus.length === 0 &&
+      normalizedInSeat.length > 0 &&
+      normalizedInSeat !== "vacant")
+  )
+}
+
+function normalizeStaffingProjectCode(value: string | null | undefined) {
+  return value?.trim() || null
+}
+
+function buildStaffingRowKey(input: {
+  subDomain: string | null | undefined
+  projectCode: string | null | undefined
+}) {
+  return `${input.subDomain?.trim() || "Unmapped"}::${input.projectCode?.trim() || "Unassigned"}`
+}
+
+function buildStaffingTargetLookup(targets: StaffingTargetView[]) {
+  return targets.reduce(
+    (accumulator, target) => {
+      const key = [
+        target.scopeLevel,
+        normalizeValue(target.domain),
+        normalizeValue(target.subDomain),
+        normalizeValue(target.projectCode),
+      ].join("::")
+      accumulator.set(key, target.permTarget)
+      return accumulator
+    },
+    new Map<string, number>()
+  )
+}
+
+function getStaffingTargetValue(
+  lookup: Map<string, number>,
+  scopeLevel: StaffingTargetScopeLevel,
+  domain: string | null | undefined,
+  subDomain: string | null | undefined,
+  projectCode: string | null | undefined
+) {
+  if (!domain) {
+    return null
+  }
+
+  const key = [
+    scopeLevel,
+    normalizeValue(domain),
+    normalizeValue(subDomain),
+    normalizeValue(projectCode),
+  ].join("::")
+
+  return lookup.get(key) ?? null
+}
+
+export function buildStaffingOverviewRows(input: {
+  seats: SeatWithRelations[]
+  year: number
+  activeStatuses: Set<string>
+  mappingLookup: ReturnType<typeof buildDepartmentMappingLookup>
+  targets: StaffingTargetView[]
+}) {
+  const rowMap = new Map<string, StaffingOverviewRow>()
+  const targetLookup = buildStaffingTargetLookup(input.targets)
+
+  for (const seat of input.seats) {
+    const effectiveSeat = getEffectiveSeat(seat)
+    if (isExternalSeat(effectiveSeat)) {
+      continue
+    }
+
+    const mappedHierarchy = resolveDepartmentMapping(input.mappingLookup, {
+      sourceCode: effectiveSeat.costCenter,
+      subDomain: effectiveSeat.subDomain,
+      projectCode: effectiveSeat.projectCode,
+    })
+    const domain = normalizeDomainLabel(mappedHierarchy?.domain || effectiveSeat.domain || null)
+    if (!domain) {
+      continue
+    }
+
+    const subDomain = normalizeSubDomainLabel(
+      mappedHierarchy?.subDomain || effectiveSeat.subDomain || null
+    )
+    const projectCode = normalizeStaffingProjectCode(
+      mappedHierarchy?.projectCode || effectiveSeat.projectCode
+    )
+    const rowKey = buildStaffingRowKey({ subDomain, projectCode })
+    const existing = rowMap.get(rowKey)
+    const row =
+      existing ??
+      {
+        id: rowKey,
+        domain,
+        subDomain,
+        projectCode,
+        permTarget: getStaffingTargetValue(
+          targetLookup,
+          "PROJECT",
+          domain,
+          subDomain,
+          projectCode
+        ),
+        months: emptyStaffingMonthBuckets(),
+      }
+
+    const normalizedStatus = normalizeValue(effectiveSeat.status)
+    const normalizedInSeat = normalizeValue(effectiveSeat.inSeat)
+
+    for (let monthIndex = 0; monthIndex < 12; monthIndex += 1) {
+      if (
+        !isMonthActiveForSeat(
+          input.year,
+          monthIndex,
+          effectiveSeat.startDate,
+          effectiveSeat.endDate
+        )
+      ) {
+        continue
+      }
+
+      if (normalizedStatus === "open") {
+        row.months[monthIndex].open += effectiveSeat.allocation ?? 0
+        continue
+      }
+
+      if (normalizedStatus === "on leave") {
+        row.months[monthIndex].onLeave += effectiveSeat.allocation ?? 0
+        continue
+      }
+
+      if (
+        matchesActiveBucket(
+          normalizedStatus,
+          normalizedInSeat,
+          input.activeStatuses
+        )
+      ) {
+        row.months[monthIndex].active += effectiveSeat.allocation ?? 0
+      }
+    }
+
+    rowMap.set(rowKey, row)
+  }
+
+  return Array.from(rowMap.values()).sort((left, right) => {
+    const subDomainOrder = (left.subDomain || "Unmapped").localeCompare(
+      right.subDomain || "Unmapped"
+    )
+
+    if (subDomainOrder !== 0) {
+      return subDomainOrder
+    }
+
+    return (left.projectCode || "Unassigned").localeCompare(
+      right.projectCode || "Unassigned"
+    )
+  })
+}
+
+function buildStaffingOverviewGroups(
+  rows: StaffingOverviewRow[],
+  domain: string,
+  targets: StaffingTargetView[]
+): StaffingOverviewGroup[] {
+  const targetLookup = buildStaffingTargetLookup(targets)
+  const grouped = new Map<string, StaffingOverviewGroup>()
+
+  for (const row of rows) {
+    const groupKey = row.subDomain || "Unmapped"
+    const current = grouped.get(groupKey)
+    const nextMonths = current
+      ? sumStaffingMonthBuckets(current.months, row.months)
+      : row.months
+
+    grouped.set(groupKey, {
+      subDomain: row.subDomain,
+      permTarget:
+        current?.permTarget ??
+        getStaffingTargetValue(targetLookup, "SUB_DOMAIN", domain, row.subDomain, null),
+      months: nextMonths,
+      rows: [...(current?.rows ?? []), row],
+    })
+  }
+
+  return Array.from(grouped.values()).sort((left, right) =>
+    (left.subDomain || "Unmapped").localeCompare(right.subDomain || "Unmapped")
+  )
+}
+
+export function validateStaffingTargetInput(input: {
+  scopeLevel: StaffingTargetScopeLevel
+  domain: string
+  subDomain?: string | null
+  projectCode?: string | null
+  permTarget: number
+}) {
+  const domain = input.domain.trim()
+  const subDomain = normalizeOptionalString(input.subDomain)
+  const projectCode = normalizeOptionalString(input.projectCode)
+
+  if (!domain) {
+    throw new Error("Domain is required.")
+  }
+
+  if (!Number.isFinite(input.permTarget) || input.permTarget < 0) {
+    throw new Error("PERM target must be zero or greater.")
+  }
+
+  if (input.scopeLevel === "DOMAIN") {
+    return {
+      scopeLevel: input.scopeLevel,
+      domain,
+      subDomain: null,
+      projectCode: null,
+      permTarget: input.permTarget,
+    }
+  }
+
+  if (!subDomain) {
+    throw new Error("Sub-domain is required for this target.")
+  }
+
+  if (input.scopeLevel === "SUB_DOMAIN") {
+    return {
+      scopeLevel: input.scopeLevel,
+      domain,
+      subDomain,
+      projectCode: null,
+      permTarget: input.permTarget,
+    }
+  }
+
+  if (!projectCode) {
+    throw new Error("Project code is required for project targets.")
+  }
+
+  return {
+    scopeLevel: input.scopeLevel,
+    domain,
+    subDomain,
+    projectCode,
+    permTarget: input.permTarget,
+  }
 }
 
 async function ensureFreshTrackerDerivation(year: number) {
@@ -1697,13 +1992,17 @@ export async function getPeopleRosterPageData(input?: {
   seatIds?: string[]
   names?: string[]
   emails?: string[]
+  domains?: string[]
   teams?: string[]
   subDomains?: string[]
+  projectCodes?: string[]
   vendors?: string[]
   locations?: string[]
   statuses?: string[]
   roles?: string[]
   bands?: string[]
+  month?: string
+  staffingBucket?: string
   validation?: string
 }, viewer?: Pick<AppViewer, "role" | "scopes">) {
   const trackingYears = await prisma.trackingYear.findMany({
@@ -1717,17 +2016,23 @@ export async function getPeopleRosterPageData(input?: {
     new Date().getFullYear()
 
   const trackingYear = await getOrCreateTrackingYear(activeYear)
+  const statusDefinitions = await ensureStatusDefinitions(activeYear)
+  const activeStatuses = buildActiveStatusLookup(statusDefinitions)
   const filters: PeopleRosterFilters = {
     seatIds: input?.seatIds ?? [],
     names: input?.names ?? [],
     emails: input?.emails ?? [],
+    domains: input?.domains ?? [],
     teams: input?.teams ?? [],
     subDomains: input?.subDomains ?? [],
+    projectCodes: input?.projectCodes ?? [],
     vendors: input?.vendors ?? [],
     locations: input?.locations ?? [],
     statuses: input?.statuses ?? [],
     roles: input?.roles ?? [],
     bands: input?.bands ?? [],
+    month: input?.month?.trim() ?? "",
+    staffingBucket: input?.staffingBucket?.trim() ?? "",
     validation: input?.validation?.trim() ?? "",
   }
 
@@ -1800,7 +2105,7 @@ export async function getPeopleRosterPageData(input?: {
       importFileName: person.import.fileName,
       seatId: person.seatId,
       departmentCode: person.domain,
-      domain: normalizeDomainLabel(person.domain),
+      domain: normalizeDomainLabel(effectiveSeat?.domain || mappedHierarchy?.domain || person.domain),
       projectCode: effectiveSeat?.projectCode || mappedHierarchy?.projectCode || null,
       name: person.resourceName,
       email: person.email,
@@ -1812,12 +2117,16 @@ export async function getPeopleRosterPageData(input?: {
       location: person.location,
       band: person.band,
       role: person.title,
-      resourceType: person.resourceType,
+      resourceType: effectiveSeat?.resourceType || person.resourceType,
       status: person.status,
       manager: person.lineManager,
-      fte: person.allocation,
+      fte: effectiveSeat?.allocation ?? person.allocation,
       startDate: person.expectedStartDate,
       endDate: person.expectedEndDate,
+      effectiveStatus: effectiveSeat?.status || person.status,
+      effectiveInSeat: effectiveSeat?.inSeat || person.resourceName,
+      effectiveStartDate: effectiveSeat?.startDate || person.expectedStartDate,
+      effectiveEndDate: effectiveSeat?.endDate || person.expectedEndDate,
       importError: person.importError,
     }
   })
@@ -1833,13 +2142,20 @@ export async function getPeopleRosterPageData(input?: {
   const seatIdFilter = normalizeValues(filters.seatIds)
   const nameFilter = normalizeValues(filters.names)
   const emailFilter = normalizeValues(filters.emails)
+  const domainFilter = normalizeValues(filters.domains)
   const teamFilter = normalizeValues(filters.teams)
   const subDomainFilter = normalizeValues(filters.subDomains)
+  const projectCodeFilter = normalizeValues(filters.projectCodes)
   const vendorFilter = normalizeValues(filters.vendors)
   const locationFilter = normalizeValues(filters.locations)
   const statusFilter = normalizeValues(filters.statuses)
   const roleFilter = normalizeValues(filters.roles)
   const bandFilter = normalizeValues(filters.bands)
+  const monthIndex =
+    filters.month
+      ? MONTH_NAMES.findIndex((month) => month === filters.month)
+      : -1
+  const staffingBucket = normalizeValue(filters.staffingBucket)
 
   const filteredPeople = scopedRosterViews.filter((person) => {
     if (seatIdFilter.size > 0 && !seatIdFilter.has(normalizeValue(person.seatId))) {
@@ -1854,13 +2170,24 @@ export async function getPeopleRosterPageData(input?: {
       return false
     }
 
+    if (domainFilter.size > 0 && !domainFilter.has(normalizeValue(person.domain))) {
+      return false
+    }
+
     if (teamFilter.size > 0 && !teamFilter.has(normalizeValue(person.team))) {
       return false
     }
 
     if (
       subDomainFilter.size > 0 &&
-      !subDomainFilter.has(normalizeValue(person.subDomain))
+      !subDomainFilter.has(normalizeValue(person.mappedSubDomain || person.subDomain))
+    ) {
+      return false
+    }
+
+    if (
+      projectCodeFilter.size > 0 &&
+      !projectCodeFilter.has(normalizeValue(person.projectCode))
     ) {
       return false
     }
@@ -1888,6 +2215,47 @@ export async function getPeopleRosterPageData(input?: {
       return false
     }
 
+    if (
+      monthIndex >= 0 &&
+      !isMonthActiveForSeat(
+        activeYear,
+        monthIndex,
+        person.effectiveStartDate,
+        person.effectiveEndDate
+      )
+    ) {
+      return false
+    }
+
+    if (staffingBucket) {
+      if (!isPermRosterPerson(person)) {
+        return false
+      }
+
+      const normalizedStatus = normalizeValue(person.effectiveStatus)
+      const normalizedInSeat = normalizeValue(person.effectiveInSeat)
+      const matchesBucket =
+        staffingBucket === "perm total" || staffingBucket === "perm-total"
+          ? (
+              normalizedStatus === "open" ||
+              normalizedStatus === "on leave" ||
+              matchesActiveBucket(normalizedStatus, normalizedInSeat, activeStatuses)
+            )
+          : staffingBucket === "open"
+          ? normalizedStatus === "open"
+          : staffingBucket === "on leave"
+            ? normalizedStatus === "on leave"
+            : (
+                normalizedStatus !== "open" &&
+                normalizedStatus !== "on leave" &&
+                matchesActiveBucket(normalizedStatus, normalizedInSeat, activeStatuses)
+              )
+
+      if (!matchesBucket) {
+        return false
+      }
+    }
+
     if (filters.validation === "error" && !person.importError) {
       return false
     }
@@ -1908,8 +2276,12 @@ export async function getPeopleRosterPageData(input?: {
       seatIds: collectSortedValues(scopedRosterViews.map((person) => person.seatId)),
       names: collectSortedValues(scopedRosterViews.map((person) => person.name)),
       emails: collectSortedValues(scopedRosterViews.map((person) => person.email)),
+      domains: collectSortedValues(scopedRosterViews.map((person) => person.domain)),
       teams: collectSortedValues(scopedRosterViews.map((person) => person.team)),
-      subDomains: collectSortedValues(scopedRosterViews.map((person) => person.subDomain)),
+      subDomains: collectSortedValues(
+        scopedRosterViews.map((person) => person.mappedSubDomain || person.subDomain)
+      ),
+      projectCodes: collectSortedValues(scopedRosterViews.map((person) => person.projectCode)),
       vendors: collectSortedValues(scopedRosterViews.map((person) => person.vendor)),
       locations: collectSortedValues(scopedRosterViews.map((person) => person.location)),
       statuses: collectSortedValues(scopedRosterViews.map((person) => person.status)),
@@ -1918,6 +2290,9 @@ export async function getPeopleRosterPageData(input?: {
     },
     totals: {
       rowCount: filteredPeople.length,
+      totalSeatCount: scopedRosterViews.length,
+      filteredFte: filteredPeople.reduce((sum, person) => sum + (person.fte ?? 0), 0),
+      totalFte: scopedRosterViews.reduce((sum, person) => sum + (person.fte ?? 0), 0),
       uniqueTeams: new Set(
         filteredPeople.map((person) => normalizeValue(person.team)).filter(Boolean)
       ).size,
@@ -2011,6 +2386,270 @@ export async function getAdminPageData(year?: number) {
     statuses,
     exchangeRates,
     departmentMappings,
+  }
+}
+
+async function getStaffingTargets(activeYear: number) {
+  const trackingYear = await getOrCreateTrackingYear(activeYear)
+
+  const targets = await prisma.staffingTarget.findMany({
+    where: { trackingYearId: trackingYear.id },
+    orderBy: [
+      { domain: "asc" },
+      { subDomain: "asc" },
+      { projectCode: "asc" },
+      { scopeLevel: "asc" },
+    ],
+  })
+
+  return targets.map((target) => ({
+    id: target.id,
+    scopeLevel: target.scopeLevel,
+    domain: target.domain,
+    subDomain: target.subDomain,
+    projectCode: target.projectCode,
+    permTarget: target.permTarget,
+  })) satisfies StaffingTargetView[]
+}
+
+async function getStaffingHierarchyOptions(
+  activeYear: number,
+  viewer?: Pick<AppViewer, "role" | "scopes">
+) {
+  const trackingYear = await getOrCreateTrackingYear(activeYear)
+  const [budgetAreas, seats, mappings] = await Promise.all([
+    prisma.budgetArea.findMany({
+      where: { trackingYearId: trackingYear.id },
+      select: {
+        domain: true,
+        subDomain: true,
+        projectCode: true,
+      },
+    }),
+    prisma.trackerSeat.findMany({
+      where: {
+        trackingYearId: trackingYear.id,
+        isActive: true,
+      },
+      select: {
+        domain: true,
+        subDomain: true,
+        projectCode: true,
+      },
+    }),
+    prisma.departmentMapping.findMany({
+      where: { trackingYearId: trackingYear.id },
+      select: {
+        domain: true,
+        subDomain: true,
+        projectCode: true,
+      },
+    }),
+  ])
+
+  const entries = filterScopedItems(
+    [...budgetAreas, ...seats, ...mappings]
+      .map((entry) => ({
+        domain: normalizeDomainLabel(entry.domain),
+        subDomain: normalizeSubDomainLabel(entry.subDomain),
+        projectCode: normalizeStaffingProjectCode(entry.projectCode),
+      }))
+      .filter((entry) => entry.domain),
+    viewer,
+    (entry) => ({ domain: entry.domain, subDomain: entry.subDomain })
+  ) as {
+    domain: string
+    subDomain: string | null
+    projectCode: string | null
+  }[]
+
+  const domains = collectSortedValues(entries.map((entry) => entry.domain))
+  const subDomainsByDomain = entries.reduce((map, entry) => {
+    if (!entry.subDomain) {
+      return map
+    }
+
+    const current = map.get(entry.domain) ?? []
+    current.push(entry.subDomain)
+    map.set(entry.domain, current)
+    return map
+  }, new Map<string, string[]>())
+  const projectCodesByScope = entries.reduce((map, entry) => {
+    if (!entry.subDomain || !entry.projectCode) {
+      return map
+    }
+
+    const key = `${entry.domain}::${entry.subDomain}`
+    const current = map.get(key) ?? []
+    current.push(entry.projectCode)
+    map.set(key, current)
+    return map
+  }, new Map<string, string[]>())
+
+  return {
+    domains,
+    subDomainsByDomain: Array.from(subDomainsByDomain.entries()).map(([domain, values]) => ({
+      domain,
+      subDomains: collectSortedValues(values),
+    })),
+    projectCodesByScope: Array.from(projectCodesByScope.entries()).map(([key, values]) => {
+      const [domain, subDomain] = key.split("::")
+      return {
+        domain,
+        subDomain,
+        projectCodes: collectSortedValues(values),
+      }
+    }),
+  }
+}
+
+export async function getStaffingPageData(
+  year?: number,
+  domainFilter?: string,
+  viewer?: Pick<AppViewer, "role" | "scopes">
+) {
+  const trackingYears = await prisma.trackingYear.findMany({
+    orderBy: { year: "asc" },
+  })
+
+  const activeYear =
+    year ??
+    trackingYears.find((trackingYear) => trackingYear.isActive)?.year ??
+    trackingYears.at(-1)?.year ??
+    new Date().getFullYear()
+
+  const trackingYear = await getOrCreateTrackingYear(activeYear)
+  await ensureFreshTrackerDerivation(activeYear)
+  const statusDefinitions = await ensureStatusDefinitions(activeYear)
+
+  const [seats, departmentMappings, allTargets, hierarchyOptions] = await Promise.all([
+    prisma.trackerSeat.findMany({
+      where: {
+        trackingYearId: trackingYear.id,
+        isActive: true,
+      },
+      include: {
+        months: {
+          orderBy: { monthIndex: "asc" },
+        },
+        override: true,
+        budgetArea: true,
+      },
+      orderBy: [{ subDomain: "asc" }, { projectCode: "asc" }, { seatId: "asc" }],
+    }),
+    prisma.departmentMapping.findMany({
+      where: {
+        trackingYearId: trackingYear.id,
+        codeType: "DEPARTMENT_CODE",
+      },
+    }),
+    getStaffingTargets(activeYear),
+    getStaffingHierarchyOptions(activeYear, viewer),
+  ])
+
+  const mappingLookup = buildDepartmentMappingLookup(departmentMappings)
+  const activeStatuses = buildActiveStatusLookup(statusDefinitions)
+  const scopedSeats = filterScopedItems(
+    seats as SeatWithRelations[],
+    viewer,
+    (seat) => {
+      const effectiveSeat = getEffectiveSeat(seat)
+      const mapped = resolveDepartmentMapping(mappingLookup, {
+        sourceCode: effectiveSeat.costCenter,
+        subDomain: effectiveSeat.subDomain,
+        projectCode: effectiveSeat.projectCode,
+      })
+      return {
+        domain: mapped?.domain || effectiveSeat.domain,
+        subDomain: mapped?.subDomain || effectiveSeat.subDomain,
+      }
+    }
+  )
+  const allRows = buildStaffingOverviewRows({
+    seats: scopedSeats as SeatWithRelations[],
+    year: activeYear,
+    activeStatuses,
+    mappingLookup,
+    targets: filterScopedItems(
+      allTargets,
+      viewer,
+      (target) => ({ domain: target.domain, subDomain: target.subDomain })
+    ),
+  })
+  const targets = filterScopedItems(
+    allTargets,
+    viewer,
+    (target) => ({ domain: target.domain, subDomain: target.subDomain })
+  )
+  const availableDomains = collectSortedValues([
+    ...hierarchyOptions.domains,
+    ...allRows.map((row) => row.domain),
+    ...targets.map((target) => target.domain),
+  ])
+  const selectedDomain =
+    domainFilter && availableDomains.includes(domainFilter)
+      ? domainFilter
+      : availableDomains[0] ?? hierarchyOptions.domains[0] ?? null
+  const rows = selectedDomain
+    ? allRows.filter((row) => row.domain === selectedDomain)
+    : []
+  const groups = selectedDomain
+    ? buildStaffingOverviewGroups(rows, selectedDomain, targets)
+    : []
+  const domainTarget = selectedDomain
+    ? getStaffingTargetValue(
+        buildStaffingTargetLookup(targets),
+        "DOMAIN",
+        selectedDomain,
+        null,
+        null
+      )
+    : null
+  const domainMonths = groups.reduce(
+    (months, group) => sumStaffingMonthBuckets(months, group.months),
+    emptyStaffingMonthBuckets()
+  )
+
+  return {
+    activeYear,
+    trackingYears,
+    domains: availableDomains,
+    selectedDomain,
+    domainTarget,
+    domainMonths,
+    groups,
+  }
+}
+
+export async function getStaffingAdminPageData(
+  year?: number,
+  viewer?: Pick<AppViewer, "role" | "scopes">
+) {
+  const trackingYears = await prisma.trackingYear.findMany({
+    orderBy: { year: "asc" },
+  })
+
+  const activeYear =
+    year ??
+    trackingYears.find((trackingYear) => trackingYear.isActive)?.year ??
+    trackingYears.at(-1)?.year ??
+    new Date().getFullYear()
+
+  const [allTargets, hierarchyOptions] = await Promise.all([
+    getStaffingTargets(activeYear),
+    getStaffingHierarchyOptions(activeYear, viewer),
+  ])
+  const targets = filterScopedItems(
+    allTargets,
+    viewer,
+    (target) => ({ domain: target.domain, subDomain: target.subDomain })
+  )
+
+  return {
+    activeYear,
+    trackingYears,
+    targets,
+    hierarchyOptions,
   }
 }
 
@@ -3106,6 +3745,107 @@ export async function deleteDepartmentMapping(input: {
       "domain",
       "subDomain",
       "notes",
+    ]),
+  })
+
+  return before
+}
+
+export async function upsertStaffingTarget(input: {
+  id?: string
+  year: number
+  scopeLevel: StaffingTargetScopeLevel
+  domain: string
+  subDomain?: string | null
+  projectCode?: string | null
+  permTarget: number
+}, actor?: AuditActor) {
+  ensureValidYear(input.year)
+  const trackingYear = await getOrCreateTrackingYear(input.year)
+  const normalized = validateStaffingTargetInput({
+    scopeLevel: input.scopeLevel,
+    domain: input.domain,
+    subDomain: input.subDomain,
+    projectCode: input.projectCode,
+    permTarget: input.permTarget,
+  })
+
+  const before = input.id
+    ? await prisma.staffingTarget.findFirst({
+        where: {
+          id: input.id,
+          trackingYearId: trackingYear.id,
+        },
+      })
+    : await prisma.staffingTarget.findFirst({
+        where: {
+          trackingYearId: trackingYear.id,
+          scopeLevel: normalized.scopeLevel,
+          domain: normalized.domain,
+          subDomain: normalized.subDomain,
+          projectCode: normalized.projectCode,
+        },
+      })
+
+  const target = before
+    ? await prisma.staffingTarget.update({
+        where: { id: before.id },
+        data: normalized,
+      })
+    : await prisma.staffingTarget.create({
+        data: {
+          trackingYearId: trackingYear.id,
+          ...normalized,
+        },
+      })
+
+  await writeAuditLog({
+    trackingYearId: trackingYear.id,
+    entityType: "StaffingTarget",
+    entityId: target.id,
+    action: before ? "UPDATE" : "CREATE",
+    actor,
+    changes: buildAuditChanges(before, target, [
+      "scopeLevel",
+      "domain",
+      "subDomain",
+      "projectCode",
+      "permTarget",
+    ]),
+  })
+
+  return target
+}
+
+export async function deleteStaffingTarget(input: {
+  year: number
+  id: string
+}, actor?: AuditActor) {
+  ensureValidYear(input.year)
+  const trackingYear = await getOrCreateTrackingYear(input.year)
+  const before = await prisma.staffingTarget.findFirstOrThrow({
+    where: {
+      id: input.id,
+      trackingYearId: trackingYear.id,
+    },
+  })
+
+  await prisma.staffingTarget.delete({
+    where: { id: before.id },
+  })
+
+  await writeAuditLog({
+    trackingYearId: trackingYear.id,
+    entityType: "StaffingTarget",
+    entityId: before.id,
+    action: "DELETE",
+    actor,
+    changes: buildAuditChanges(before, null, [
+      "scopeLevel",
+      "domain",
+      "subDomain",
+      "projectCode",
+      "permTarget",
     ]),
   })
 

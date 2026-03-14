@@ -399,7 +399,7 @@ export function ActualsBrowser({
   }
 
   return (
-    <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(187,108,37,0.16),_transparent_32%),linear-gradient(180deg,_rgba(255,250,243,1)_0%,_rgba(246,240,232,1)_100%)]">
+    <div className="min-h-screen brand-page-shell">
       <FinanceHeader
         title="Actuals"
         subtitle="Work separately with internal monthly actuals and imported external actuals."
@@ -456,7 +456,7 @@ export function ActualsBrowser({
                           {seat.team || "No team"} · {bulkCopyPreview.monthLabel}
                         </div>
                         {seat.requiresConfirmation ? (
-                          <label className="mt-3 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+                          <label className="mt-3 flex items-start gap-2 rounded-md brand-note">
                             <Checkbox
                               checked={bulkCopyConfirmations[seat.trackerSeatId] ?? false}
                               onCheckedChange={(checked) =>
@@ -507,7 +507,7 @@ export function ActualsBrowser({
             </div>
             <DialogFooter>
               {pendingOnLeaveConfirmations.length > 0 ? (
-                <div className="mr-auto text-sm text-amber-900">
+                <div className="mr-auto text-sm text-rose-800 dark:text-rose-200">
                   Confirm {pendingOnLeaveConfirmations.length} on-leave seat
                   {pendingOnLeaveConfirmations.length === 1 ? "" : "s"} before completing.
                 </div>
@@ -549,25 +549,25 @@ export function ActualsBrowser({
           </div>
 
           <section className="grid gap-4 md:grid-cols-4">
-            <Card className="border-amber-200/70 bg-white/90">
+            <Card className="brand-card">
               <CardHeader className="gap-1">
                 <CardDescription>Selected Sub-domain</CardDescription>
                 <CardTitle>{selectedArea?.subDomain || "Unmapped"}</CardTitle>
               </CardHeader>
             </Card>
-            <Card className="border-amber-200/70 bg-white/90">
+            <Card className="brand-card">
               <CardHeader className="gap-1">
                 <CardDescription>Seats In Scope</CardDescription>
                 <CardTitle>{formatNumber(selectedArea?.seatCount ?? 0)}</CardTitle>
               </CardHeader>
             </Card>
-            <Card className="border-amber-200/70 bg-white/90">
+            <Card className="brand-card">
               <CardHeader className="gap-1">
                 <CardDescription>Spent To Date</CardDescription>
                 <CardTitle>{formatCurrency(selectedArea?.spentToDate ?? 0)}</CardTitle>
               </CardHeader>
             </Card>
-            <Card className="border-amber-200/70 bg-white/90">
+            <Card className="brand-card">
               <CardHeader className="gap-1">
                 <CardDescription>Forecast Remaining</CardDescription>
                 <CardTitle>{formatCurrency(selectedArea?.totalForecast ?? 0)}</CardTitle>
@@ -604,7 +604,7 @@ export function ActualsBrowser({
               <h3 className="mt-1 text-2xl font-semibold tracking-tight">Internal workflow</h3>
             </div>
 
-            <Card className="border-amber-200/70 bg-white/90">
+            <Card className="brand-card">
               <CardHeader className="flex-row items-end justify-between gap-4">
                 <div>
                   <div className="flex items-center gap-2">
@@ -661,7 +661,7 @@ export function ActualsBrowser({
             </Card>
 
             <section className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
-            <Card className="border-amber-200/70 bg-white/90">
+            <Card className="brand-card">
               <CardHeader>
                 <CardTitle>Internal Seats</CardTitle>
                 <CardDescription>
@@ -682,7 +682,7 @@ export function ActualsBrowser({
                     {seats.map((seat) => (
                       <TableRow
                         key={seat.id}
-                        className={seat.id === selectedSeatId ? "bg-amber-50" : "cursor-pointer"}
+                        className={seat.id === selectedSeatId ? "brand-selected-row" : "cursor-pointer"}
                         onClick={() => setSelectedSeatId(seat.id)}
                       >
                         <TableCell>
@@ -714,7 +714,7 @@ export function ActualsBrowser({
             </Card>
 
             <div className="space-y-6">
-              <Card className="border-amber-200/70 bg-white/90">
+              <Card className="brand-card">
                 <CardHeader>
                   <CardTitle>Seat Monthly Detail</CardTitle>
                   <CardDescription>
@@ -772,7 +772,7 @@ export function ActualsBrowser({
                 </CardContent>
               </Card>
 
-              <Card className="border-amber-200/70 bg-white/90">
+              <Card className="brand-card">
                 <CardHeader>
                   <CardTitle>Monthly Actuals</CardTitle>
                   <CardDescription>
@@ -796,7 +796,7 @@ export function ActualsBrowser({
                     </select>
                   </div>
                   {internalActualsMessage ? (
-                    <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+                    <div className="rounded-xl brand-note">
                       <div className="flex items-center gap-2 font-medium">
                         <span>Internal actuals service message</span>
                         <GuidanceHover
@@ -804,7 +804,7 @@ export function ActualsBrowser({
                           label="Internal actuals service message"
                         />
                       </div>
-                      <div className="mt-1 text-amber-900/80">
+                      <div className="mt-1 text-rose-900/80 dark:text-rose-100/80">
                         Hover the info icon to review the instructions before entering or copying
                         actuals.
                       </div>
@@ -908,19 +908,19 @@ export function ActualsBrowser({
             </div>
 
             <section className="grid gap-4 md:grid-cols-3">
-            <Card className="border-amber-200/70 bg-white/90">
+            <Card className="brand-card">
               <CardHeader className="gap-1">
                 <CardDescription>Imported Entries</CardDescription>
                 <CardTitle>{formatNumber(totals.entryCount)}</CardTitle>
               </CardHeader>
             </Card>
-            <Card className="border-amber-200/70 bg-white/90">
+            <Card className="brand-card">
               <CardHeader className="gap-1">
                 <CardDescription>Imported Amount</CardDescription>
                 <CardTitle>{formatCurrency(totals.amount)}</CardTitle>
               </CardHeader>
             </Card>
-            <Card className="border-amber-200/70 bg-white/90">
+            <Card className="brand-card">
               <CardHeader className="gap-1">
                 <CardDescription>Matched Seats</CardDescription>
                 <CardTitle>{formatNumber(totals.matchedCount)}</CardTitle>
@@ -928,7 +928,7 @@ export function ActualsBrowser({
             </Card>
             </section>
 
-            <Card className="border-amber-200/70 bg-white/90">
+            <Card className="brand-card">
             <CardHeader>
               <CardTitle>Import CSV</CardTitle>
               <CardDescription>
@@ -968,7 +968,7 @@ export function ActualsBrowser({
             </CardContent>
             </Card>
 
-            <Card className="border-amber-200/70 bg-white/90">
+            <Card className="brand-card">
             <CardHeader>
               <CardTitle>Import History</CardTitle>
               <CardDescription>
@@ -1038,7 +1038,7 @@ export function ActualsBrowser({
             </CardContent>
             </Card>
 
-            <Card className="border-amber-200/70 bg-white/90">
+            <Card className="brand-card">
             <CardHeader>
               <CardTitle>Filters</CardTitle>
               <CardDescription>
@@ -1137,7 +1137,7 @@ export function ActualsBrowser({
             </CardContent>
             </Card>
 
-            <Card className="border-amber-200/70 bg-white/90">
+            <Card className="brand-card">
             <CardHeader>
               <CardTitle>Imported External Actuals</CardTitle>
               <CardDescription>

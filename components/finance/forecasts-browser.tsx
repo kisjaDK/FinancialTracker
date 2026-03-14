@@ -369,7 +369,7 @@ export function ForecastsBrowser({
   }
 
   return (
-    <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(245,158,11,0.12),_transparent_35%),linear-gradient(180deg,rgba(255,251,235,0.95),rgba(255,255,255,1))]">
+    <div className="min-h-screen brand-page-shell">
       <FinanceHeader
         title="Forecasts"
         subtitle="Review seat-level forecast coverage, override month values, and compare against actuals."
@@ -381,7 +381,7 @@ export function ForecastsBrowser({
       />
 
       <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-6 py-6">
-        <Card className="border-amber-200/70 bg-white/90">
+        <Card className="brand-card">
           <CardHeader>
             <CardTitle>Filters</CardTitle>
             <CardDescription>
@@ -531,7 +531,7 @@ export function ForecastsBrowser({
         </Card>
 
         <div className="grid items-stretch gap-6 lg:grid-cols-[minmax(0,26rem)_minmax(0,1fr)]">
-          <Card className="flex h-fit flex-col border-amber-200/70 bg-white/90 lg:sticky lg:top-6 lg:max-h-[calc(100vh-2.5rem)]">
+          <Card className="flex h-fit flex-col brand-card lg:sticky lg:top-6 lg:max-h-[calc(100vh-2.5rem)]">
             <CardHeader>
               <CardTitle>Seat Overview</CardTitle>
               <CardDescription>
@@ -566,9 +566,9 @@ export function ForecastsBrowser({
                           }
                         }}
                         className={cn(
-                          "w-full rounded-2xl border p-4 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 focus-visible:ring-offset-2",
+                          "w-full rounded-2xl border p-4 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-300 focus-visible:ring-offset-2",
                           isSelected
-                            ? "border-amber-400 bg-amber-50 shadow-sm"
+                            ? "border-rose-400 brand-selected-row shadow-sm"
                             : "border-border/70 bg-background hover:bg-accent"
                         )}
                       >
@@ -606,7 +606,7 @@ export function ForecastsBrowser({
                           <div className="text-right">
                             <div className="flex items-center justify-end gap-1">
                               {hasAdjustments ? (
-                                <PenLine className="size-3.5 text-amber-700" aria-hidden="true" />
+                                <PenLine className="size-3.5 text-rose-700 dark:text-rose-300" aria-hidden="true" />
                               ) : null}
                               <span className="font-medium">{formatCurrency(seat.totalForecast)}</span>
                             </div>
@@ -630,7 +630,7 @@ export function ForecastsBrowser({
             </CardContent>
           </Card>
 
-          <Card className="flex h-full flex-col border-amber-200/70 bg-white/90">
+          <Card className="flex h-full flex-col brand-card">
             <CardHeader className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
               <div>
                 <CardTitle>Seat Forecast Detail</CardTitle>
@@ -825,7 +825,7 @@ export function ForecastsBrowser({
                   <div className="text-sm text-muted-foreground">
                     <Link
                       href={`/people-roster?year=${activeYear}&seatId=${encodeURIComponent(selectedSeat.seatId)}`}
-                      className="underline underline-offset-4"
+                      className="brand-inline-link"
                     >
                       Open seat in People Roster
                     </Link>

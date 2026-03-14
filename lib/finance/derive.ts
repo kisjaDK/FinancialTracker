@@ -109,7 +109,7 @@ export function monthLabel(year: number, monthIndex: number) {
   return `${MONTH_NAMES[monthIndex]}-${String(year).slice(-2)}`
 }
 
-function isMonthActiveForSeat(
+export function isMonthActiveForSeat(
   targetYear: number,
   monthIndex: number,
   startDate: Date | null | undefined,

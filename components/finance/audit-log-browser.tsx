@@ -72,7 +72,7 @@ export function AuditLogBrowser({
   logs,
 }: AuditLogBrowserProps) {
   return (
-    <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(187,108,37,0.16),_transparent_32%),linear-gradient(180deg,_rgba(255,250,243,1)_0%,_rgba(246,240,232,1)_100%)]">
+    <div className="min-h-screen brand-page-shell">
       <FinanceHeader
         title="Audit Log"
         subtitle="Review data changes, who made them, and the before/after values."
@@ -84,7 +84,7 @@ export function AuditLogBrowser({
       />
 
       <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-6 py-8">
-        <Card className="border-amber-200/70 bg-white/90">
+        <Card className="brand-card">
           <CardHeader>
             <CardTitle>Filters</CardTitle>
             <CardDescription>
@@ -168,7 +168,7 @@ export function AuditLogBrowser({
           </CardContent>
         </Card>
 
-        <Card className="border-amber-200/70 bg-white/90">
+        <Card className="brand-card">
           <CardHeader>
             <CardTitle>Changes</CardTitle>
             <CardDescription>

@@ -28,7 +28,7 @@ export function GuidanceHover({
         <button
           type="button"
           className={cn(
-            "inline-flex size-5 items-center justify-center rounded-full border border-amber-300 bg-amber-50 text-amber-900 transition-colors hover:bg-amber-100",
+            "inline-flex size-5 items-center justify-center rounded-full border transition-colors brand-icon-button",
             className
           )}
           aria-label={label}
@@ -36,9 +36,9 @@ export function GuidanceHover({
           <InfoIcon className="size-3.5" />
         </button>
       </HoverCardTrigger>
-      <HoverCardContent align="start" className="w-80 border-amber-200 bg-white">
+      <HoverCardContent align="start" className="w-80 border-border bg-popover">
         <div className="space-y-2">
-          <div className="text-xs font-semibold uppercase tracking-[0.18em] text-amber-800">
+          <div className="text-xs font-semibold uppercase tracking-[0.18em] text-rose-800 dark:text-rose-300">
             {label}
           </div>
           <div

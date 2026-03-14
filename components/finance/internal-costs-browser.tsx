@@ -219,7 +219,7 @@ export function InternalCostsBrowser({
   }
 
   return (
-    <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(187,108,37,0.16),_transparent_32%),linear-gradient(180deg,_rgba(255,250,243,1)_0%,_rgba(246,240,232,1)_100%)]">
+    <div className="min-h-screen brand-page-shell">
       <FinanceHeader
         title="Internal Costs"
         subtitle="Maintain yearly internal cost assumptions by location and band."
@@ -268,7 +268,7 @@ export function InternalCostsBrowser({
         </AlertDialog>
 
         <section className="grid gap-6 xl:grid-cols-2">
-          <Card className="border-amber-200/70 bg-white/90">
+          <Card className="brand-card">
             <CardHeader>
               <CardTitle>Maintain Costs</CardTitle>
               <CardDescription>
@@ -397,7 +397,7 @@ export function InternalCostsBrowser({
             </CardContent>
           </Card>
 
-          <Card className="border-amber-200/70 bg-white/90">
+          <Card className="brand-card">
             <CardHeader>
               <CardTitle>Service Message</CardTitle>
               <CardDescription>
@@ -460,7 +460,7 @@ export function InternalCostsBrowser({
           </Card>
         </section>
 
-        <Card className="border-amber-200/70 bg-white/90">
+        <Card className="brand-card">
           <CardHeader>
             <CardTitle>Yearly Internal Costs</CardTitle>
             <CardDescription>

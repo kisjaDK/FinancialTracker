@@ -87,6 +87,7 @@ type SummaryRow = {
 type SeatRow = {
   id: string
   seatId: string
+  budgetAreaId?: string | null
   domain: string | null
   subDomain: string | null
   projectCode: string | null
@@ -272,7 +273,7 @@ export function FinanceWorkspace({
   const [showForecastQuarterly, setShowForecastQuarterly] = useState(false)
   const [pillarPickerOpen, setPillarPickerOpen] = useState(false)
   const [openSeatsOnlyDraft, setOpenSeatsOnlyDraft] = useState(openSeatsOnly)
-  const [overrideValues, setOverrideValues] = useState({
+  const [overrideValues, setOverrideValues] = useState(() => ({
     budgetAreaId: "",
     spendPlanId: "",
     ritm: "",
@@ -280,7 +281,7 @@ export function FinanceWorkspace({
     status: "",
     allocation: "",
     notes: "",
-  })
+  }))
 
   const summaryTotals = useMemo(
     () =>
@@ -445,22 +446,46 @@ export function FinanceWorkspace({
   const selectedOverrideArea =
     pillarOptions.find((option) => option.id === overrideValues.budgetAreaId)?.area ?? null
 
+  function buildOverrideValuesFromSeat(seat?: SeatRow) {
+    if (!seat) {
+      return {
+        budgetAreaId: "",
+        spendPlanId: "",
+        ritm: "",
+        sow: "",
+        status: "",
+        allocation: "",
+        notes: "",
+      }
+    }
+
+    return {
+      budgetAreaId: seat.budgetAreaId || "",
+      spendPlanId: seat.spendPlanId || "",
+      ritm: seat.ritm || "",
+      sow: seat.sow || "",
+      status: seat.status || "",
+      allocation:
+        typeof seat.allocation === "number" && Number.isFinite(seat.allocation)
+          ? String(seat.allocation)
+          : "",
+      notes: seat.notes || "",
+    }
+  }
+
   function resetOverrideValues() {
-    setOverrideValues({
-      budgetAreaId: "",
-      spendPlanId: "",
-      ritm: "",
-      sow: "",
-      status: "",
-      allocation: "",
-      notes: "",
-    })
+    setOverrideValues(buildOverrideValuesFromSeat(selectedSeat))
   }
 
   function selectSeat(seatId: string) {
     setSelectedSeatId(seatId)
-    resetOverrideValues()
+    const seat = sortedSeats.find((entry) => entry.id === seatId)
+    setOverrideValues(buildOverrideValuesFromSeat(seat))
   }
+
+  useEffect(() => {
+    setOverrideValues(buildOverrideValuesFromSeat(selectedSeat))
+  }, [selectedSeatId, selectedSeat])
 
   function updateSeatSort(field: SeatSortField) {
     const nextDirection =
@@ -596,7 +621,7 @@ export function FinanceWorkspace({
   }
 
   return (
-    <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(187,108,37,0.16),_transparent_32%),linear-gradient(180deg,_rgba(255,250,243,1)_0%,_rgba(246,240,232,1)_100%)]">
+    <div className="min-h-screen brand-page-shell">
       <FinanceHeader
         title="Financial Tracker"
         subtitle="Imported budget movements, roster-derived seats, and manual finance assumptions."
@@ -609,7 +634,7 @@ export function FinanceWorkspace({
 
       <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-6 py-8">
         <section className="grid gap-4 md:grid-cols-4">
-          <Card className="border-amber-200/70 bg-white/90">
+          <Card className="brand-card">
             <CardHeader className="gap-1">
               <CardDescription>Total Budget</CardDescription>
               <CardTitle>{formatCurrency(summaryTotals.amountGivenBudget)}</CardTitle>
@@ -618,19 +643,19 @@ export function FinanceWorkspace({
               </div>
             </CardHeader>
           </Card>
-          <Card className="border-amber-200/70 bg-white/90">
+          <Card className="brand-card">
             <CardHeader className="gap-1">
               <CardDescription>Spent To Date</CardDescription>
               <CardTitle>{formatCurrency(summaryTotals.spent)}</CardTitle>
             </CardHeader>
           </Card>
-          <Card className="border-amber-200/70 bg-white/90">
+          <Card className="brand-card">
             <CardHeader className="gap-1">
               <CardDescription>Total Forecast</CardDescription>
               <CardTitle>{formatCurrency(summaryTotals.forecast)}</CardTitle>
             </CardHeader>
           </Card>
-          <Card className="border-amber-200/70 bg-white/90">
+          <Card className="brand-card">
             <CardHeader className="gap-1">
               <CardDescription>Tracked Seats</CardDescription>
               <CardTitle>{formatNumber(summaryTotals.seatCount)}</CardTitle>
@@ -639,7 +664,7 @@ export function FinanceWorkspace({
         </section>
 
         <section className="space-y-6">
-          <Card className="border-amber-200/70 bg-white/90">
+          <Card className="brand-card">
             <CardHeader className="flex-row items-end justify-between gap-4">
               <div>
                 <CardTitle>Budget Summary</CardTitle>
@@ -693,8 +718,8 @@ export function FinanceWorkspace({
                         key={row.id}
                         tabIndex={0}
                         className={cn(
-                          "cursor-pointer transition-colors hover:bg-amber-50/70 focus-visible:bg-amber-50/70 focus-visible:outline-none",
-                          row.id === effectiveSelectedAreaId && "bg-amber-50"
+                          "cursor-pointer transition-colors focus-visible:outline-none brand-hover-row",
+                          row.id === effectiveSelectedAreaId && "brand-selected-row"
                         )}
                         onClick={() => void handleAreaSelection(row.id)}
                         onKeyDown={(event) => {
@@ -741,7 +766,7 @@ export function FinanceWorkspace({
             </CardContent>
           </Card>
 
-          <Card className="border-amber-200/70 bg-white/90">
+          <Card className="brand-card">
             <CardHeader>
               <CardTitle>Selected Area</CardTitle>
               <CardDescription>
@@ -846,7 +871,7 @@ export function FinanceWorkspace({
         </section>
 
         <section className="grid gap-6 xl:grid-cols-[1.3fr_0.7fr]">
-          <Card className="border-amber-200/70 bg-white/90">
+          <Card className="brand-card">
             <CardHeader>
               <CardTitle>Seat Tracker</CardTitle>
               <CardDescription>
@@ -1020,14 +1045,14 @@ export function FinanceWorkspace({
                       return (
                     <TableRow
                       key={seat.id}
-                      className={seat.id === selectedSeatId ? "bg-amber-50" : "cursor-pointer"}
+                      className={seat.id === selectedSeatId ? "brand-selected-row" : "cursor-pointer"}
                       onClick={() => selectSeat(seat.id)}
                     >
                       <TableCell>
                         <div className="flex items-center justify-between gap-3">
                           <Link
                             href={`/people-roster?year=${activeYear}&seatId=${encodeURIComponent(seat.seatId)}`}
-                            className="font-medium text-amber-900 underline-offset-4 hover:underline"
+                            className="brand-inline-link"
                             onClick={(event) => event.stopPropagation()}
                           >
                             {seat.seatId}
@@ -1073,7 +1098,7 @@ export function FinanceWorkspace({
                           <span>{formatCurrency(seat.totalForecast)}</span>
                           {seat.hasForecastAdjustments ? (
                             <PenLine
-                              className="size-3.5 text-amber-700"
+                              className="size-3.5 text-rose-700 dark:text-rose-300"
                               aria-label="Forecast contains manual adjustments"
                             />
                           ) : null}
@@ -1114,7 +1139,7 @@ export function FinanceWorkspace({
           </Card>
 
           <div className="space-y-6">
-            <Card className="border-amber-200/70 bg-white/90">
+            <Card className="brand-card">
               <CardHeader>
                 <CardTitle>Seat Monthly Detail</CardTitle>
                 <CardDescription>
@@ -1192,7 +1217,7 @@ export function FinanceWorkspace({
             </Card>
 
             {canEditTracker ? (
-              <Card className="border-amber-200/70 bg-white/90">
+              <Card className="brand-card">
                 <CardHeader>
                   <CardTitle>Tracker Overrides</CardTitle>
                   <CardDescription>

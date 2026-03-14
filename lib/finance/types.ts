@@ -3,6 +3,7 @@ import type {
   CostAssumption,
   CurrencyCode,
   SeatMonth,
+  StaffingTargetScopeLevel,
   StatusDefinition,
   TrackerOverride,
   TrackerSeat,
@@ -127,13 +128,17 @@ export type PeopleRosterFilters = {
   seatIds: string[]
   names: string[]
   emails: string[]
+  domains: string[]
   teams: string[]
   subDomains: string[]
+  projectCodes: string[]
   vendors: string[]
   locations: string[]
   statuses: string[]
   roles: string[]
   bands: string[]
+  month: string
+  staffingBucket: string
   validation: string
 }
 
@@ -160,6 +165,10 @@ export type PeopleRosterView = {
   fte: number | null
   startDate: Date | null
   endDate: Date | null
+  effectiveStatus: string | null
+  effectiveInSeat: string | null
+  effectiveStartDate: Date | null
+  effectiveEndDate: Date | null
   importError: string | null
 }
 
@@ -197,4 +206,35 @@ export type ExternalActualImportBatchView = {
   entryCount: number
   amount: number
   matchedCount: number
+}
+
+export type StaffingMonthBucket = {
+  active: number
+  onLeave: number
+  open: number
+}
+
+export type StaffingTargetView = {
+  id: string
+  scopeLevel: StaffingTargetScopeLevel
+  domain: string
+  subDomain: string | null
+  projectCode: string | null
+  permTarget: number
+}
+
+export type StaffingOverviewRow = {
+  id: string
+  domain: string
+  subDomain: string | null
+  projectCode: string | null
+  permTarget: number | null
+  months: StaffingMonthBucket[]
+}
+
+export type StaffingOverviewGroup = {
+  subDomain: string | null
+  permTarget: number | null
+  months: StaffingMonthBucket[]
+  rows: StaffingOverviewRow[]
 }

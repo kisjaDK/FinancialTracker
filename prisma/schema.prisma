@@ -40,6 +40,12 @@ enum ServiceMessageKey {
   INTERNAL_ACTUALS
 }
 
+enum StaffingTargetScopeLevel {
+  DOMAIN
+  SUB_DOMAIN
+  PROJECT
+}
+
 model AppUser {
   id        String            @id @default(cuid())
   email     String            @unique
@@ -84,6 +90,7 @@ model TrackingYear {
   rosterImports       RosterImport[]
   rosterPeople        RosterPerson[]
   trackerSeats        TrackerSeat[]
+  staffingTargets     StaffingTarget[]
   auditLogs           AuditLog[]
 }
 
@@ -416,4 +423,20 @@ model TrackerOverride {
   createdAt      DateTime    @default(now())
   updatedAt      DateTime    @updatedAt
   trackerSeat    TrackerSeat @relation(fields: [trackerSeatId], references: [id], onDelete: Cascade)
+}
+
+model StaffingTarget {
+  id             String                   @id @default(cuid())
+  trackingYearId String
+  scopeLevel     StaffingTargetScopeLevel
+  domain         String
+  subDomain      String?
+  projectCode    String?
+  permTarget     Float
+  createdAt      DateTime                 @default(now())
+  updatedAt      DateTime                 @updatedAt
+  trackingYear   TrackingYear             @relation(fields: [trackingYearId], references: [id], onDelete: Cascade)
+
+  @@index([trackingYearId, domain, subDomain, projectCode])
+  @@unique([trackingYearId, scopeLevel, domain, subDomain, projectCode])
 }

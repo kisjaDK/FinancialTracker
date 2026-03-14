@@ -11,13 +11,17 @@ type PageProps = {
     seatId?: SearchParamValue
     name?: SearchParamValue
     email?: SearchParamValue
+    domain?: SearchParamValue
     team?: SearchParamValue
     subDomain?: SearchParamValue
+    projectCode?: SearchParamValue
     vendor?: SearchParamValue
     location?: SearchParamValue
     status?: SearchParamValue
     role?: SearchParamValue
     band?: SearchParamValue
+    month?: string
+    staffingBucket?: string
     validation?: string
   }>
 }
@@ -41,13 +45,17 @@ export default async function PeopleRosterPage({ searchParams }: PageProps) {
     seatIds: toArray(resolvedSearchParams?.seatId),
     names: toArray(resolvedSearchParams?.name),
     emails: toArray(resolvedSearchParams?.email),
+    domains: toArray(resolvedSearchParams?.domain),
     teams: toArray(resolvedSearchParams?.team),
     subDomains: toArray(resolvedSearchParams?.subDomain),
+    projectCodes: toArray(resolvedSearchParams?.projectCode),
     vendors: toArray(resolvedSearchParams?.vendor),
     locations: toArray(resolvedSearchParams?.location),
     statuses: toArray(resolvedSearchParams?.status),
     roles: toArray(resolvedSearchParams?.role),
     bands: toArray(resolvedSearchParams?.band),
+    month: resolvedSearchParams?.month,
+    staffingBucket: resolvedSearchParams?.staffingBucket,
     validation: resolvedSearchParams?.validation,
   }, viewer)
 
