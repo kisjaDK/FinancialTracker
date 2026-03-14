@@ -1,11 +1,22 @@
 #!/bin/sh
 set -eu
 
-echo "Installing dependencies in the mounted workspace if needed..."
-npm install
+PACKAGE_LOCK_MARKER="node_modules/.package-lock.json"
+PRISMA_CLIENT_MARKER="lib/generated/prisma/client.ts"
 
-echo "Generating Prisma client..."
-npm run db:generate
+if [ ! -d node_modules ] || [ ! -f "$PACKAGE_LOCK_MARKER" ] || [ package-lock.json -nt "$PACKAGE_LOCK_MARKER" ]; then
+  echo "Installing dependencies in the mounted workspace..."
+  npm install
+else
+  echo "Dependencies unchanged. Skipping npm install."
+fi
+
+if [ ! -f "$PRISMA_CLIENT_MARKER" ] || [ prisma/schema.prisma -nt "$PRISMA_CLIENT_MARKER" ] || [ package-lock.json -nt "$PRISMA_CLIENT_MARKER" ]; then
+  echo "Generating Prisma client..."
+  npm run db:generate
+else
+  echo "Prisma client up to date. Skipping generation."
+fi
 
 echo "Waiting for Postgres and applying migrations..."
 until npm run db:migrate:deploy; do

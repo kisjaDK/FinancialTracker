@@ -15,6 +15,6 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Year is required" }, { status: 400 })
   }
 
-  const summary = await getBudgetAreaSummary(year, undefined, viewer)
+  const summary = await getBudgetAreaSummary(year, undefined, undefined, viewer)
   return NextResponse.json({ summary })
 }

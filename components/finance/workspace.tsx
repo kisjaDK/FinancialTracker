@@ -284,8 +284,10 @@ export function FinanceWorkspace({
   const searchParams = useSearchParams();
   const canEditTracker = userRole !== "GUEST";
   const [isPending, startTransition] = useTransition();
-  const [isAreaLoading, setIsAreaLoading] = useState(false);
   const initialSelectedAreaId = selectedAreaId ?? summary[0]?.id ?? null;
+  const [isAreaLoading, setIsAreaLoading] = useState(
+    Boolean(initialSelectedAreaId) && seats.length === 0,
+  );
   const [activeSummaryAreaId, setActiveSummaryAreaId] = useState(
     initialSelectedAreaId,
   );
@@ -372,11 +374,50 @@ export function FinanceWorkspace({
   useEffect(() => {
     setActiveSummaryAreaId(initialSelectedAreaId);
     setAreaSeats(seats);
+    setIsAreaLoading(Boolean(initialSelectedAreaId) && seats.length === 0);
   }, [initialSelectedAreaId, seats]);
 
   useEffect(() => {
     setOpenSeatsOnlyDraft(openSeatsOnly);
   }, [openSeatsOnly]);
+
+  useEffect(() => {
+    if (!initialSelectedAreaId || seats.length > 0) {
+      return;
+    }
+
+    let cancelled = false;
+    setIsAreaLoading(true);
+
+    void fetchJson(
+      `/api/tracker/detail?year=${activeYear}&budgetAreaId=${encodeURIComponent(initialSelectedAreaId)}`,
+    )
+      .then((response) => {
+        if (cancelled) {
+          return;
+        }
+
+        setAreaSeats(response.seats);
+      })
+      .catch((error) => {
+        if (cancelled) {
+          return;
+        }
+
+        toast.error(
+          error instanceof Error ? error.message : "Failed to load pillar details",
+        );
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setIsAreaLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeYear, initialSelectedAreaId, seats]);
 
   const selectedArea =
     summary.find((row) => row.id === activeSummaryAreaId) ??
@@ -533,6 +574,21 @@ export function FinanceWorkspace({
         }))
         .sort((left, right) => left.label.localeCompare(right.label)),
     [budgetAreas],
+  );
+  const effectiveTrackerTeamOptions = useMemo(
+    () =>
+      trackerTeamOptions.length > 0
+        ? trackerTeamOptions
+        : Array.from(
+            new Set(
+              areaSeats
+                .map((seat) => seat.team?.trim())
+                .filter((team): team is string => Boolean(team)),
+            ),
+          ).sort((left, right) =>
+            left.localeCompare(right, undefined, { sensitivity: "base" }),
+          ),
+    [areaSeats, trackerTeamOptions],
   );
   const selectedOverrideArea =
     pillarOptions.find((option) => option.id === overrideValues.budgetAreaId)
@@ -1142,7 +1198,7 @@ export function FinanceWorkspace({
               <MultiSelectFilter
                 label="Team"
                 name="team"
-                options={trackerTeamOptions}
+                options={effectiveTrackerTeamOptions}
                 selectedValues={trackerTeamFilters}
               />
               <MultiSelectFilter

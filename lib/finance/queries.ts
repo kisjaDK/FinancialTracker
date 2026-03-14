@@ -1,5 +1,9 @@
 import type {
+  BudgetArea,
+  BudgetMovement,
+  CostAssumption,
   CurrencyCode,
+  DepartmentMapping,
   ExchangeRate,
   Prisma,
   ServiceMessageKey,
@@ -53,6 +57,30 @@ export const INTERNAL_ACTUALS_SERVICE_MESSAGE_KEY: ServiceMessageKey =
 
 const trackerSeatDerivationByYear = new Map<number, Promise<void>>()
 
+type TrackerYearSnapshot = {
+  budgetAreas: BudgetArea[]
+  budgetMovements: BudgetMovement[]
+  seats: SeatWithRelations[]
+  assumptions: CostAssumption[]
+  exchangeRates: ExchangeRate[]
+  departmentMappings: DepartmentMapping[]
+}
+
+function logTrackerSummaryTiming(input: {
+  durationMs: number
+  activeYear: number
+  summaryCount: number
+  selectedAreaId: string | null
+}) {
+  if (process.env.NODE_ENV === "production") {
+    return
+  }
+
+  console.info(
+    `[tracker.summary] ${input.durationMs.toFixed(1)}ms year=${input.activeYear} summary=${input.summaryCount} selectedArea=${input.selectedAreaId ?? "none"}`
+  )
+}
+
 function normalizeValue(value: string | null | undefined) {
   return value?.trim().toLowerCase() ?? ""
 }
@@ -70,6 +98,42 @@ function filterScopedItems<T>(
   }
 
   return filterByScopes(items, viewer, getScope)
+}
+
+function buildTrackerSeatScopeWhere(
+  viewer?: Pick<AppViewer, "role" | "scopes">
+): Prisma.TrackerSeatWhereInput | undefined {
+  if (!viewer || !hasScopeRestrictions(viewer)) {
+    return undefined
+  }
+
+  const scopeFilters = viewer.scopes
+    .map((scope) => {
+      const domain = scope.domain.trim()
+      const subDomain = scope.subDomain?.trim() || null
+
+      if (!domain) {
+        return null
+      }
+
+      return subDomain
+        ? {
+            domain: { equals: domain, mode: "insensitive" as const },
+            subDomain: { equals: subDomain, mode: "insensitive" as const },
+          }
+        : {
+            domain: { equals: domain, mode: "insensitive" as const },
+          }
+    })
+    .filter((scope): scope is Prisma.TrackerSeatWhereInput => Boolean(scope))
+
+  if (scopeFilters.length === 0) {
+    return undefined
+  }
+
+  return {
+    OR: scopeFilters,
+  }
 }
 
 function normalizeDomainLabel(value: string | null | undefined) {
@@ -119,22 +183,14 @@ async function computeSeatMonthForecastSnapshot(input: {
   seat: SeatWithRelations
   year: number
   monthIndex: number
+  assumptions: CostAssumption[]
+  exchangeRates: ExchangeRate[]
 }) {
-  const [assumptions, exchangeRates] = await Promise.all([
-    prisma.costAssumption.findMany({
-      where: { trackingYear: { year: input.year } },
-    }),
-    prisma.exchangeRate.findMany({
-      where: { trackingYear: { year: input.year } },
-      orderBy: { effectiveDate: "desc" },
-    }),
-  ])
-
-  const assumptionLookup = buildCostAssumptionLookup(assumptions)
+  const assumptionLookup = buildCostAssumptionLookup(input.assumptions)
   const metrics = deriveSeatMetrics(
     input.seat,
     assumptionLookup,
-    exchangeRates,
+    input.exchangeRates,
     input.year
   )
 
@@ -648,6 +704,65 @@ async function ensureFreshTrackerDerivation(year: number) {
   }
 }
 
+async function loadTrackerYearSnapshot(
+  trackingYearId: string,
+  options?: {
+    includeBudgetMovements?: boolean
+    seatOrderBy?: Prisma.TrackerSeatOrderByWithRelationInput[]
+  }
+): Promise<TrackerYearSnapshot> {
+  const includeBudgetMovements = options?.includeBudgetMovements ?? true
+
+  const [budgetAreas, budgetMovements, seats, assumptions, exchangeRates, departmentMappings] =
+    await Promise.all([
+      prisma.budgetArea.findMany({
+        where: { trackingYearId },
+        orderBy: [{ domain: "asc" }, { subDomain: "asc" }, { costCenter: "asc" }],
+      }),
+      includeBudgetMovements
+        ? prisma.budgetMovement.findMany({
+            where: { trackingYearId },
+          })
+        : Promise.resolve([]),
+      prisma.trackerSeat.findMany({
+        where: {
+          trackingYearId,
+          isActive: true,
+        },
+        include: {
+          months: {
+            orderBy: { monthIndex: "asc" },
+          },
+          override: true,
+          budgetArea: true,
+        },
+        orderBy: options?.seatOrderBy,
+      }),
+      prisma.costAssumption.findMany({
+        where: { trackingYearId },
+      }),
+      prisma.exchangeRate.findMany({
+        where: { trackingYearId },
+        orderBy: { effectiveDate: "desc" },
+      }),
+      prisma.departmentMapping.findMany({
+        where: {
+          trackingYearId,
+          codeType: "DEPARTMENT_CODE",
+        },
+      }),
+    ])
+
+  return {
+    budgetAreas,
+    budgetMovements,
+    seats: seats as SeatWithRelations[],
+    assumptions,
+    exchangeRates,
+    departmentMappings,
+  }
+}
+
 async function ensureSeatMonthsForSeats(trackerSeatIds: string[]) {
   if (trackerSeatIds.length === 0) {
     return
@@ -1107,6 +1222,7 @@ export async function getFinanceWorkspaceData(
   viewer?: Pick<AppViewer, "role" | "scopes">,
   actualsScopeInput?: ActualsScopeSelectionInput
 ) {
+  const startedAt = performance.now()
   const trackingYears = await prisma.trackingYear.findMany({
     orderBy: { year: "asc" },
   })
@@ -1120,20 +1236,18 @@ export async function getFinanceWorkspaceData(
   const trackingYear = await getOrCreateTrackingYear(activeYear)
   await ensureFreshTrackerDerivation(activeYear)
   const statusDefinitions = await ensureStatusDefinitions(activeYear)
+  const snapshot = await loadTrackerYearSnapshot(trackingYear.id, {
+    includeBudgetMovements: true,
+    seatOrderBy: [{ team: "asc" }, { inSeat: "asc" }],
+  })
 
   const [summary, budgetAreas, departmentMappings, selectedAreaId] =
     await Promise.all([
-      getBudgetAreaSummary(activeYear, statusDefinitions, viewer),
-      prisma.budgetArea.findMany({
-        where: { trackingYear: { year: activeYear } },
-        orderBy: [{ domain: "asc" }, { subDomain: "asc" }, { costCenter: "asc" }],
-      }),
-      prisma.departmentMapping.findMany({
-        where: {
-          trackingYear: { year: activeYear },
-          codeType: "DEPARTMENT_CODE",
-        },
-      }),
+      Promise.resolve(
+        buildBudgetAreaSummaryFromSnapshot(activeYear, statusDefinitions, snapshot, viewer)
+      ),
+      Promise.resolve(snapshot.budgetAreas),
+      Promise.resolve(snapshot.departmentMappings),
       Promise.resolve(budgetAreaId),
     ])
 
@@ -1178,59 +1292,6 @@ export async function getFinanceWorkspaceData(
       : selectedAreaId && availableAreaIds.has(selectedAreaId)
         ? selectedAreaId
         : summary[0]?.id ?? null
-  const allSeats = effectiveAreaId
-    ? await getTrackerDetail(activeYear, effectiveAreaId, viewer)
-    : []
-  const teamFilter = normalizeValues(trackerTeams ?? [])
-  const monthFilter = new Set(
-    (missingActualMonths ?? [])
-      .map((month) => MONTH_NAMES.findIndex((candidate) => candidate === month))
-      .filter((index) => index >= 0)
-  )
-  const seats = allSeats.filter((seat) => {
-    if (openSeatsOnly && normalizeValue(seat.status) !== normalizeValue("Open")) {
-      return false
-    }
-
-    if (teamFilter.size > 0 && !teamFilter.has(normalizeValue(seat.team))) {
-      return false
-    }
-
-    if (monthFilter.size > 0) {
-      if (normalizeValue(seat.status) === normalizeValue("Open")) {
-        return false
-      }
-
-      const seatStartMonthIndex = seat.startDate
-        ? seat.startDate.getFullYear() > activeYear
-          ? Number.POSITIVE_INFINITY
-          : seat.startDate.getFullYear() < activeYear
-            ? 0
-            : seat.startDate.getMonth()
-        : null
-
-      const eligibleMonthIndexes = Array.from(monthFilter).filter(
-        (monthIndex) => seatStartMonthIndex === null || monthIndex >= seatStartMonthIndex
-      )
-
-      if (eligibleMonthIndexes.length === 0) {
-        return false
-      }
-
-      const hasMissingActualInSelectedMonth = eligibleMonthIndexes.some((monthIndex) => {
-        const month = seat.months.find((entry) => entry.monthIndex === monthIndex)
-        const actualAmount = month?.actualAmountRaw ?? month?.actualAmountDkk ?? 0
-
-        return actualAmount <= 0
-      })
-
-      if (!hasMissingActualInSelectedMonth) {
-        return false
-      }
-    }
-
-    return true
-  })
   const internalActualsMessage = await prisma.serviceMessage.findUnique({
     where: {
       trackingYearId_key: {
@@ -1240,21 +1301,30 @@ export async function getFinanceWorkspaceData(
     },
   })
 
-  return {
+  const result = {
     activeYear,
     trackingYears,
     summary,
-    seats,
+    seats: [],
     internalActualsMessage: internalActualsMessage?.content ?? null,
     budgetAreas: scopedBudgetAreas,
     selectedAreaId: effectiveAreaId,
     statusDefinitions,
     trackerTeamFilters: trackerTeams ?? [],
-    trackerTeamOptions: collectSortedValues(allSeats.map((seat) => seat.team)),
+    trackerTeamOptions: [],
     missingActualMonthFilters: missingActualMonths ?? [],
     missingActualMonthOptions: MONTH_NAMES,
     openSeatsOnly: Boolean(openSeatsOnly),
   }
+
+  logTrackerSummaryTiming({
+    durationMs: performance.now() - startedAt,
+    activeYear: result.activeYear,
+    summaryCount: result.summary.length,
+    selectedAreaId: result.selectedAreaId,
+  })
+
+  return result
 }
 
 export async function getForecastsPageData(input?: {
@@ -2900,60 +2970,113 @@ export async function getExternalActualImportsPageData(input?: {
   const importedFrom = filters.importedFrom ? new Date(filters.importedFrom) : null
   const importedTo = filters.importedTo ? new Date(filters.importedTo) : null
 
-  const imports = await prisma.externalActualImport.findMany({
-    where: { trackingYearId: trackingYear.id },
-    include: {
-      entries: {
-        include: {
-          trackerSeat: true,
-        },
-      },
-    },
-    orderBy: [{ importedAt: "desc" }],
-  })
-
   const normalizedUser = normalizeValue(filters.user)
   const normalizedFileName = normalizeValue(filters.fileName)
   const normalizedSeatId = normalizeValue(filters.seatId)
   const normalizedTeam = normalizeValue(filters.team)
 
-  const scopedImports = imports
-    .map((importBatch) => ({
-      ...importBatch,
-      entries: filterScopedItems(
-        importBatch.entries,
-        viewer,
-        (entry) => ({
-          domain: entry.trackerSeat?.domain,
-          subDomain: entry.trackerSeat?.subDomain,
-        })
-      ),
-    }))
-    .filter((importBatch) => importBatch.entries.length > 0 || !hasScopeRestrictions(viewer ?? { role: null, scopes: [] }))
-
-  const filteredImports = scopedImports.filter((importBatch) => {
-    const normalizedActor = `${normalizeValue(importBatch.importedByName)} ${normalizeValue(importBatch.importedByEmail)}`.trim()
-
-      if (normalizedUser && !normalizedActor.includes(normalizedUser)) {
-        return false
+  const trackerSeatScopeWhere = buildTrackerSeatScopeWhere(viewer)
+  const baseImportWhere: Prisma.ExternalActualImportWhereInput = {
+    trackingYearId: trackingYear.id,
+    importedAt: {
+      gte: importedFrom ?? undefined,
+      lte: importedTo ?? undefined,
+    },
+    fileName: normalizedFileName
+      ? {
+          contains: filters.fileName.trim(),
+          mode: "insensitive",
+        }
+      : undefined,
+    OR: normalizedUser
+      ? [
+          {
+            importedByName: {
+              contains: filters.user.trim(),
+              mode: "insensitive",
+            },
+          },
+          {
+            importedByEmail: {
+              contains: filters.user.trim(),
+              mode: "insensitive",
+            },
+          },
+        ]
+      : undefined,
+  }
+  const importWhere: Prisma.ExternalActualImportWhereInput = {
+    ...baseImportWhere,
+    entries: trackerSeatScopeWhere
+      ? {
+          some: {
+            trackerSeat: {
+              is: trackerSeatScopeWhere,
+            },
+          },
+        }
+      : undefined,
+  }
+  const scopedEntryWhere: Prisma.ExternalActualEntryWhereInput = trackerSeatScopeWhere
+    ? {
+        trackerSeat: {
+          is: trackerSeatScopeWhere,
+        },
       }
+    : {}
+  const filteredEntryWhere: Prisma.ExternalActualEntryWhereInput = {
+    ...scopedEntryWhere,
+    seatId: normalizedSeatId
+      ? {
+          contains: filters.seatId.trim(),
+          mode: "insensitive",
+        }
+      : undefined,
+    team: normalizedTeam
+      ? {
+          contains: filters.team.trim(),
+          mode: "insensitive",
+        }
+      : undefined,
+    import: baseImportWhere,
+  }
 
-      if (normalizedFileName && !normalizeValue(importBatch.fileName).includes(normalizedFileName)) {
-        return false
-      }
+  const [imports, entries] = await Promise.all([
+    prisma.externalActualImport.findMany({
+      where: importWhere,
+      include: {
+        entries: {
+          where: scopedEntryWhere,
+          select: {
+            amount: true,
+            trackerSeatId: true,
+          },
+        },
+      },
+      orderBy: [{ importedAt: "desc" }],
+    }),
+    prisma.externalActualEntry.findMany({
+      where: filteredEntryWhere,
+      include: {
+        import: {
+          select: {
+            id: true,
+            importedAt: true,
+            fileName: true,
+            importedByName: true,
+            importedByEmail: true,
+          },
+        },
+      },
+      orderBy: [
+        { import: { importedAt: "desc" } },
+        { seatId: "asc" },
+        { monthIndex: "asc" },
+      ],
+    }),
+  ])
 
-      if (importedFrom && importBatch.importedAt < importedFrom) {
-        return false
-      }
-
-      if (importedTo && importBatch.importedAt > importedTo) {
-        return false
-      }
-
-      return true
-    })
-
-  const importViews: ExternalActualImportBatchView[] = filteredImports.map((importBatch) => ({
+  const importViews: ExternalActualImportBatchView[] = imports.map((importBatch) => ({
     id: importBatch.id,
     importedAt: importBatch.importedAt,
     fileName: importBatch.fileName,
@@ -2965,47 +3088,25 @@ export async function getExternalActualImportsPageData(input?: {
     matchedCount: importBatch.entries.filter((entry) => Boolean(entry.trackerSeatId)).length,
   }))
 
-  const views: ExternalActualImportView[] = filteredImports.flatMap((importBatch) =>
-    importBatch.entries
-      .slice()
-      .sort((left, right) => {
-        if (left.seatId !== right.seatId) {
-          return left.seatId.localeCompare(right.seatId)
-        }
-
-        return left.monthIndex - right.monthIndex
-      })
-      .map((entry) => ({
-        id: entry.id,
-        importedAt: importBatch.importedAt,
-        fileName: importBatch.fileName,
-        importedByName: importBatch.importedByName,
-        importedByEmail: importBatch.importedByEmail,
-        seatId: entry.seatId,
-        team: entry.team,
-        inSeat: entry.inSeat,
-        description: entry.description,
-        monthIndex: entry.monthIndex,
-        monthLabel: entry.monthLabel,
-        amount: entry.amount,
-        originalAmount: entry.originalAmount,
-        originalCurrency: entry.originalCurrency,
-        invoiceNumber: entry.invoiceNumber,
-        supplierName: entry.supplierName,
-        matchedTrackerSeatId: entry.trackerSeatId,
-      }))
-      .filter((entry) => {
-        if (normalizedSeatId && !normalizeValue(entry.seatId).includes(normalizedSeatId)) {
-          return false
-        }
-
-        if (normalizedTeam && !normalizeValue(entry.team).includes(normalizedTeam)) {
-          return false
-        }
-
-        return true
-      })
-  )
+  const views: ExternalActualImportView[] = entries.map((entry) => ({
+    id: entry.id,
+    importedAt: entry.import.importedAt,
+    fileName: entry.import.fileName,
+    importedByName: entry.import.importedByName,
+    importedByEmail: entry.import.importedByEmail,
+    seatId: entry.seatId,
+    team: entry.team,
+    inSeat: entry.inSeat,
+    description: entry.description,
+    monthIndex: entry.monthIndex,
+    monthLabel: entry.monthLabel,
+    amount: entry.amount,
+    originalAmount: entry.originalAmount,
+    originalCurrency: entry.originalCurrency,
+    invoiceNumber: entry.invoiceNumber,
+    supplierName: entry.supplierName,
+    matchedTrackerSeatId: entry.trackerSeatId,
+  }))
 
   return {
     activeYear,
@@ -4205,48 +4306,40 @@ export async function upsertStatusDefinition(input: {
 export async function getBudgetAreaSummary(
   year: number,
   existingStatusDefinitions?: StatusDefinitionView[],
+  snapshotInput?: TrackerYearSnapshot,
   viewer?: Pick<AppViewer, "role" | "scopes">
 ): Promise<BudgetAreaSummary[]> {
   const trackingYear = await getOrCreateTrackingYear(year)
   const statusDefinitions =
     existingStatusDefinitions ?? (await ensureStatusDefinitions(year))
+  const snapshot =
+    snapshotInput ??
+    (await loadTrackerYearSnapshot(trackingYear.id, {
+      includeBudgetMovements: true,
+    }))
 
-  const [budgetAreas, budgetMovements, seats, assumptions, exchangeRates, departmentMappings] =
-    await Promise.all([
-      prisma.budgetArea.findMany({
-        where: { trackingYearId: trackingYear.id },
-        orderBy: [{ domain: "asc" }, { subDomain: "asc" }, { costCenter: "asc" }],
-      }),
-      prisma.budgetMovement.findMany({
-        where: { trackingYearId: trackingYear.id },
-      }),
-      prisma.trackerSeat.findMany({
-        where: {
-          trackingYearId: trackingYear.id,
-          isActive: true,
-        },
-        include: {
-          months: {
-            orderBy: { monthIndex: "asc" },
-          },
-          override: true,
-          budgetArea: true,
-        },
-      }),
-      prisma.costAssumption.findMany({
-        where: { trackingYearId: trackingYear.id },
-      }),
-      prisma.exchangeRate.findMany({
-        where: { trackingYearId: trackingYear.id },
-        orderBy: { effectiveDate: "desc" },
-      }),
-      prisma.departmentMapping.findMany({
-        where: {
-          trackingYearId: trackingYear.id,
-          codeType: "DEPARTMENT_CODE",
-        },
-      }),
-    ])
+  return buildBudgetAreaSummaryFromSnapshot(
+    year,
+    statusDefinitions,
+    snapshot,
+    viewer
+  )
+}
+
+function buildBudgetAreaSummaryFromSnapshot(
+  year: number,
+  statusDefinitions: StatusDefinitionView[],
+  snapshot: TrackerYearSnapshot,
+  viewer?: Pick<AppViewer, "role" | "scopes">
+): BudgetAreaSummary[] {
+  const {
+    budgetAreas,
+    budgetMovements,
+    seats,
+    assumptions,
+    exchangeRates,
+    departmentMappings,
+  } = snapshot
 
   const assumptionLookup = buildCostAssumptionLookup(assumptions)
   const activeStatuses = buildActiveStatusLookup(statusDefinitions)
@@ -4441,36 +4534,28 @@ export async function getBudgetAreaSummary(
 export async function getTrackerDetail(
   year: number,
   budgetAreaId: string,
+  snapshotInput?: TrackerYearSnapshot,
   viewer?: Pick<AppViewer, "role" | "scopes">
 ) {
   const trackingYear = await getOrCreateTrackingYear(year)
-  const selectedSummary = parseSummaryKey(budgetAreaId)
-  const [seats, assumptions, exchangeRates] = await Promise.all([
-    prisma.trackerSeat.findMany({
-      where: {
-        trackingYearId: trackingYear.id,
-        isActive: true,
-      },
-      include: {
-        months: {
-          orderBy: { monthIndex: "asc" },
-        },
-        override: true,
-        budgetArea: true,
-      },
-      orderBy: [{ team: "asc" }, { inSeat: "asc" }],
-    }),
-    prisma.costAssumption.findMany({
-      where: {
-        trackingYearId: trackingYear.id,
-      },
-    }),
-    prisma.exchangeRate.findMany({
-      where: { trackingYearId: trackingYear.id },
-      orderBy: { effectiveDate: "desc" },
-    }),
-  ])
+  const snapshot =
+    snapshotInput ??
+    (await loadTrackerYearSnapshot(trackingYear.id, {
+      includeBudgetMovements: false,
+      seatOrderBy: [{ team: "asc" }, { inSeat: "asc" }],
+    }))
 
+  return buildTrackerDetailFromSnapshot(year, budgetAreaId, snapshot, viewer)
+}
+
+function buildTrackerDetailFromSnapshot(
+  year: number,
+  budgetAreaId: string,
+  snapshot: TrackerYearSnapshot,
+  viewer?: Pick<AppViewer, "role" | "scopes">
+) {
+  const selectedSummary = parseSummaryKey(budgetAreaId)
+  const { seats, assumptions, exchangeRates } = snapshot
   const assumptionLookup = buildCostAssumptionLookup(assumptions)
   const exchangeRateLookup = buildExchangeRateLookup(exchangeRates)
 
@@ -5589,12 +5674,32 @@ export async function updateTrackerSeat(
         },
       },
     })
-    const exchangeRates = buildExchangeRateLookup(
-      await prisma.exchangeRate.findMany({
+    const requiresForecastSnapshot =
+      payload.actualAmount === undefined &&
+      !(
+        payload.forecastIncluded ??
+        beforeMonth?.forecastIncluded ??
+        true
+      ) &&
+      beforeMonth?.usedForecastAmount == null
+    const [yearRecord, exchangeRateRows, costAssumptionRows] = await Promise.all([
+      requiresForecastSnapshot
+        ? prisma.trackingYear.findUniqueOrThrow({
+            where: { id: seat.trackingYearId },
+            select: { year: true },
+          })
+        : Promise.resolve(null),
+      prisma.exchangeRate.findMany({
         where: { trackingYearId: seat.trackingYearId },
         orderBy: { effectiveDate: "desc" },
-      })
-    )
+      }),
+      requiresForecastSnapshot
+        ? prisma.costAssumption.findMany({
+            where: { trackingYearId: seat.trackingYearId },
+          })
+        : Promise.resolve([]),
+    ])
+    const exchangeRates = buildExchangeRateLookup(exchangeRateRows)
     const currency = payload.actualCurrency ?? beforeMonth?.actualCurrency ?? "DKK"
     const rawAmount =
       payload.actualAmount ?? beforeMonth?.actualAmountRaw ?? beforeMonth?.actualAmount ?? 0
@@ -5622,13 +5727,10 @@ export async function updateTrackerSeat(
           : (beforeMonth?.usedForecastAmount ??
             (await computeSeatMonthForecastSnapshot({
               seat: seat as SeatWithRelations,
-              year: (
-                await prisma.trackingYear.findUniqueOrThrow({
-                  where: { id: seat.trackingYearId },
-                  select: { year: true },
-                })
-              ).year,
+              year: yearRecord!.year,
               monthIndex: payload.monthIndex,
+              assumptions: costAssumptionRows,
+              exchangeRates: exchangeRateRows,
             })))
 
     const month = await prisma.seatMonth.upsert({
