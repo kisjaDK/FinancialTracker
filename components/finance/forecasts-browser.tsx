@@ -6,8 +6,8 @@ import { useRouter, useSearchParams } from "next/navigation"
 import { PenLine } from "lucide-react"
 import { toast } from "sonner"
 import { GuidanceHover } from "@/components/finance/guidance-hover"
-import { FinanceHeader } from "@/components/finance/header"
 import { MultiSelectFilter } from "@/components/finance/multi-select-filter"
+import { FinancePageIntro } from "@/components/finance/page-intro"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -32,7 +32,6 @@ import {
 } from "@/components/ui/table"
 import { MONTH_NAMES } from "@/lib/finance/constants"
 import { formatCurrency, formatPercent } from "@/lib/finance/format"
-import type { AppRole } from "@/lib/roles"
 import { cn } from "@/lib/utils"
 
 type TrackingYearOption = {
@@ -76,15 +75,13 @@ type ForecastSeatRow = {
 }
 
 type ForecastsBrowserProps = {
-  userName: string
-  userEmail: string
-  userRole: AppRole
   activeYear: number
   trackingYears: TrackingYearOption[]
   seats: ForecastSeatRow[]
   totalSeatCount: number
   selectedSeatId: string | null
   filters: {
+    domains: string[]
     subDomains: string[]
     teams: string[]
     seatIds: string[]
@@ -96,6 +93,7 @@ type ForecastsBrowserProps = {
     reducedOnLeaveForecast: boolean
   }
   filterOptions: {
+    domains: string[]
     subDomains: string[]
     teams: string[]
     statuses: string[]
@@ -169,9 +167,6 @@ function buildMonthDrafts(seat: ForecastSeatRow | undefined) {
 }
 
 export function ForecastsBrowser({
-  userName,
-  userEmail,
-  userRole,
   activeYear,
   trackingYears,
   seats,
@@ -279,6 +274,7 @@ export function ForecastsBrowser({
     }
 
     appendValues("subDomain", formData.getAll("subDomain"))
+    appendValues("domain", formData.getAll("domain"))
     appendValues("team", formData.getAll("team"))
     appendValues("seatId", formData.getAll("seatId"))
     appendValues("name", formData.getAll("name"))
@@ -314,6 +310,7 @@ export function ForecastsBrowser({
     setReducedOnLeaveForecast(false)
     updateParams({
       year: selectedYear,
+      domain: null,
       subDomain: null,
       team: null,
       seatId: null,
@@ -369,18 +366,11 @@ export function ForecastsBrowser({
   }
 
   return (
-    <div className="min-h-screen brand-page-shell">
-      <FinanceHeader
-        title="Forecasts"
-        subtitle="Review seat-level forecast coverage, override month values, and compare against actuals."
-        userName={userName}
-        userEmail={userEmail}
-        userRole={userRole}
-        activeYear={activeYear}
-        currentPath="/forecasts"
-      />
-
-      <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-6 py-6">
+      <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 py-2">
+        <FinancePageIntro
+          title="Forecasts"
+          subtitle="Review seat-level forecast coverage, override month values, and compare against actuals."
+        />
         <Card className="brand-card">
           <CardHeader>
             <CardTitle>Filters</CardTitle>
@@ -407,6 +397,13 @@ export function ForecastsBrowser({
                     ))}
                   </select>
                 </div>
+                <MultiSelectFilter
+                  key={`forecast-domains:${filters.domains.join("|")}`}
+                  label="Domain"
+                  name="domain"
+                  options={filterOptions.domains}
+                  selectedValues={filters.domains}
+                />
                 <MultiSelectFilter
                   key={`forecast-subDomains:${filters.subDomains.join("|")}`}
                   label="Sub-domain"
@@ -842,6 +839,5 @@ export function ForecastsBrowser({
           </Card>
         </div>
       </main>
-    </div>
   )
 }

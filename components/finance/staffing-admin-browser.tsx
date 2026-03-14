@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
-import { FinanceHeader } from "@/components/finance/header"
+import { FinancePageIntro } from "@/components/finance/page-intro"
 import { Button } from "@/components/ui/button"
 import {
   Card,
@@ -24,7 +24,6 @@ import {
 import { formatNumber } from "@/lib/finance/format"
 import type { StaffingTargetScopeLevel } from "@/lib/generated/prisma/client"
 import type { StaffingTargetView } from "@/lib/finance/types"
-import type { AppRole } from "@/lib/roles"
 
 type TrackingYearOption = {
   id: string
@@ -46,9 +45,6 @@ type HierarchyOptions = {
 }
 
 type StaffingAdminBrowserProps = {
-  userName: string
-  userEmail: string
-  userRole: AppRole
   activeYear: number
   trackingYears: TrackingYearOption[]
   targets: StaffingTargetView[]
@@ -85,9 +81,6 @@ async function fetchJson(input: RequestInfo, init?: RequestInit) {
 }
 
 export function StaffingAdminBrowser({
-  userName,
-  userEmail,
-  userRole,
   activeYear,
   trackingYears,
   targets,
@@ -183,18 +176,11 @@ export function StaffingAdminBrowser({
   }
 
   return (
-    <div className="min-h-screen brand-page-shell">
-      <FinanceHeader
-        title="Staffing Admin"
-        subtitle="Manage year-scoped PERM targets for domains, sub-domains, and project codes."
-        userName={userName}
-        userEmail={userEmail}
-        userRole={userRole}
-        activeYear={activeYear}
-        currentPath="/staffing-admin"
-      />
-
-      <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-6 py-8">
+      <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 py-2">
+        <FinancePageIntro
+          title="Staffing Admin"
+          subtitle="Manage year-scoped PERM targets for domains, sub-domains, and project codes."
+        />
         <Card className="brand-card">
           <CardHeader>
             <CardTitle>Year</CardTitle>
@@ -408,6 +394,5 @@ export function StaffingAdminBrowser({
           </CardContent>
         </Card>
       </main>
-    </div>
   )
 }

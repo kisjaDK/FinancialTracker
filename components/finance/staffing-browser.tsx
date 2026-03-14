@@ -5,7 +5,7 @@ import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { InfoIcon } from "lucide-react"
 import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from "recharts"
-import { FinanceHeader } from "@/components/finance/header"
+import { FinancePageIntro } from "@/components/finance/page-intro"
 import {
   ChartContainer,
   ChartLegend,
@@ -37,7 +37,6 @@ import {
 import { MONTH_NAMES } from "@/lib/finance/constants"
 import { formatNumber } from "@/lib/finance/format"
 import type { StaffingMonthBucket } from "@/lib/finance/types"
-import type { AppRole } from "@/lib/roles"
 
 type TrackingYearOption = {
   id: string
@@ -61,9 +60,6 @@ type StaffingOverviewGroup = {
 }
 
 type StaffingBrowserProps = {
-  userName: string
-  userEmail: string
-  userRole: AppRole
   activeYear: number
   trackingYears: TrackingYearOption[]
   domains: string[]
@@ -246,9 +242,6 @@ type LinkedBarShapeProps = {
 }
 
 export function StaffingBrowser({
-  userName,
-  userEmail,
-  userRole,
   activeYear,
   trackingYears,
   domains,
@@ -337,18 +330,11 @@ export function StaffingBrowser({
 
   return (
     <TooltipProvider>
-      <div className="min-h-screen brand-page-shell-staffing">
-      <FinanceHeader
-        title="Staffing"
-        subtitle="Track monthly PERM staffing by domain, sub-domain, and project code."
-        userName={userName}
-        userEmail={userEmail}
-        userRole={userRole}
-        activeYear={activeYear}
-        currentPath="/staffing"
-      />
-
-      <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-6 py-8">
+      <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 py-2">
+        <FinancePageIntro
+          title="Staffing"
+          subtitle="Track monthly PERM staffing by domain, sub-domain, and project code."
+        />
         <Card className="brand-card">
           <CardHeader>
             <CardTitle>Filters</CardTitle>
@@ -851,7 +837,6 @@ export function StaffingBrowser({
           </CardContent>
         </Card>
       </main>
-    </div>
     </TooltipProvider>
   )
 }

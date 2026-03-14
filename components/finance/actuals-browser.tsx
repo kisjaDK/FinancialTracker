@@ -5,7 +5,7 @@ import Link from "next/link"
 import { useRouter, useSearchParams } from "next/navigation"
 import { toast } from "sonner"
 import { GuidanceHover } from "@/components/finance/guidance-hover"
-import { FinanceHeader } from "@/components/finance/header"
+import { FinancePageIntro } from "@/components/finance/page-intro"
 import { Checkbox } from "@/components/ui/checkbox"
 import { MONTH_NAMES, SUPPORTED_CURRENCIES } from "@/lib/finance/constants"
 import { formatCurrency, formatFteAsPercent, formatNumber } from "@/lib/finance/format"
@@ -14,7 +14,6 @@ import type {
   ExternalActualImportFilters,
   ExternalActualImportView,
 } from "@/lib/finance/types"
-import type { AppRole } from "@/lib/roles"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -154,9 +153,7 @@ type ExternalActualNameSearchResult = {
 }
 
 type ActualsBrowserProps = {
-  userName: string
   userEmail: string
-  userRole: AppRole
   activeYear: number
   trackingYears: TrackingYearOption[]
   selectedAreaId: string | null
@@ -211,9 +208,7 @@ function normalizeValue(value: string | null | undefined) {
 }
 
 export function ActualsBrowser({
-  userName,
   userEmail,
-  userRole,
   activeYear,
   trackingYears,
   selectedAreaId,
@@ -885,18 +880,11 @@ export function ActualsBrowser({
   }
 
   return (
-    <div className="min-h-screen brand-page-shell">
-      <FinanceHeader
-        title="Actuals"
-        subtitle="Work separately with internal monthly actuals and imported external actuals."
-        userName={userName}
-        userEmail={userEmail}
-        userRole={userRole}
-        activeYear={activeYear}
-        currentPath="/actuals"
-      />
-
-      <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-6 py-8">
+      <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 py-2">
+        <FinancePageIntro
+          title="Actuals"
+          subtitle="Work separately with internal monthly actuals and imported external actuals."
+        />
         <Dialog
           open={bulkCopyDialogOpen}
           onOpenChange={(open) => {
@@ -2402,6 +2390,5 @@ export function ActualsBrowser({
           </TabsContent>
         </Tabs>
       </main>
-    </div>
   )
 }

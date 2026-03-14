@@ -4,7 +4,7 @@ import { useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { GuidanceHover } from "@/components/finance/guidance-hover"
-import { FinanceHeader } from "@/components/finance/header"
+import { FinancePageIntro } from "@/components/finance/page-intro"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -36,7 +36,6 @@ import {
 } from "@/components/ui/table"
 import { serializeCsv } from "@/lib/finance/csv"
 import { formatCurrency } from "@/lib/finance/format"
-import type { AppRole } from "@/lib/roles"
 
 type TrackingYearOption = {
   id: string
@@ -53,9 +52,6 @@ type CostAssumption = {
 }
 
 type InternalCostsBrowserProps = {
-  userName: string
-  userEmail: string
-  userRole: AppRole
   activeYear: number
   trackingYears: TrackingYearOption[]
   assumptions: CostAssumption[]
@@ -74,9 +70,6 @@ async function fetchJson(input: RequestInfo, init?: RequestInit) {
 }
 
 export function InternalCostsBrowser({
-  userName,
-  userEmail,
-  userRole,
   activeYear,
   trackingYears,
   assumptions,
@@ -219,18 +212,11 @@ export function InternalCostsBrowser({
   }
 
   return (
-    <div className="min-h-screen brand-page-shell">
-      <FinanceHeader
-        title="Internal Costs"
-        subtitle="Maintain yearly internal cost assumptions by location and band."
-        userName={userName}
-        userEmail={userEmail}
-        userRole={userRole}
-        activeYear={activeYear}
-        currentPath="/internal-costs"
-      />
-
-      <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-6 py-8">
+      <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 py-2">
+        <FinancePageIntro
+          title="Internal Costs"
+          subtitle="Maintain yearly internal cost assumptions by location and band."
+        />
         <AlertDialog
           open={Boolean(pendingDelete)}
           onOpenChange={(open) => {
@@ -528,6 +514,5 @@ export function InternalCostsBrowser({
           </CardContent>
         </Card>
       </main>
-    </div>
   )
 }

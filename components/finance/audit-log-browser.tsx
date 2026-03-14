@@ -1,5 +1,5 @@
 import Link from "next/link"
-import { FinanceHeader } from "@/components/finance/header"
+import { FinancePageIntro } from "@/components/finance/page-intro"
 import { Button } from "@/components/ui/button"
 import {
   Card,
@@ -16,8 +16,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import type { AppRole } from "@/lib/roles"
-
 type TrackingYearOption = {
   id: string
   year: number
@@ -38,9 +36,6 @@ type AuditLog = {
 }
 
 type AuditLogBrowserProps = {
-  userName: string
-  userEmail: string
-  userRole: AppRole
   activeYear: number
   trackingYears: TrackingYearOption[]
   filters: {
@@ -63,27 +58,17 @@ function formatDateTime(value: Date) {
 }
 
 export function AuditLogBrowser({
-  userName,
-  userEmail,
-  userRole,
   activeYear,
   trackingYears,
   filters,
   logs,
 }: AuditLogBrowserProps) {
   return (
-    <div className="min-h-screen brand-page-shell">
-      <FinanceHeader
-        title="Audit Log"
-        subtitle="Review data changes, who made them, and the before/after values."
-        userName={userName}
-        userEmail={userEmail}
-        userRole={userRole}
-        activeYear={activeYear}
-        currentPath="/audit-log"
-      />
-
-      <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-6 py-8">
+      <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 py-2">
+        <FinancePageIntro
+          title="Audit Log"
+          subtitle="Review data changes, who made them, and the before/after values."
+        />
         <Card className="brand-card">
           <CardHeader>
             <CardTitle>Filters</CardTitle>
@@ -226,6 +211,5 @@ export function AuditLogBrowser({
           </CardContent>
         </Card>
       </main>
-    </div>
   )
 }

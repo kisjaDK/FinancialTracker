@@ -3,7 +3,7 @@
 import { useRef, useState, useTransition } from "react"
 import Link from "next/link"
 import { toast } from "sonner"
-import { FinanceHeader } from "@/components/finance/header"
+import { FinancePageIntro } from "@/components/finance/page-intro"
 import { MultiSelectFilter } from "@/components/finance/multi-select-filter"
 import { Button } from "@/components/ui/button"
 import {
@@ -23,7 +23,6 @@ import {
 } from "@/components/ui/table"
 import { formatNumber } from "@/lib/finance/format"
 import type { PeopleRosterFilters, PeopleRosterView } from "@/lib/finance/types"
-import type { AppRole } from "@/lib/roles"
 
 type TrackingYearOption = {
   id: string
@@ -32,9 +31,6 @@ type TrackingYearOption = {
 }
 
 type PeopleRosterBrowserProps = {
-  userName: string
-  userEmail: string
-  userRole: AppRole
   activeYear: number
   trackingYears: TrackingYearOption[]
   filters: PeopleRosterFilters
@@ -85,9 +81,6 @@ function formatDate(value: string | Date | null) {
 }
 
 export function PeopleRosterBrowser({
-  userName,
-  userEmail,
-  userRole,
   activeYear,
   trackingYears,
   filters,
@@ -162,18 +155,11 @@ export function PeopleRosterBrowser({
   }
 
   return (
-    <div className="min-h-screen brand-page-shell">
-      <FinanceHeader
-        title="People Roster"
-        subtitle="Browse imported roster rows and filter them by seat, person, team, hierarchy, vendor, and location."
-        userName={userName}
-        userEmail={userEmail}
-        userRole={userRole}
-        activeYear={activeYear}
-        currentPath="/people-roster"
-      />
-
-      <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-6 py-8">
+      <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 py-2">
+        <FinancePageIntro
+          title="People Roster"
+          subtitle="Browse imported roster rows and filter them by seat, person, team, hierarchy, vendor, and location."
+        />
         <section className="grid gap-4 md:grid-cols-3">
           <Card className="brand-card">
             <CardHeader className="gap-1">
@@ -579,6 +565,5 @@ export function PeopleRosterBrowser({
           </CardContent>
         </Card>
       </main>
-    </div>
   )
 }

@@ -240,6 +240,19 @@ function normalizeOptionalNumber(value: number | null | undefined) {
   return typeof value === "number" && Number.isFinite(value) ? value : null
 }
 
+function formatDateOnly(value: Date | null | undefined) {
+  if (!value) {
+    return ""
+  }
+
+  const date = new Date(value)
+  const year = date.getUTCFullYear()
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0")
+  const day = String(date.getUTCDate()).padStart(2, "0")
+
+  return `${year}-${month}-${day}`
+}
+
 function isPermRosterPerson(person: Pick<PeopleRosterView, "band" | "resourceType" | "vendor">) {
   const band = normalizeValue(person.band)
   const resourceType = normalizeValue(person.resourceType)
@@ -1246,6 +1259,7 @@ export async function getFinanceWorkspaceData(
 
 export async function getForecastsPageData(input?: {
   year?: number
+  domains?: string[]
   subDomains?: string[]
   teams?: string[]
   seatIds?: string[]
@@ -1370,6 +1384,7 @@ export async function getForecastsPageData(input?: {
   })
 
   const filters = {
+    domains: (input?.domains ?? []).map((value) => value.trim()).filter(Boolean),
     subDomains: (input?.subDomains ?? []).map((value) => value.trim()).filter(Boolean),
     teams: (input?.teams ?? []).map((value) => value.trim()).filter(Boolean),
     seatIds: (input?.seatIds ?? []).map((value) => value.trim()).filter(Boolean),
@@ -1380,6 +1395,7 @@ export async function getForecastsPageData(input?: {
     nonMonthEnd: Boolean(input?.nonMonthEnd),
     reducedOnLeaveForecast: Boolean(input?.reducedOnLeaveForecast),
   }
+  const domainFilter = normalizeValues(filters.domains)
   const subDomainFilter = normalizeValues(filters.subDomains)
   const teamFilter = normalizeValues(filters.teams)
   const statusFilter = normalizeValues(filters.statuses)
@@ -1403,6 +1419,10 @@ export async function getForecastsPageData(input?: {
       }
 
       if (subDomainFilter.size > 0 && !subDomainFilter.has(normalizeValue(seat.subDomain))) {
+        return false
+      }
+
+      if (domainFilter.size > 0 && !domainFilter.has(normalizeValue(seat.domain))) {
         return false
       }
 
@@ -1491,6 +1511,7 @@ export async function getForecastsPageData(input?: {
     selectedSeatId,
     filters,
     filterOptions: {
+      domains: collectSortedValues(mappedSeats.map((seat) => seat.domain)),
       subDomains: collectSortedValues(mappedSeats.map((seat) => seat.subDomain)),
       teams: collectSortedValues(mappedSeats.map((seat) => seat.team)),
       statuses: collectSortedValues(mappedSeats.map((seat) => seat.status)),
@@ -3668,6 +3689,94 @@ export async function getAdminPageData(year?: number) {
   }
 }
 
+export async function getForecastOverrideExportRows(year: number) {
+  const trackingYear = await getOrCreateTrackingYear(year)
+  const months = await prisma.seatMonth.findMany({
+    where: {
+      trackerSeat: {
+        trackingYearId: trackingYear.id,
+      },
+      OR: [
+        { forecastOverrideAmount: { not: null } },
+        { forecastIncluded: false },
+      ],
+    },
+    include: {
+      trackerSeat: {
+        select: {
+          id: true,
+          sourceKey: true,
+          seatId: true,
+          inSeat: true,
+        },
+      },
+    },
+    orderBy: [
+      { trackerSeat: { seatId: "asc" } },
+      { monthIndex: "asc" },
+    ],
+  })
+
+  return months.map((month) => ({
+    "Tracker Seat ID": month.trackerSeat.id,
+    "Source Key": month.trackerSeat.sourceKey,
+    "Seat ID": month.trackerSeat.seatId,
+    Name: month.trackerSeat.inSeat ?? "",
+    Month: MONTH_NAMES[month.monthIndex] ?? "",
+    "Month Number": month.monthIndex + 1,
+    "Forecast Override Amount": month.forecastOverrideAmount,
+    "Forecast Included": month.forecastIncluded ? "true" : "false",
+  }))
+}
+
+export async function getTrackerOverrideExportRows(year: number) {
+  const trackingYear = await getOrCreateTrackingYear(year)
+  const overrides = await prisma.trackerOverride.findMany({
+    where: {
+      trackerSeat: {
+        trackingYearId: trackingYear.id,
+      },
+    },
+    include: {
+      trackerSeat: {
+        select: {
+          id: true,
+          sourceKey: true,
+          seatId: true,
+          inSeat: true,
+        },
+      },
+    },
+    orderBy: [
+      { trackerSeat: { seatId: "asc" } },
+      { trackerSeat: { inSeat: "asc" } },
+    ],
+  })
+
+  return overrides.map((override) => ({
+    "Tracker Seat ID": override.trackerSeat.id,
+    "Source Key": override.trackerSeat.sourceKey,
+    "Seat ID": override.trackerSeat.seatId,
+    Name: override.trackerSeat.inSeat ?? "",
+    Domain: override.domain,
+    "Sub-domain": override.subDomain,
+    Funding: override.funding,
+    Pillar: override.pillar,
+    "Budget Area ID": override.budgetAreaId,
+    "Cost Center": override.costCenter,
+    "Project Code": override.projectCode,
+    "Resource Type": override.resourceType,
+    RITM: override.ritm,
+    SOW: override.sow,
+    "Spend Plan ID": override.spendPlanId,
+    Status: override.status,
+    Allocation: override.allocation,
+    "Start Date": formatDateOnly(override.startDate),
+    "End Date": formatDateOnly(override.endDate),
+    Notes: override.notes,
+  }))
+}
+
 async function getStaffingTargets(activeYear: number) {
   const trackingYear = await getOrCreateTrackingYear(activeYear)
 
@@ -5375,6 +5484,59 @@ export async function resetTrackingYearDataset(
   }
 
   throw new Error("Unsupported dataset.")
+}
+
+export async function deleteTrackerOverridesForYear(
+  input: {
+    year: number
+  },
+  actor?: AuditActor
+) {
+  const trackingYear = await getOrCreateTrackingYear(input.year)
+  const overrides = await prisma.trackerOverride.findMany({
+    where: {
+      trackerSeat: {
+        trackingYearId: trackingYear.id,
+      },
+    },
+    select: {
+      id: true,
+      trackerSeatId: true,
+    },
+  })
+
+  if (overrides.length === 0) {
+    return { deletedCount: 0 }
+  }
+
+  await prisma.trackerOverride.deleteMany({
+    where: {
+      id: {
+        in: overrides.map((override) => override.id),
+      },
+    },
+  })
+
+  await Promise.all(
+    overrides.map((override) =>
+      writeAuditLog({
+        trackingYearId: trackingYear.id,
+        entityType: "TrackerOverride",
+        entityId: override.id,
+        action: "DELETE",
+        actor,
+        changes: [
+          {
+            field: "trackerSeatId",
+            oldValue: override.trackerSeatId,
+            newValue: null,
+          },
+        ],
+      })
+    )
+  )
+
+  return { deletedCount: overrides.length }
 }
 
 export async function updateTrackerSeat(

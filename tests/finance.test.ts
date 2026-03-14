@@ -1,7 +1,7 @@
 import test from "node:test"
 import assert from "node:assert/strict"
 import { parseCsv } from "@/lib/finance/csv"
-import { normalizeRosterVendor, parseNumber } from "@/lib/finance/imports"
+import { normalizeRosterVendor, parseDate, parseNumber } from "@/lib/finance/imports"
 import {
   buildCostAssumptionLookup,
   deriveSeatMetrics,
@@ -52,6 +52,12 @@ test("parseNumber supports parenthesized negatives from Excel exports", () => {
   assert.equal(parseNumber("(3.500.000)"), -3500000)
   assert.equal(parseNumber("(700.000)"), -700000)
   assert.equal(parseNumber("-"), null)
+})
+
+test("parseDate converts Excel serial dates and rejects implausible years", () => {
+  assert.equal(parseDate("45505")?.toISOString(), "2024-08-01T00:00:00.000Z")
+  assert.equal(parseDate("2026-03-14")?.toISOString(), "2026-03-14T00:00:00.000Z")
+  assert.equal(parseDate("99999"), null)
 })
 
 test("normalizeRosterVendor lets internal resource type override conflicting vendor", () => {

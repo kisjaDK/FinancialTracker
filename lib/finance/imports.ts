@@ -3,13 +3,14 @@ import {
   ImportStatus,
   SeatSourceType,
 } from "@/lib/generated/prisma/enums"
+import { MONTH_NAMES } from "@/lib/finance/constants"
 import type { AuditActor } from "@/lib/finance/audit"
 import { writeAuditLog } from "@/lib/finance/audit"
 import { buildCostAssumptionLookup, deriveSeatMetrics } from "@/lib/finance/derive"
 import type { SeatWithRelations } from "@/lib/finance/types"
 import { prisma } from "@/lib/prisma"
 import { parseCsv } from "@/lib/finance/csv"
-import { deriveTrackerSeatsForYear } from "@/lib/finance/queries"
+import { deriveTrackerSeatsForYear, updateTrackerSeat } from "@/lib/finance/queries"
 
 function requireAnyHeader(
   rows: Record<string, string>[],
@@ -45,13 +46,39 @@ export function parseNumber(value: string | undefined) {
   return Number.isFinite(result) ? result : null
 }
 
-function parseDate(value: string | undefined) {
+function isSupportedImportDate(date: Date) {
+  const year = date.getUTCFullYear()
+  return year >= 1900 && year <= 2100
+}
+
+function parseExcelSerialDate(value: number) {
+  if (!Number.isFinite(value) || value <= 0) {
+    return null
+  }
+
+  const excelEpochUtc = Date.UTC(1899, 11, 30)
+  const millisecondsPerDay = 24 * 60 * 60 * 1000
+  const date = new Date(excelEpochUtc + value * millisecondsPerDay)
+
+  return isSupportedImportDate(date) ? date : null
+}
+
+export function parseDate(value: string | undefined) {
   if (!value || value.trim().length === 0) {
     return null
   }
 
-  const parsed = new Date(value)
-  return Number.isNaN(parsed.getTime()) ? null : parsed
+  const trimmed = value.trim()
+  if (/^\d+(\.\d+)?$/.test(trimmed)) {
+    return parseExcelSerialDate(Number(trimmed))
+  }
+
+  const parsed = new Date(trimmed)
+  if (Number.isNaN(parsed.getTime())) {
+    return null
+  }
+
+  return isSupportedImportDate(parsed) ? parsed : null
 }
 
 async function getOrCreateTrackingYear(year: number) {
@@ -92,8 +119,131 @@ function csvHeaderValue(row: Record<string, string>, ...headers: string[]) {
   return ""
 }
 
+function hasAnyHeader(
+  rows: Record<string, string>[],
+  headers: string[]
+) {
+  const sample = rows[0] ?? {}
+  return headers.some((header) => header in sample)
+}
+
 function normalizeValue(value: string | null | undefined) {
   return value?.trim().toLowerCase() ?? ""
+}
+
+function parseBoolean(value: string | undefined) {
+  const normalized = normalizeValue(value)
+
+  if (!normalized) {
+    return null
+  }
+
+  if (["true", "yes", "1", "on"].includes(normalized)) {
+    return true
+  }
+
+  if (["false", "no", "0", "off"].includes(normalized)) {
+    return false
+  }
+
+  return null
+}
+
+function parseMonthIndex(row: Record<string, string>) {
+  const monthNumber = csvHeaderValue(row, "Month Number", "monthNumber").trim()
+  if (monthNumber) {
+    const parsed = Number(monthNumber)
+    if (Number.isInteger(parsed) && parsed >= 1 && parsed <= 12) {
+      return parsed - 1
+    }
+  }
+
+  const monthIndex = csvHeaderValue(row, "Month Index", "monthIndex").trim()
+  if (monthIndex) {
+    const parsed = Number(monthIndex)
+    if (Number.isInteger(parsed) && parsed >= 0 && parsed <= 11) {
+      return parsed
+    }
+  }
+
+  const monthLabel = normalizeValue(csvHeaderValue(row, "Month", "month"))
+  if (!monthLabel) {
+    return null
+  }
+
+  const matchedIndex = MONTH_NAMES.findIndex(
+    (candidate) =>
+      normalizeValue(candidate) === monthLabel ||
+      normalizeValue(candidate.slice(0, 3)) === monthLabel
+  )
+
+  return matchedIndex >= 0 ? matchedIndex : null
+}
+
+async function buildTrackerSeatLookup(year: number) {
+  const trackingYear = await getOrCreateTrackingYear(year)
+  const seats = await prisma.trackerSeat.findMany({
+    where: {
+      trackingYearId: trackingYear.id,
+    },
+    select: {
+      id: true,
+      sourceKey: true,
+      seatId: true,
+    },
+  })
+
+  return {
+    byId: new Map(seats.map((seat) => [seat.id, seat])),
+    bySourceKey: new Map(seats.map((seat) => [seat.sourceKey, seat])),
+    bySeatId: seats.reduce<Map<string, typeof seats>>((map, seat) => {
+      const current = map.get(seat.seatId) ?? []
+      current.push(seat)
+      map.set(seat.seatId, current)
+      return map
+    }, new Map()),
+  }
+}
+
+function resolveTrackerSeat(
+  row: Record<string, string>,
+  lookup: Awaited<ReturnType<typeof buildTrackerSeatLookup>>
+) {
+  const trackerSeatId = csvHeaderValue(row, "Tracker Seat ID", "trackerSeatId").trim()
+  if (trackerSeatId) {
+    const seat = lookup.byId.get(trackerSeatId)
+    if (!seat) {
+      throw new Error(`Unknown tracker seat id: ${trackerSeatId}`)
+    }
+
+    return seat
+  }
+
+  const sourceKey = csvHeaderValue(row, "Source Key", "sourceKey").trim()
+  if (sourceKey) {
+    const seat = lookup.bySourceKey.get(sourceKey)
+    if (!seat) {
+      throw new Error(`Unknown source key: ${sourceKey}`)
+    }
+
+    return seat
+  }
+
+  const seatId = csvHeaderValue(row, "Seat ID", "seatId").trim()
+  if (!seatId) {
+    throw new Error("Each row must include Tracker Seat ID, Source Key, or Seat ID.")
+  }
+
+  const matches = lookup.bySeatId.get(seatId) ?? []
+  if (matches.length === 0) {
+    throw new Error(`Unknown seat id: ${seatId}`)
+  }
+
+  if (matches.length > 1) {
+    throw new Error(`Seat ID ${seatId} is ambiguous. Use Tracker Seat ID or Source Key instead.`)
+  }
+
+  return matches[0]
 }
 
 function normalizeSubDomainLabel(value: string | null | undefined) {
@@ -891,6 +1041,227 @@ export async function importDepartmentMappingsCsv(
   )
 
   return { importedCount: uniqueRows.length }
+}
+
+export async function importForecastOverridesCsv(
+  year: number,
+  content: string,
+  actor?: AuditActor
+) {
+  const rows = parseCsv(content)
+  if (rows.length === 0) {
+    throw new Error("Forecast override file is empty.")
+  }
+
+  requireAnyHeader(rows, [
+    {
+      label: "Seat reference",
+      headers: ["Tracker Seat ID", "Source Key", "Seat ID", "trackerSeatId", "sourceKey", "seatId"],
+    },
+    {
+      label: "Month",
+      headers: ["Month Number", "Month Index", "Month", "monthNumber", "monthIndex", "month"],
+    },
+    {
+      label: "Forecast override data",
+      headers: [
+        "Forecast Override Amount",
+        "Forecast Included",
+        "forecastOverrideAmount",
+        "forecastIncluded",
+      ],
+    },
+  ])
+
+  const hasOverrideAmountHeader = hasAnyHeader(rows, [
+    "Forecast Override Amount",
+    "forecastOverrideAmount",
+  ])
+  const hasForecastIncludedHeader = hasAnyHeader(rows, [
+    "Forecast Included",
+    "forecastIncluded",
+  ])
+
+  const normalizedRows = rows.filter((row) => {
+    return (
+      csvHeaderValue(row, "Tracker Seat ID", "Source Key", "Seat ID", "trackerSeatId", "sourceKey", "seatId")
+        .trim()
+        .length > 0
+    )
+  })
+
+  if (normalizedRows.length === 0) {
+    throw new Error("Forecast override file does not contain any importable rows.")
+  }
+
+  const seatLookup = await buildTrackerSeatLookup(year)
+
+  for (const row of normalizedRows) {
+    const seat = resolveTrackerSeat(row, seatLookup)
+    const monthIndex = parseMonthIndex(row)
+    if (monthIndex === null) {
+      throw new Error(`Invalid month for seat ${seat.seatId}.`)
+    }
+
+    const overrideAmountRaw = csvHeaderValue(
+      row,
+      "Forecast Override Amount",
+      "forecastOverrideAmount"
+    )
+    const overrideAmount = overrideAmountRaw.trim() ? parseNumber(overrideAmountRaw) : null
+    if (overrideAmountRaw.trim() && overrideAmount === null) {
+      throw new Error(`Invalid forecast override amount for seat ${seat.seatId}, ${MONTH_NAMES[monthIndex]}.`)
+    }
+
+    const forecastIncludedRaw = csvHeaderValue(
+      row,
+      "Forecast Included",
+      "forecastIncluded"
+    )
+    const forecastIncluded = parseBoolean(forecastIncludedRaw)
+    if (forecastIncludedRaw.trim() && forecastIncluded === null) {
+      throw new Error(`Invalid forecast included value for seat ${seat.seatId}, ${MONTH_NAMES[monthIndex]}.`)
+    }
+
+    await updateTrackerSeat(
+      seat.id,
+      {
+        monthIndex,
+        forecastOverrideAmount: hasOverrideAmountHeader ? overrideAmount : undefined,
+        forecastIncluded: hasForecastIncludedHeader ? (forecastIncluded ?? true) : undefined,
+      },
+      actor
+    )
+  }
+
+  return { importedCount: normalizedRows.length }
+}
+
+export async function importTrackerOverridesCsv(
+  year: number,
+  content: string,
+  actor?: AuditActor
+) {
+  const rows = parseCsv(content)
+  if (rows.length === 0) {
+    throw new Error("Tracker override file is empty.")
+  }
+
+  requireAnyHeader(rows, [
+    {
+      label: "Seat reference",
+      headers: ["Tracker Seat ID", "Source Key", "Seat ID", "trackerSeatId", "sourceKey", "seatId"],
+    },
+    {
+      label: "Tracker override fields",
+      headers: [
+        "Domain",
+        "Sub-domain",
+        "Funding",
+        "Pillar",
+        "Budget Area ID",
+        "Cost Center",
+        "Project Code",
+        "Resource Type",
+        "RITM",
+        "SOW",
+        "Spend Plan ID",
+        "Status",
+        "Allocation",
+        "Start Date",
+        "End Date",
+        "Notes",
+      ],
+    },
+  ])
+
+  const sample = rows[0] ?? {}
+  const hasField = (...headers: string[]) => headers.some((header) => header in sample)
+  const normalizedRows = rows.filter((row) => {
+    const hasSeatReference = csvHeaderValue(
+      row,
+      "Tracker Seat ID",
+      "Source Key",
+      "Seat ID",
+      "trackerSeatId",
+      "sourceKey",
+      "seatId"
+    ).trim().length > 0
+    const hasOverrideData = [
+      "Domain",
+      "Sub-domain",
+      "Funding",
+      "Pillar",
+      "Budget Area ID",
+      "Cost Center",
+      "Project Code",
+      "Resource Type",
+      "RITM",
+      "SOW",
+      "Spend Plan ID",
+      "Status",
+      "Allocation",
+      "Start Date",
+      "End Date",
+      "Notes",
+    ].some((header) => csvHeaderValue(row, header).trim().length > 0)
+
+    return hasSeatReference && hasOverrideData
+  })
+
+  if (normalizedRows.length === 0) {
+    throw new Error("Tracker override file does not contain any importable rows.")
+  }
+
+  const seatLookup = await buildTrackerSeatLookup(year)
+
+  for (const row of normalizedRows) {
+    const seat = resolveTrackerSeat(row, seatLookup)
+    const allocationRaw = csvHeaderValue(row, "Allocation", "allocation")
+    const allocation = allocationRaw.trim() ? parseNumber(allocationRaw) : null
+    if (allocationRaw.trim() && allocation === null) {
+      throw new Error(`Invalid allocation for seat ${seat.seatId}.`)
+    }
+
+    const startDateRaw = csvHeaderValue(row, "Start Date", "startDate")
+    const startDate = startDateRaw.trim() ? parseDate(startDateRaw) : null
+    if (startDateRaw.trim() && startDate === null) {
+      throw new Error(`Invalid start date for seat ${seat.seatId}.`)
+    }
+
+    const endDateRaw = csvHeaderValue(row, "End Date", "endDate")
+    const endDate = endDateRaw.trim() ? parseDate(endDateRaw) : null
+    if (endDateRaw.trim() && endDate === null) {
+      throw new Error(`Invalid end date for seat ${seat.seatId}.`)
+    }
+
+    await updateTrackerSeat(
+      seat.id,
+      {
+        override: {
+          domain: hasField("Domain", "domain") ? csvHeaderValue(row, "Domain", "domain").trim() || null : undefined,
+          subDomain: hasField("Sub-domain", "SubDomain", "subDomain") ? csvHeaderValue(row, "Sub-domain", "SubDomain", "subDomain").trim() || null : undefined,
+          funding: hasField("Funding", "funding") ? csvHeaderValue(row, "Funding", "funding").trim() || null : undefined,
+          pillar: hasField("Pillar", "pillar") ? csvHeaderValue(row, "Pillar", "pillar").trim() || null : undefined,
+          budgetAreaId: hasField("Budget Area ID", "budgetAreaId") ? csvHeaderValue(row, "Budget Area ID", "budgetAreaId").trim() || null : undefined,
+          costCenter: hasField("Cost Center", "costCenter") ? csvHeaderValue(row, "Cost Center", "costCenter").trim() || null : undefined,
+          projectCode: hasField("Project Code", "projectCode") ? csvHeaderValue(row, "Project Code", "projectCode").trim() || null : undefined,
+          resourceType: hasField("Resource Type", "resourceType") ? csvHeaderValue(row, "Resource Type", "resourceType").trim() || null : undefined,
+          ritm: hasField("RITM", "ritm") ? csvHeaderValue(row, "RITM", "ritm").trim() || null : undefined,
+          sow: hasField("SOW", "sow") ? csvHeaderValue(row, "SOW", "sow").trim() || null : undefined,
+          spendPlanId: hasField("Spend Plan ID", "spendPlanId") ? csvHeaderValue(row, "Spend Plan ID", "spendPlanId").trim() || null : undefined,
+          status: hasField("Status", "status") ? csvHeaderValue(row, "Status", "status").trim() || null : undefined,
+          allocation: hasField("Allocation", "allocation") ? allocation : undefined,
+          startDate: hasField("Start Date", "startDate") ? startDate : undefined,
+          endDate: hasField("End Date", "endDate") ? endDate : undefined,
+          notes: hasField("Notes", "notes") ? csvHeaderValue(row, "Notes", "notes").trim() || null : undefined,
+        },
+      },
+      actor
+    )
+  }
+
+  return { importedCount: normalizedRows.length }
 }
 
 export async function importCostAssumptionsCsv(

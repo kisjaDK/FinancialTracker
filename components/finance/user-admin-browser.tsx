@@ -4,7 +4,7 @@ import { useMemo, useState } from "react"
 import { Trash2 } from "lucide-react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
-import { FinanceHeader } from "@/components/finance/header"
+import { FinancePageIntro } from "@/components/finance/page-intro"
 import { Button } from "@/components/ui/button"
 import {
   Card,
@@ -33,10 +33,6 @@ type UserRecord = {
 }
 
 type UserAdminBrowserProps = {
-  userName: string
-  userEmail: string
-  userRole: AppRole
-  activeYear: number
   users: UserRecord[]
   scopeOptions: AccessScope[]
   allowedRoles: AppRole[]
@@ -75,10 +71,6 @@ async function fetchJson(input: RequestInfo, init?: RequestInit) {
 }
 
 export function UserAdminBrowser({
-  userName,
-  userEmail,
-  userRole,
-  activeYear,
   users,
   scopeOptions,
   allowedRoles,
@@ -203,18 +195,11 @@ export function UserAdminBrowser({
   }
 
   return (
-    <div className="min-h-screen brand-page-shell">
-      <FinanceHeader
-        title="User Admin"
-        subtitle="Assign members, guests, and delegated admins to the finance tracker."
-        userName={userName}
-        userEmail={userEmail}
-        userRole={userRole}
-        activeYear={activeYear}
-        currentPath="/user-admin"
-      />
-
-      <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-6 py-8">
+      <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 py-2">
+        <FinancePageIntro
+          title="User Admin"
+          subtitle="Assign members, guests, and delegated admins to the finance tracker."
+        />
         <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
           <Card className="w-full brand-card lg:w-[30rem] lg:flex-none">
             <CardHeader>
@@ -444,6 +429,5 @@ export function UserAdminBrowser({
           </Card>
         </div>
       </main>
-    </div>
   )
 }

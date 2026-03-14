@@ -3,7 +3,7 @@
 import { useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
-import { FinanceHeader } from "@/components/finance/header"
+import { FinancePageIntro } from "@/components/finance/page-intro"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -26,7 +26,6 @@ import { Input } from "@/components/ui/input"
 import { serializeCsv } from "@/lib/finance/csv"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { formatNumber } from "@/lib/finance/format"
-import type { AppRole } from "@/lib/roles"
 
 type TrackingYearOption = {
   id: string
@@ -65,9 +64,6 @@ type ResetDataset =
   | "internal-costs"
 
 type AdminBrowserProps = {
-  userName: string
-  userEmail: string
-  userRole: AppRole
   activeYear: number
   trackingYears: TrackingYearOption[]
   statuses: StatusDefinition[]
@@ -103,9 +99,6 @@ function toDateInputValue(value: Date) {
 }
 
 export function AdminBrowser({
-  userName,
-  userEmail,
-  userRole,
   activeYear,
   trackingYears,
   statuses,
@@ -114,6 +107,8 @@ export function AdminBrowser({
 }: AdminBrowserProps) {
   const router = useRouter()
   const mappingImportRef = useRef<HTMLInputElement | null>(null)
+  const forecastOverrideImportRef = useRef<HTMLInputElement | null>(null)
+  const trackerOverrideImportRef = useRef<HTMLInputElement | null>(null)
   const [editingMappingId, setEditingMappingId] = useState<string | null>(null)
   const [mappingValues, setMappingValues] = useState({
     sourceCode: "",
@@ -126,6 +121,10 @@ export function AdminBrowser({
   const [isDeletingMapping, setIsDeletingMapping] = useState(false)
   const [pendingReset, setPendingReset] = useState<ResetDataset | null>(null)
   const [isResetting, setIsResetting] = useState(false)
+  const [pendingOverrideDelete, setPendingOverrideDelete] = useState<
+    "forecast-overrides" | "tracker-overrides" | null
+  >(null)
+  const [isDeletingOverrideDataset, setIsDeletingOverrideDataset] = useState(false)
   const [fxValues, setFxValues] = useState({
     currency: "EUR" as "DKK" | "EUR" | "USD",
     rateToDkk: "",
@@ -253,6 +252,77 @@ export function AdminBrowser({
     }
   }
 
+  async function downloadAdminCsv(endpoint: string, fileName: string) {
+    try {
+      const response = await fetch(`${endpoint}?year=${activeYear}`)
+      if (!response.ok) {
+        const body = await response.json()
+        throw new Error(body.error || "Export failed")
+      }
+
+      downloadCsv(fileName, await response.text())
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Export failed")
+    }
+  }
+
+  async function importOverrideFile(
+    endpoint: string,
+    file: File,
+    inputRef: React.RefObject<HTMLInputElement | null>,
+    successLabel: string
+  ) {
+    const formData = new FormData()
+    formData.append("year", String(activeYear))
+    formData.append("file", file)
+
+    try {
+      const body = await fetchJson(endpoint, {
+        method: "POST",
+        body: formData,
+      })
+      toast.success(
+        `${body.importedCount} ${successLabel} row${body.importedCount === 1 ? "" : "s"} imported`
+      )
+      if (inputRef.current) {
+        inputRef.current.value = ""
+      }
+      router.refresh()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Import failed")
+    }
+  }
+
+  async function deleteOverrideDataset(dataset: "forecast-overrides" | "tracker-overrides") {
+    setIsDeletingOverrideDataset(true)
+
+    try {
+      const body = await fetchJson(
+        dataset === "forecast-overrides"
+          ? "/api/admin/forecast-overrides"
+          : "/api/admin/tracker-overrides",
+        {
+          method: "DELETE",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            year: activeYear,
+          }),
+        }
+      )
+      toast.success(
+        `${body.deletedCount} ${dataset === "forecast-overrides" ? "forecast" : "tracker"} override${body.deletedCount === 1 ? "" : "s"} deleted`
+      )
+      setPendingOverrideDelete(null)
+      router.refresh()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Delete failed")
+    } finally {
+      setIsDeletingOverrideDataset(false)
+    }
+  }
+
   async function resetDataset(dataset: ResetDataset) {
     setIsResetting(true)
 
@@ -278,18 +348,11 @@ export function AdminBrowser({
   }
 
   return (
-    <div className="min-h-screen brand-page-shell">
-      <FinanceHeader
-        title="Admin"
-        subtitle="Maintain tracker configuration, hierarchy mappings, and exchange rates."
-        userName={userName}
-        userEmail={userEmail}
-        userRole={userRole}
-        activeYear={activeYear}
-        currentPath="/admin"
-      />
-
-      <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-6 py-8">
+      <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 py-2">
+        <FinancePageIntro
+          title="Admin"
+          subtitle="Maintain tracker configuration, hierarchy mappings, and exchange rates."
+        />
         <AlertDialog
           open={Boolean(pendingDelete)}
           onOpenChange={(open) => {
@@ -356,6 +419,42 @@ export function AdminBrowser({
           </AlertDialogContent>
         </AlertDialog>
 
+        <AlertDialog
+          open={Boolean(pendingOverrideDelete)}
+          onOpenChange={(open) => {
+            if (!open) {
+              setPendingOverrideDelete(null)
+            }
+          }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete override dataset?</AlertDialogTitle>
+              <AlertDialogDescription>
+                {pendingOverrideDelete === "forecast-overrides"
+                  ? `This will permanently clear all forecast overrides for ${activeYear}.`
+                  : pendingOverrideDelete === "tracker-overrides"
+                    ? `This will permanently clear all tracker overrides for ${activeYear}.`
+                    : "This action cannot be undone."}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={isDeletingOverrideDataset}>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                variant="destructive"
+                disabled={isDeletingOverrideDataset}
+                onClick={() => {
+                  if (pendingOverrideDelete) {
+                    void deleteOverrideDataset(pendingOverrideDelete)
+                  }
+                }}
+              >
+                {isDeletingOverrideDataset ? "Deleting..." : "Delete"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+
         <Card className="brand-card">
           <CardHeader>
             <CardTitle>Year</CardTitle>
@@ -403,6 +502,118 @@ export function AdminBrowser({
                 {item.label}
               </Button>
             ))}
+          </CardContent>
+        </Card>
+
+        <Card className="brand-card">
+          <CardHeader>
+            <CardTitle>Override Backups</CardTitle>
+            <CardDescription>
+              Export, import, or clear forecast overrides and tracker overrides independently.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-4 xl:grid-cols-2">
+            <div className="rounded-xl border border-dashed border-border p-4">
+              <div className="space-y-1">
+                <p className="text-sm font-medium">Forecast Overrides</p>
+                <p className="text-xs text-muted-foreground">
+                  Month-level forecast override amounts and forecast on/off flags.
+                </p>
+              </div>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <Button
+                  variant="outline"
+                  onClick={() =>
+                    void downloadAdminCsv(
+                      "/api/admin/forecast-overrides",
+                      `forecast-overrides-${activeYear}.csv`
+                    )
+                  }
+                >
+                  Export CSV
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => forecastOverrideImportRef.current?.click()}
+                >
+                  Import CSV
+                </Button>
+                <Button
+                  variant="destructive"
+                  onClick={() => setPendingOverrideDelete("forecast-overrides")}
+                >
+                  Delete All
+                </Button>
+              </div>
+              <Input
+                ref={forecastOverrideImportRef}
+                type="file"
+                accept=".csv,text/csv"
+                className="mt-3"
+                onChange={(event) => {
+                  const file = event.target.files?.[0]
+                  if (file) {
+                    void importOverrideFile(
+                      "/api/admin/forecast-overrides",
+                      file,
+                      forecastOverrideImportRef,
+                      "forecast override"
+                    )
+                  }
+                }}
+              />
+            </div>
+
+            <div className="rounded-xl border border-dashed border-border p-4">
+              <div className="space-y-1">
+                <p className="text-sm font-medium">Tracker Overrides</p>
+                <p className="text-xs text-muted-foreground">
+                  Seat-level tracker field overrides such as domain, status, allocation, and dates.
+                </p>
+              </div>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <Button
+                  variant="outline"
+                  onClick={() =>
+                    void downloadAdminCsv(
+                      "/api/admin/tracker-overrides",
+                      `tracker-overrides-${activeYear}.csv`
+                    )
+                  }
+                >
+                  Export CSV
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => trackerOverrideImportRef.current?.click()}
+                >
+                  Import CSV
+                </Button>
+                <Button
+                  variant="destructive"
+                  onClick={() => setPendingOverrideDelete("tracker-overrides")}
+                >
+                  Delete All
+                </Button>
+              </div>
+              <Input
+                ref={trackerOverrideImportRef}
+                type="file"
+                accept=".csv,text/csv"
+                className="mt-3"
+                onChange={(event) => {
+                  const file = event.target.files?.[0]
+                  if (file) {
+                    void importOverrideFile(
+                      "/api/admin/tracker-overrides",
+                      file,
+                      trackerOverrideImportRef,
+                      "tracker override"
+                    )
+                  }
+                }}
+              />
+            </div>
           </CardContent>
         </Card>
 
@@ -770,6 +981,5 @@ export function AdminBrowser({
           </Card>
         </section>
       </main>
-    </div>
   )
 }

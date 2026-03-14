@@ -4,7 +4,7 @@ import { useRef, useState, useTransition } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
-import { FinanceHeader } from "@/components/finance/header"
+import { FinancePageIntro } from "@/components/finance/page-intro"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -41,7 +41,6 @@ import type {
   BudgetMovementImportBatchView,
   BudgetMovementView,
 } from "@/lib/finance/types"
-import type { AppRole } from "@/lib/roles"
 
 type TrackingYearOption = {
   id: string
@@ -50,9 +49,6 @@ type TrackingYearOption = {
 }
 
 type BudgetMovementsBrowserProps = {
-  userName: string
-  userEmail: string
-  userRole: AppRole
   activeYear: number
   trackingYears: TrackingYearOption[]
   filters: BudgetMovementFilters
@@ -157,9 +153,6 @@ function buildFormValues(movement: BudgetMovementView): MovementFormValues {
 }
 
 export function BudgetMovementsBrowser({
-  userName,
-  userEmail,
-  userRole,
   activeYear,
   trackingYears,
   filters,
@@ -281,18 +274,11 @@ export function BudgetMovementsBrowser({
   }
 
   return (
-    <div className="min-h-screen brand-page-shell">
-      <FinanceHeader
-        title="Budget Movements"
-        subtitle="Import CSV batches, maintain manual adjustments, and review movement rows by hierarchy and notes."
-        userName={userName}
-        userEmail={userEmail}
-        userRole={userRole}
-        activeYear={activeYear}
-        currentPath="/budget-movements"
-      />
-
-      <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-6 py-8">
+      <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 py-2">
+        <FinancePageIntro
+          title="Budget Movements"
+          subtitle="Import CSV batches, maintain manual adjustments, and review movement rows by hierarchy and notes."
+        />
         <AlertDialog
           open={Boolean(pendingDelete)}
           onOpenChange={(open) => {
@@ -768,6 +754,5 @@ export function BudgetMovementsBrowser({
           </CardContent>
         </Card>
       </main>
-    </div>
   )
 }
