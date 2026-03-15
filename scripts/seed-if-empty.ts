@@ -1,5 +1,5 @@
 import "dotenv/config"
-import { PrismaClient } from "../lib/generated/prisma/client"
+import { PrismaClient } from "@prisma/client"
 import { disconnectSeedDatabase, seedDatabase } from "../prisma/seed"
 
 const prisma = new PrismaClient()

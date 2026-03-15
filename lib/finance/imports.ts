@@ -2,7 +2,7 @@ import {
   ExternalActualSourceKind,
   ImportStatus,
   SeatSourceType,
-} from "@/lib/generated/prisma/enums"
+} from "@prisma/client"
 import { MONTH_NAMES } from "@/lib/finance/constants"
 import type { AuditActor } from "@/lib/finance/audit"
 import { writeAuditLog } from "@/lib/finance/audit"

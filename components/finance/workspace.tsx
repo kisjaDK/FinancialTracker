@@ -3,20 +3,12 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState, useTransition } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Check, ChevronsUpDown, Eye, FilePenLine, PenLine } from "lucide-react";
+import { Eye, PenLine } from "lucide-react";
 import { toast } from "sonner";
 import { MultiSelectFilter } from "@/components/finance/multi-select-filter";
 import { FinancePageIntro } from "@/components/finance/page-intro";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Command,
-  CommandEmpty,
-  CommandGroup,
-  CommandInput,
-  CommandItem,
-  CommandList,
-} from "@/components/ui/command";
 import {
   Card,
   CardContent,
@@ -31,13 +23,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
 import { Switch } from "@/components/ui/switch";
 import {
   Table,
@@ -282,7 +268,6 @@ export function FinanceWorkspace({
 }: WorkspaceProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const canEditTracker = userRole !== "GUEST";
   const [isPending, startTransition] = useTransition();
   const initialSelectedAreaId = selectedAreaId ?? summary[0]?.id ?? null;
   const [isAreaLoading, setIsAreaLoading] = useState(
@@ -295,23 +280,10 @@ export function FinanceWorkspace({
   const [selectedSeatId, setSelectedSeatId] = useState(seats[0]?.id ?? "");
   const [showSpentQuarterly, setShowSpentQuarterly] = useState(false);
   const [showForecastQuarterly, setShowForecastQuarterly] = useState(false);
-  const [pillarPickerOpen, setPillarPickerOpen] = useState(false);
   const [openSeatsOnlyDraft, setOpenSeatsOnlyDraft] = useState(openSeatsOnly);
   const [detailDialogSeatId, setDetailDialogSeatId] = useState<string | null>(
     null,
   );
-  const [overrideDialogSeatId, setOverrideDialogSeatId] = useState<
-    string | null
-  >(null);
-  const [overrideValues, setOverrideValues] = useState(() => ({
-    budgetAreaId: "",
-    spendPlanId: "",
-    ritm: "",
-    sow: "",
-    status: "",
-    allocation: "",
-    notes: "",
-  }));
 
   const summaryTotals = useMemo(
     () =>
@@ -537,9 +509,6 @@ export function FinanceWorkspace({
     sortedSeats.find((seat) => seat.id === selectedSeatId) ?? sortedSeats[0];
   const detailDialogSeat =
     sortedSeats.find((seat) => seat.id === detailDialogSeatId) ?? selectedSeat;
-  const overrideDialogSeat =
-    sortedSeats.find((seat) => seat.id === overrideDialogSeatId) ??
-    selectedSeat;
   const listedSeatTotals = useMemo(
     () =>
       sortedSeats.reduce(
@@ -553,27 +522,6 @@ export function FinanceWorkspace({
         },
       ),
     [sortedSeats],
-  );
-  const pillarOptions = useMemo(
-    () =>
-      budgetAreas
-        .map((area) => ({
-          id: area.id,
-          label:
-            area.pillar ||
-            area.subDomain ||
-            (!isCodeLikeAreaLabel(area.displayName)
-              ? area.displayName
-              : null) ||
-            area.domain ||
-            "Unnamed pillar",
-          detail: [area.projectCode, area.costCenter]
-            .filter(Boolean)
-            .join(" · "),
-          area,
-        }))
-        .sort((left, right) => left.label.localeCompare(right.label)),
-    [budgetAreas],
   );
   const effectiveTrackerTeamOptions = useMemo(
     () =>
@@ -590,60 +538,15 @@ export function FinanceWorkspace({
           ),
     [areaSeats, trackerTeamOptions],
   );
-  const selectedOverrideArea =
-    pillarOptions.find((option) => option.id === overrideValues.budgetAreaId)
-      ?.area ?? null;
-
-  function buildOverrideValuesFromSeat(seat?: SeatRow) {
-    if (!seat) {
-      return {
-        budgetAreaId: "",
-        spendPlanId: "",
-        ritm: "",
-        sow: "",
-        status: "",
-        allocation: "",
-        notes: "",
-      };
-    }
-
-    return {
-      budgetAreaId: seat.budgetAreaId || "",
-      spendPlanId: seat.spendPlanId || "",
-      ritm: seat.ritm || "",
-      sow: seat.sow || "",
-      status: seat.status || "",
-      allocation:
-        typeof seat.allocation === "number" && Number.isFinite(seat.allocation)
-          ? String(seat.allocation)
-          : "",
-      notes: seat.notes || "",
-    };
-  }
-
-  function resetOverrideValues() {
-    setOverrideValues(buildOverrideValuesFromSeat(selectedSeat));
-  }
 
   function selectSeat(seatId: string) {
     setSelectedSeatId(seatId);
-    const seat = sortedSeats.find((entry) => entry.id === seatId);
-    setOverrideValues(buildOverrideValuesFromSeat(seat));
   }
 
   function openDetailDialog(seatId: string) {
     selectSeat(seatId);
     setDetailDialogSeatId(seatId);
   }
-
-  function openOverrideDialog(seatId: string) {
-    selectSeat(seatId);
-    setOverrideDialogSeatId(seatId);
-  }
-
-  useEffect(() => {
-    setOverrideValues(buildOverrideValuesFromSeat(selectedSeat));
-  }, [selectedSeatId, selectedSeat]);
 
   function updateSeatSort(field: SeatSortField) {
     const nextDirection =
@@ -756,7 +659,6 @@ export function FinanceWorkspace({
     setActiveSummaryAreaId(areaId);
     setAreaSeats([]);
     setSelectedSeatId("");
-    resetOverrideValues();
     setOpenSeatsOnlyDraft(false);
     setIsAreaLoading(true);
 
@@ -1473,20 +1375,6 @@ export function FinanceWorkspace({
                               >
                                 <Eye className="size-4" />
                               </Button>
-                              {canEditTracker ? (
-                                <Button
-                                  type="button"
-                                  variant="outline"
-                                  size="icon-sm"
-                                  aria-label={`Edit tracker override for ${seat.seatId}`}
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    openOverrideDialog(seat.id);
-                                  }}
-                                >
-                                  <FilePenLine className="size-4" />
-                                </Button>
-                              ) : null}
                             </div>
                           </TableCell>
                         </TableRow>
@@ -1602,292 +1490,6 @@ export function FinanceWorkspace({
           )}
         </DialogContent>
       </Dialog>
-
-      {canEditTracker ? (
-        <Dialog
-          open={overrideDialogSeatId !== null}
-          onOpenChange={(open) => {
-            if (!open) {
-              setOverrideDialogSeatId(null);
-            }
-          }}
-        >
-          <DialogContent className="max-h-[85vh] max-w-3xl overflow-hidden">
-            <DialogHeader>
-              <DialogTitle>Tracker Overrides</DialogTitle>
-              <DialogDescription>
-                Controlled manual edits for mapping and finance metadata.
-              </DialogDescription>
-            </DialogHeader>
-            <div className="space-y-3 overflow-y-auto pr-1">
-              <div className="space-y-2">
-                <Label htmlFor="override-seat">Seat</Label>
-                <select
-                  id="override-seat"
-                  className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
-                  value={overrideDialogSeat?.id || selectedSeatId}
-                  onChange={(event) => openOverrideDialog(event.target.value)}
-                >
-                  {seats.map((seat) => (
-                    <option key={seat.id} value={seat.id}>
-                      {seat.seatId} · {seat.inSeat || "Unassigned"}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="override-pillar">Pillar</Label>
-                <Popover
-                  open={pillarPickerOpen}
-                  onOpenChange={setPillarPickerOpen}
-                >
-                  <PopoverTrigger asChild>
-                    <Button
-                      id="override-pillar"
-                      variant="outline"
-                      role="combobox"
-                      aria-expanded={pillarPickerOpen}
-                      className="w-full justify-between"
-                    >
-                      <span className="truncate text-left">
-                        {selectedOverrideArea
-                          ? selectedOverrideArea.displayName ||
-                            selectedOverrideArea.pillar ||
-                            selectedOverrideArea.subDomain ||
-                            selectedOverrideArea.projectCode
-                          : "Keep derived mapping"}
-                      </span>
-                      <ChevronsUpDown className="ml-2 size-4 shrink-0 opacity-50" />
-                    </Button>
-                  </PopoverTrigger>
-                  <PopoverContent className="w-[420px] p-0" align="start">
-                    <Command>
-                      <CommandInput placeholder="Find pillar..." />
-                      <CommandList>
-                        <CommandEmpty>No pillar found.</CommandEmpty>
-                        <CommandGroup>
-                          <CommandItem
-                            value="keep-derived-mapping"
-                            onSelect={() => {
-                              setOverrideValues((current) => ({
-                                ...current,
-                                budgetAreaId: "",
-                              }));
-                              setPillarPickerOpen(false);
-                            }}
-                          >
-                            <Check
-                              className={cn(
-                                "mr-2 size-4",
-                                !overrideValues.budgetAreaId
-                                  ? "opacity-100"
-                                  : "opacity-0",
-                              )}
-                            />
-                            Keep derived mapping
-                          </CommandItem>
-                          {pillarOptions.map((option) => (
-                            <CommandItem
-                              key={option.id}
-                              value={`${option.label} ${option.detail}`}
-                              onSelect={() => {
-                                setOverrideValues((current) => ({
-                                  ...current,
-                                  budgetAreaId: option.id,
-                                }));
-                                setPillarPickerOpen(false);
-                              }}
-                            >
-                              <Check
-                                className={cn(
-                                  "mr-2 size-4",
-                                  overrideValues.budgetAreaId === option.id
-                                    ? "opacity-100"
-                                    : "opacity-0",
-                                )}
-                              />
-                              <div className="flex min-w-0 flex-col">
-                                <span className="truncate font-medium">
-                                  {option.label}
-                                </span>
-                                <span className="text-muted-foreground text-xs">
-                                  {option.detail}
-                                </span>
-                              </div>
-                            </CommandItem>
-                          ))}
-                        </CommandGroup>
-                      </CommandList>
-                    </Command>
-                  </PopoverContent>
-                </Popover>
-              </div>
-              {selectedOverrideArea ? (
-                <div className="grid gap-3 rounded-xl border border-dashed border-border px-4 py-3 text-sm md:grid-cols-4">
-                  <div>
-                    <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
-                      Domain
-                    </div>
-                    <div className="mt-1 font-medium">
-                      {selectedOverrideArea.domain || "Unmapped"}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
-                      Sub-domain
-                    </div>
-                    <div className="mt-1 font-medium">
-                      {selectedOverrideArea.subDomain || "Unmapped"}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
-                      Cost Center
-                    </div>
-                    <div className="mt-1 font-medium">
-                      {selectedOverrideArea.costCenter}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
-                      Project Code
-                    </div>
-                    <div className="mt-1 font-medium">
-                      {selectedOverrideArea.projectCode}
-                    </div>
-                  </div>
-                </div>
-              ) : null}
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-2">
-                  <Label htmlFor="spend-plan">Spend Plan ID</Label>
-                  <Input
-                    id="spend-plan"
-                    value={overrideValues.spendPlanId}
-                    onChange={(event) =>
-                      setOverrideValues((current) => ({
-                        ...current,
-                        spendPlanId: event.target.value,
-                      }))
-                    }
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="ritm">RITM</Label>
-                  <Input
-                    id="ritm"
-                    value={overrideValues.ritm}
-                    onChange={(event) =>
-                      setOverrideValues((current) => ({
-                        ...current,
-                        ritm: event.target.value,
-                      }))
-                    }
-                  />
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-2">
-                  <Label htmlFor="sow">SOW</Label>
-                  <Input
-                    id="sow"
-                    value={overrideValues.sow}
-                    onChange={(event) =>
-                      setOverrideValues((current) => ({
-                        ...current,
-                        sow: event.target.value,
-                      }))
-                    }
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="override-status">Status</Label>
-                  <select
-                    id="override-status"
-                    className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
-                    value={overrideValues.status}
-                    onChange={(event) =>
-                      setOverrideValues((current) => ({
-                        ...current,
-                        status: event.target.value,
-                      }))
-                    }
-                  >
-                    <option value="">Keep current status</option>
-                    {statusDefinitions.map((status) => (
-                      <option key={status.id} value={status.label}>
-                        {status.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-2">
-                  <Label htmlFor="override-allocation">Allocation</Label>
-                  <Input
-                    id="override-allocation"
-                    value={overrideValues.allocation}
-                    onChange={(event) =>
-                      setOverrideValues((current) => ({
-                        ...current,
-                        allocation: event.target.value,
-                      }))
-                    }
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="override-notes">Notes</Label>
-                  <Input
-                    id="override-notes"
-                    value={overrideValues.notes}
-                    onChange={(event) =>
-                      setOverrideValues((current) => ({
-                        ...current,
-                        notes: event.target.value,
-                      }))
-                    }
-                  />
-                </div>
-              </div>
-              <Button
-                disabled={!overrideDialogSeat?.id}
-                onClick={() =>
-                  handleJsonSubmit(
-                    {
-                      override: {
-                        domain: selectedOverrideArea?.domain || null,
-                        subDomain: selectedOverrideArea?.subDomain || null,
-                        budgetAreaId: overrideValues.budgetAreaId || null,
-                        funding: selectedOverrideArea?.funding || null,
-                        pillar:
-                          selectedOverrideArea?.displayName ||
-                          selectedOverrideArea?.pillar ||
-                          selectedOverrideArea?.subDomain ||
-                          null,
-                        costCenter: selectedOverrideArea?.costCenter || null,
-                        projectCode: selectedOverrideArea?.projectCode || null,
-                        spendPlanId: overrideValues.spendPlanId || null,
-                        ritm: overrideValues.ritm || null,
-                        sow: overrideValues.sow || null,
-                        status: overrideValues.status || null,
-                        allocation: overrideValues.allocation
-                          ? Number(overrideValues.allocation)
-                          : null,
-                        notes: overrideValues.notes || null,
-                      },
-                    },
-                    `/api/tracker-seats/${overrideDialogSeat?.id}`,
-                    "Seat override saved",
-                  )
-                }
-              >
-                Save Override
-              </Button>
-            </div>
-          </DialogContent>
-        </Dialog>
-      ) : null}
 
       <div className="text-xs text-muted-foreground">
         {isPending

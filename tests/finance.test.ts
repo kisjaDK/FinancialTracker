@@ -262,12 +262,43 @@ test("resolveRosterSeatAssignment uses mapped budget area pillar for derived pro
           projectCode: "L44530001",
         },
       ],
-    }
+    },
+    [
+      {
+        domain: "Data & Analytics",
+        subDomain: "Architecture Team",
+        projectCode: "L44530001",
+      },
+    ]
   )
 
   assert.equal(assignment.projectCode, "L44530001")
   assert.equal(assignment.budgetArea?.id, "area-2")
   assert.equal(assignment.pillar, "AI & Automation CoE")
+})
+
+test("resolveRosterSeatAssignment falls back to domain mapping when department code is missing", () => {
+  const assignment = resolveRosterSeatAssignment(
+    {
+      seatId: "300411",
+      domain: "Data and Analytics",
+      productLine: "Architecture",
+      fundingType: "Core Team",
+    },
+    [],
+    {},
+    [
+      {
+        domain: "Data & Analytics",
+        subDomain: "Architecture",
+        projectCode: "L68610001",
+      },
+    ]
+  )
+
+  assert.equal(assignment.projectCode, "L68610001")
+  assert.equal(assignment.domain, "Data & Analytics")
+  assert.equal(assignment.subDomain, "Architecture")
 })
 
 test("convertAmountToDkk uses latest configured exchange rate", () => {

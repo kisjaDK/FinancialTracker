@@ -70,6 +70,7 @@ export default async function PeopleRosterPage({ searchParams }: PageProps) {
       currentPath="/people-roster"
     >
       <PeopleRosterBrowser
+        userRole={viewer.role}
         activeYear={data.activeYear}
         trackingYears={data.trackingYears}
         filters={data.filters}
@@ -77,6 +78,12 @@ export default async function PeopleRosterPage({ searchParams }: PageProps) {
         people={data.people}
         totals={data.totals}
         rosterImports={data.rosterImports}
+        budgetAreas={data.budgetAreas.map((area) => ({
+          ...area,
+          displayName:
+            area.displayName ||
+            `${area.subDomain || area.pillar || area.projectCode} · ${area.costCenter}`,
+        }))}
       />
     </FinanceAppShell>
   );

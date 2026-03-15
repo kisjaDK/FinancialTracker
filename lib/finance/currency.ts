@@ -1,4 +1,4 @@
-import type { CurrencyCode, ExchangeRate } from "@/lib/generated/prisma/client"
+import type { CurrencyCode, ExchangeRate } from "@prisma/client"
 
 export type ExchangeRateLookup = Map<CurrencyCode, ExchangeRate | null>
 

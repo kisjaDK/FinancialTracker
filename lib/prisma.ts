@@ -1,4 +1,4 @@
-import { PrismaClient } from "@/lib/generated/prisma/client"
+import { PrismaClient } from "@prisma/client"
 
 const PRISMA_SCHEMA_VERSION = "2026-03-13-forecast-overrides-v1"
 

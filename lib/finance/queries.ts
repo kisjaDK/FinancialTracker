@@ -8,7 +8,7 @@ import type {
   Prisma,
   ServiceMessageKey,
   StaffingTargetScopeLevel,
-} from "@/lib/generated/prisma/client"
+} from "@prisma/client"
 import {
   ALLOWED_SEAT_STATUSES,
   CLOUD_CATEGORY,
@@ -287,6 +287,61 @@ function resolveDepartmentMapping(
   }
 
   return candidates[0]
+}
+
+function resolveDepartmentMappingByDomain(
+  mappings: Array<{ domain?: string | null; subDomain: string; projectCode?: string | null }>,
+  input: {
+    domain: string | null | undefined
+    subDomain?: string | null | undefined
+    projectCode?: string | null | undefined
+  }
+) {
+  const normalizedDomain = normalizeValue(normalizeDomainLabel(input.domain))
+  const normalizedSubDomain = normalizeValue(normalizeSubDomainLabel(input.subDomain))
+  const normalizedProjectCode = normalizeValue(input.projectCode)
+
+  const domainMatches = mappings.filter(
+    (mapping) =>
+      normalizeValue(normalizeDomainLabel(mapping.domain)) === normalizedDomain
+  )
+
+  if (domainMatches.length === 0) {
+    return undefined
+  }
+
+  if (normalizedProjectCode) {
+    const projectMatch = domainMatches.find(
+      (mapping) => normalizeValue(mapping.projectCode) === normalizedProjectCode
+    )
+
+    if (projectMatch) {
+      return projectMatch
+    }
+  }
+
+  if (normalizedSubDomain) {
+    const exactSubDomain = domainMatches.find(
+      (mapping) =>
+        normalizeValue(normalizeSubDomainLabel(mapping.subDomain)) === normalizedSubDomain
+    )
+
+    if (exactSubDomain) {
+      return exactSubDomain
+    }
+
+    const fuzzySubDomain = domainMatches.find((mapping) =>
+      normalizeValue(normalizeSubDomainLabel(mapping.subDomain)).includes(
+        normalizedSubDomain
+      )
+    )
+
+    if (fuzzySubDomain) {
+      return fuzzySubDomain
+    }
+  }
+
+  return domainMatches[0]
 }
 
 function normalizeOptionalString(value: string | null | undefined) {
@@ -993,6 +1048,11 @@ export function resolveRosterSeatAssignment(
     projectCode: string
   }[],
   mappingLookup: ReturnType<typeof buildDepartmentMappingLookup>,
+  mappingsByDomain: Array<{
+    domain?: string | null
+    subDomain: string
+    projectCode?: string | null
+  }>,
   existingSeat?: {
     sourceKey: string
     projectCode: string | null
@@ -1009,6 +1069,11 @@ export function resolveRosterSeatAssignment(
   const mappedHierarchy =
     resolveDepartmentMapping(mappingLookup, {
       sourceCode: person.domain,
+      subDomain: person.productLine,
+      projectCode: fallbackBudgetArea?.projectCode,
+    }) ||
+    resolveDepartmentMappingByDomain(mappingsByDomain, {
+      domain: person.domain,
       subDomain: person.productLine,
       projectCode: fallbackBudgetArea?.projectCode,
     }) ||
@@ -1145,6 +1210,7 @@ async function deriveTrackerSeatsForYearInternal(year: number) {
       person,
       budgetAreas,
       mappingLookup,
+      departmentMappings,
       existingSeat
     )
 
@@ -3433,7 +3499,7 @@ export async function getPeopleRosterPageData(input?: {
     validation: input?.validation?.trim() ?? "",
   }
 
-  const [people, departmentMappings, rosterImports, trackerSeats] = await Promise.all([
+  const [people, departmentMappings, rosterImports, trackerSeats, budgetAreas] = await Promise.all([
     prisma.rosterPerson.findMany({
       where: {
         trackingYearId: trackingYear.id,
@@ -3471,6 +3537,12 @@ export async function getPeopleRosterPageData(input?: {
         budgetArea: true,
       },
     }),
+    prisma.budgetArea.findMany({
+      where: {
+        trackingYearId: trackingYear.id,
+      },
+      orderBy: [{ domain: "asc" }, { subDomain: "asc" }, { projectCode: "asc" }],
+    }),
   ])
 
   const latestPeople = Array.from(
@@ -3499,8 +3571,11 @@ export async function getPeopleRosterPageData(input?: {
 
     return {
       id: person.id,
+      trackerSeatId: trackerSeat?.id ?? null,
       importFileName: person.import.fileName,
       seatId: person.seatId,
+      budgetAreaId: effectiveSeat?.budgetAreaId ?? trackerSeat?.budgetAreaId ?? null,
+      overrideBudgetAreaId: trackerSeat?.override?.budgetAreaId ?? null,
       departmentCode: person.domain,
       domain: normalizeDomainLabel(effectiveSeat?.domain || mappedHierarchy?.domain || person.domain),
       projectCode: effectiveSeat?.projectCode || mappedHierarchy?.projectCode || null,
@@ -3518,6 +3593,10 @@ export async function getPeopleRosterPageData(input?: {
       status: person.status,
       manager: person.lineManager,
       fte: effectiveSeat?.allocation ?? person.allocation,
+      spendPlanId: effectiveSeat?.spendPlanId || null,
+      ritm: effectiveSeat?.ritm || null,
+      sow: effectiveSeat?.sow || null,
+      notes: effectiveSeat?.notes || null,
       startDate: person.expectedStartDate,
       endDate: person.expectedEndDate,
       effectiveStatus: effectiveSeat?.status || person.status,
@@ -3535,6 +3614,21 @@ export async function getPeopleRosterPageData(input?: {
       domain: person.domain,
       subDomain: person.mappedSubDomain || person.subDomain,
     })
+  )
+  const projectCodeLabels = new Map(
+    budgetAreas
+      .filter((area) => area.projectCode.trim().length > 0)
+      .map((area) => [
+        normalizeValue(area.projectCode),
+        [
+          area.projectCode,
+          area.pillar ||
+            area.subDomain ||
+            area.displayName ||
+            area.domain ||
+            "No pillar",
+        ].join(" · "),
+      ])
   )
   const seatIdFilter = normalizeValues(filters.seatIds)
   const nameFilter = normalizeValues(filters.names)
@@ -3684,7 +3778,14 @@ export async function getPeopleRosterPageData(input?: {
       subDomains: collectSortedValues(
         scopedRosterViews.map((person) => person.mappedSubDomain || person.subDomain)
       ),
-      projectCodes: collectSortedValues(scopedRosterViews.map((person) => person.projectCode)),
+      projectCodes: collectSortedValues(scopedRosterViews.map((person) => person.projectCode)).map(
+        (projectCode) => ({
+          value: projectCode,
+          label:
+            projectCodeLabels.get(normalizeValue(projectCode)) ??
+            `${projectCode} · No pillar`,
+        })
+      ),
       vendors: collectSortedValues(scopedRosterViews.map((person) => person.vendor)),
       locations: collectSortedValues(scopedRosterViews.map((person) => person.location)),
       statuses: collectSortedValues(scopedRosterViews.map((person) => person.status)),
@@ -3705,6 +3806,7 @@ export async function getPeopleRosterPageData(input?: {
       errorCount: filteredPeople.filter((person) => Boolean(person.importError)).length,
     },
     rosterImports,
+    budgetAreas,
   }
 }
 

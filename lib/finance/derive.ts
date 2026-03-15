@@ -1,4 +1,4 @@
-import type { CostAssumption, ExchangeRate, TrackerOverride } from "@/lib/generated/prisma/client"
+import type { CostAssumption, ExchangeRate, TrackerOverride } from "@prisma/client"
 import { buildExchangeRateLookup, convertAmountToDkk } from "@/lib/finance/currency"
 import {
   MONTH_NAMES,

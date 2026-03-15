@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
 import { requireApiAccess } from "@/lib/authz"
 import { upsertServiceMessage } from "@/lib/finance/queries"
-import type { ServiceMessageKey } from "@/lib/generated/prisma/client"
+import type { ServiceMessageKey } from "@prisma/client"
 
 export async function POST(request: Request) {
   const viewer = await requireApiAccess("ADMIN")

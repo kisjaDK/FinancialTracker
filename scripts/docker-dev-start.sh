@@ -3,6 +3,9 @@ set -eu
 
 PACKAGE_LOCK_MARKER="node_modules/.package-lock.json"
 PRISMA_CLIENT_MARKER="lib/generated/prisma/client.ts"
+PRISMA_LINUX_ENGINE="lib/generated/prisma/libquery_engine-linux-arm64-openssl-3.0.x.so.node"
+PRISMA_RUNTIME_CLIENT_MARKER="node_modules/@prisma/client/index.js"
+PRISMA_RUNTIME_ENGINE="node_modules/.prisma/client/libquery_engine-linux-arm64-openssl-3.0.x.so.node"
 
 if [ ! -d node_modules ] || [ ! -f "$PACKAGE_LOCK_MARKER" ] || [ package-lock.json -nt "$PACKAGE_LOCK_MARKER" ]; then
   echo "Installing dependencies in the mounted workspace..."
@@ -11,9 +14,11 @@ else
   echo "Dependencies unchanged. Skipping npm install."
 fi
 
-if [ ! -f "$PRISMA_CLIENT_MARKER" ] || [ prisma/schema.prisma -nt "$PRISMA_CLIENT_MARKER" ] || [ package-lock.json -nt "$PRISMA_CLIENT_MARKER" ]; then
+if [ ! -f "$PRISMA_CLIENT_MARKER" ] || [ ! -f "$PRISMA_LINUX_ENGINE" ] || [ ! -f "$PRISMA_RUNTIME_CLIENT_MARKER" ] || [ ! -f "$PRISMA_RUNTIME_ENGINE" ] || [ prisma/schema.prisma -nt "$PRISMA_CLIENT_MARKER" ] || [ package-lock.json -nt "$PRISMA_CLIENT_MARKER" ]; then
   echo "Generating Prisma client..."
   npm run db:generate
+  echo "Clearing stale Next.js cache after Prisma generation..."
+  rm -rf .next
 else
   echo "Prisma client up to date. Skipping generation."
 fi

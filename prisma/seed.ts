@@ -1,5 +1,5 @@
 import "dotenv/config"
-import { PrismaClient } from "../lib/generated/prisma/client"
+import { PrismaClient } from "@prisma/client"
 import {
   ALLOWED_SEAT_STATUSES,
   DEFAULT_ACTIVE_SEAT_STATUSES,

@@ -10,7 +10,7 @@ import { Label } from "@/components/ui/label"
 type MultiSelectFilterProps = {
   label: string
   name: string
-  options: readonly string[]
+  options: readonly (string | { value: string; label: string })[]
   selectedValues: string[]
 }
 
@@ -24,6 +24,16 @@ export function MultiSelectFilter({
   const [isOpen, setIsOpen] = useState(false)
   const [selected, setSelected] = useState(new Set(selectedValues))
   const containerRef = useRef<HTMLDivElement | null>(null)
+
+  const normalizedOptions = useMemo(
+    () =>
+      options.map((option) =>
+        typeof option === "string"
+          ? { value: option, label: option }
+          : option
+      ),
+    [options]
+  )
 
   useEffect(() => {
     function handlePointerDown(event: MouseEvent) {
@@ -58,10 +68,10 @@ export function MultiSelectFilter({
 
   const filteredOptions = useMemo(() => {
     const normalizedSearch = search.trim().toLowerCase()
-    return options.filter((option) =>
-      option.toLowerCase().includes(normalizedSearch)
+    return normalizedOptions.filter((option) =>
+      option.label.toLowerCase().includes(normalizedSearch)
     )
-  }, [options, search])
+  }, [normalizedOptions, search])
 
   function toggleValue(value: string) {
     setSelected((current) => {
@@ -133,14 +143,14 @@ export function MultiSelectFilter({
             ) : null}
             {filteredOptions.map((option) => (
               <label
-                key={option}
+                key={option.value}
                 className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent"
               >
                 <Checkbox
-                  checked={selected.has(option)}
-                  onCheckedChange={() => toggleValue(option)}
+                  checked={selected.has(option.value)}
+                  onCheckedChange={() => toggleValue(option.value)}
                 />
-                <span className="truncate">{option}</span>
+                <span className="truncate">{option.label}</span>
               </label>
             ))}
           </div>

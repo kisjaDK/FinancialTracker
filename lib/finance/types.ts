@@ -7,7 +7,7 @@ import type {
   StatusDefinition,
   TrackerOverride,
   TrackerSeat,
-} from "@/lib/generated/prisma/client"
+} from "@prisma/client"
 
 export type SeatWithRelations = TrackerSeat & {
   months: SeatMonth[]
@@ -146,8 +146,11 @@ export type PeopleRosterFilters = {
 
 export type PeopleRosterView = {
   id: string
+  trackerSeatId: string | null
   importFileName: string
   seatId: string
+  budgetAreaId: string | null
+  overrideBudgetAreaId: string | null
   departmentCode: string | null
   domain: string | null
   projectCode: string | null
@@ -165,6 +168,10 @@ export type PeopleRosterView = {
   status: string | null
   manager: string | null
   fte: number | null
+  spendPlanId: string | null
+  ritm: string | null
+  sow: string | null
+  notes: string | null
   startDate: Date | null
   endDate: Date | null
   effectiveStatus: string | null

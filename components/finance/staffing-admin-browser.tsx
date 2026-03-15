@@ -22,7 +22,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { formatNumber } from "@/lib/finance/format"
-import type { StaffingTargetScopeLevel } from "@/lib/generated/prisma/client"
+import type { StaffingTargetScopeLevel } from "@prisma/client"
 import type { StaffingTargetView } from "@/lib/finance/types"
 
 type TrackingYearOption = {
