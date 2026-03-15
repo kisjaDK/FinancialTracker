@@ -73,7 +73,15 @@ export function parseDate(value: string | undefined) {
     return parseExcelSerialDate(Number(trimmed))
   }
 
-  const parsed = new Date(trimmed)
+  const normalized = trimmed
+    .replace(/\s+/g, " ")
+    .replace(
+      /^(\d{1,2}\/\d{1,2}\/\d{4})\s+(\d{1,2})\.(\d{2})(?:\.(\d{2}))?$/,
+      (_, datePart: string, hours: string, minutes: string, seconds?: string) =>
+        `${datePart} ${hours}:${minutes}${seconds ? `:${seconds}` : ""}`
+    )
+
+  const parsed = new Date(normalized)
   if (Number.isNaN(parsed.getTime())) {
     return null
   }

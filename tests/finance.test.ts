@@ -66,6 +66,15 @@ test("parseDate converts Excel serial dates and rejects implausible years", () =
   assert.equal(parseDate("99999"), null)
 })
 
+test("parseDate supports roster timestamps with dot-separated time values", () => {
+  const parsed = parseDate("01/31/2026  00.00.00")
+
+  assert.notEqual(parsed, null)
+  assert.equal(parsed?.getFullYear(), 2026)
+  assert.equal(parsed?.getMonth(), 0)
+  assert.equal(parsed?.getDate(), 31)
+})
+
 test("normalizeRosterVendor lets internal resource type override conflicting vendor", () => {
   const normalized = normalizeRosterVendor("Internal", "Other")
 
