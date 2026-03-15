@@ -157,6 +157,10 @@ export function AdminBrowser({
       ...accrualAccountMappings.map((mapping) => mapping.resourceType),
     ])
   ).sort((left, right) => left.localeCompare(right))
+  const exchangeRateHistoryByCurrency = ["EUR", "USD"].map((currency) => ({
+    currency,
+    rates: exchangeRates.filter((rate) => rate.currency === currency),
+  }))
 
   function resetMappingForm() {
     setEditingMappingId(null)
@@ -963,7 +967,7 @@ export function AdminBrowser({
             <CardHeader>
               <CardTitle>Exchange Rates</CardTitle>
               <CardDescription>
-                Maintain latest FX rates to convert EUR and USD actuals into DKK.
+                Maintain FX rates and review the full effective-date history used for conversions.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -1049,34 +1053,83 @@ export function AdminBrowser({
                 </div>
               </div>
 
-              <div className="space-y-2 text-sm">
-                {exchangeRates.map((rate) => (
-                  <div
-                    key={rate.currency}
-                    className="flex items-center justify-between rounded-lg bg-muted/40 px-3 py-2"
-                  >
-                    <span>{rate.currency}</span>
-                    <span>1 {rate.currency} = {formatNumber(rate.rateToDkk)} DKK</span>
-                    <span className="text-muted-foreground">{formatDate(rate.effectiveDate)}</span>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() =>
-                        setFxValues({
-                          currency: rate.currency,
-                          rateToDkk: String(rate.rateToDkk),
-                          effectiveDate: toDateInputValue(rate.effectiveDate),
-                          notes: rate.notes || "",
-                        })
-                      }
-                    >
-                      Edit
-                    </Button>
+              <div className="space-y-4">
+                {exchangeRateHistoryByCurrency.map(({ currency, rates }) => (
+                  <div key={currency} className="space-y-2 rounded-lg border border-border p-3">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <div className="font-medium">{currency}</div>
+                        <div className="text-xs text-muted-foreground">
+                          {rates.length > 0
+                            ? `${rates.length} saved rate${rates.length === 1 ? "" : "s"}`
+                            : "No saved FX history yet"}
+                        </div>
+                      </div>
+                      {rates[0] ? (
+                        <div className="text-right text-sm">
+                          <div>Latest: 1 {currency} = {formatNumber(rates[0].rateToDkk)} DKK</div>
+                          <div className="text-xs text-muted-foreground">
+                            Effective {formatDate(rates[0].effectiveDate)}
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+
+                    <div className="overflow-x-auto rounded-md border border-border">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Effective Date</TableHead>
+                            <TableHead>Rate</TableHead>
+                            <TableHead>Notes</TableHead>
+                            <TableHead className="w-[88px] text-right">Action</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {rates.map((rate, index) => (
+                            <TableRow key={`${rate.currency}-${rate.effectiveDate.toString()}`}>
+                              <TableCell>{formatDate(rate.effectiveDate)}</TableCell>
+                              <TableCell>1 {rate.currency} = {formatNumber(rate.rateToDkk)} DKK</TableCell>
+                              <TableCell className="text-muted-foreground">
+                                {rate.notes || (index === 0 ? "Latest configured rate" : "No notes")}
+                              </TableCell>
+                              <TableCell className="text-right">
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() =>
+                                    setFxValues({
+                                      currency: rate.currency,
+                                      rateToDkk: String(rate.rateToDkk),
+                                      effectiveDate: toDateInputValue(rate.effectiveDate),
+                                      notes: rate.notes || "",
+                                    })
+                                  }
+                                >
+                                  Edit
+                                </Button>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                          {rates.length === 0 ? (
+                            <TableRow>
+                              <TableCell
+                                colSpan={4}
+                                className="py-6 text-center text-muted-foreground"
+                              >
+                                No FX history saved for {currency}.
+                              </TableCell>
+                            </TableRow>
+                          ) : null}
+                        </TableBody>
+                      </Table>
+                    </div>
                   </div>
                 ))}
-                {!exchangeRates.some((rate) => rate.currency === "DKK") ? (
-                  <div className="text-muted-foreground">DKK is treated as 1.00 automatically.</div>
-                ) : null}
+
+                <div className="text-sm text-muted-foreground">
+                  DKK is treated as 1.00 automatically.
+                </div>
               </div>
             </CardContent>
           </Card>

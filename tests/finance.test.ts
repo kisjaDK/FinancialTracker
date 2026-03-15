@@ -7,7 +7,11 @@ import {
   buildCostAssumptionLookup,
   deriveSeatMetrics,
 } from "@/lib/finance/derive"
-import { buildExchangeRateLookup, convertAmountToDkk } from "@/lib/finance/currency"
+import {
+  buildExchangeRateLookup,
+  convertAmountToDkk,
+  findClosestPriorExchangeRate,
+} from "@/lib/finance/currency"
 import {
   buildStaffingOverviewRows,
   resolveActualsScopeSelection,
@@ -678,6 +682,73 @@ test("convertAmountToDkk uses latest configured exchange rate", () => {
   const converted = convertAmountToDkk(100, "USD", rates)
   assert.equal(converted.amountDkk, 690)
   assert.equal(converted.exchangeRateUsed, 6.9)
+})
+
+test("findClosestPriorExchangeRate selects the latest rate on or before the target date", () => {
+  const rates = [
+    {
+      id: "fx-1",
+      trackingYearId: "year-1",
+      currency: "USD",
+      rateToDkk: 6.7,
+      effectiveDate: new Date("2026-01-31T00:00:00.000Z"),
+      notes: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    },
+    {
+      id: "fx-2",
+      trackingYearId: "year-1",
+      currency: "USD",
+      rateToDkk: 6.9,
+      effectiveDate: new Date("2026-02-28T00:00:00.000Z"),
+      notes: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    },
+    {
+      id: "fx-3",
+      trackingYearId: "year-1",
+      currency: "USD",
+      rateToDkk: 7.1,
+      effectiveDate: new Date("2026-03-31T00:00:00.000Z"),
+      notes: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    },
+  ]
+
+  const selected = findClosestPriorExchangeRate(
+    "USD",
+    rates,
+    new Date("2026-03-15T12:00:00.000Z")
+  )
+
+  assert.equal(selected?.rateToDkk, 6.9)
+  assert.equal(selected?.effectiveDate.toISOString(), "2026-02-28T00:00:00.000Z")
+})
+
+test("findClosestPriorExchangeRate returns null when no prior rate exists", () => {
+  const rates = [
+    {
+      id: "fx-1",
+      trackingYearId: "year-1",
+      currency: "USD",
+      rateToDkk: 6.7,
+      effectiveDate: new Date("2026-02-01T00:00:00.000Z"),
+      notes: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    },
+  ]
+
+  const selected = findClosestPriorExchangeRate(
+    "USD",
+    rates,
+    new Date("2026-01-31T23:59:59.999Z")
+  )
+
+  assert.equal(selected, null)
 })
 
 test("renderRichTextToHtml supports paragraphs and lists", () => {

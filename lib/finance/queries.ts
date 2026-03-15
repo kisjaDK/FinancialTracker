@@ -19,7 +19,11 @@ import {
 import type { AuditActor } from "@/lib/finance/audit"
 import { buildAuditChanges, writeAuditLog } from "@/lib/finance/audit"
 import { buildAccrualsPageModel } from "@/lib/finance/accruals"
-import { buildExchangeRateLookup, convertAmountToDkk } from "@/lib/finance/currency"
+import {
+  buildExchangeRateLookup,
+  convertAmountToDkk,
+  findClosestPriorExchangeRate,
+} from "@/lib/finance/currency"
 import {
   buildCostAssumptionLookup,
   deriveSeatMetrics,
@@ -2312,28 +2316,33 @@ function parseCurrencyCode(value: string) {
   return normalized as CurrencyCode
 }
 
-async function getLatestExchangeRateOnOrBeforeNow(
+function getMonthEndLookupDate(year: number, monthIndex: number) {
+  return new Date(Date.UTC(year, monthIndex + 1, 0, 23, 59, 59, 999))
+}
+
+async function getLatestExchangeRateOnOrBeforeDate(
   trackingYearId: string,
-  currency: CurrencyCode
+  currency: CurrencyCode,
+  effectiveOn: Date
 ) {
   if (currency === "DKK") {
     return {
       rateToDkk: 1,
-      effectiveDate: new Date(),
+      effectiveDate: effectiveOn,
     }
   }
 
-  const rate = await prisma.exchangeRate.findFirst({
-    where: {
-      trackingYearId,
-      currency,
-      effectiveDate: { lte: new Date() },
-    },
+  const rates = await prisma.exchangeRate.findMany({
+    where: { trackingYearId, currency },
     orderBy: [{ effectiveDate: "desc" }],
   })
+  const rate = findClosestPriorExchangeRate(currency, rates, effectiveOn)
 
   if (!rate) {
-    throw new Error(`No exchange rate is configured for ${currency} on or before today.`)
+    const formattedLookupDate = effectiveOn.toISOString().slice(0, 10)
+    throw new Error(
+      `No exchange rate is configured for ${currency} on or before ${formattedLookupDate}.`
+    )
   }
 
   return rate
@@ -2585,6 +2594,7 @@ async function createExternalActualBatchForMatches(input: {
   spendPlanId: string
   amount: number
   currency: CurrencyCode
+  conversionDate?: Date
   sourceKind: "MANUAL" | "PASTE"
   fileName: string
   invoiceNumber?: string | null
@@ -2606,7 +2616,11 @@ async function createExternalActualBatchForMatches(input: {
     throw new Error("No matching external seats were found for that spend plan and month.")
   }
 
-  const rate = await getLatestExchangeRateOnOrBeforeNow(trackingYear.id, input.currency)
+  const rate = await getLatestExchangeRateOnOrBeforeDate(
+    trackingYear.id,
+    input.currency,
+    input.conversionDate ?? new Date()
+  )
   const originalShares = splitAmountByWeights(
     input.amount,
     matches.map((seat) => seat.allocation)
@@ -2730,6 +2744,7 @@ async function previewExternalActualBatchForMatches(input: {
   spendPlanId: string
   amount: number
   currency: CurrencyCode
+  conversionDate?: Date
   invoiceNumber?: string | null
   supplierName?: string | null
   description?: string | null
@@ -2745,7 +2760,11 @@ async function previewExternalActualBatchForMatches(input: {
     viewer
   )
 
-  const rate = await getLatestExchangeRateOnOrBeforeNow(trackingYear.id, input.currency)
+  const rate = await getLatestExchangeRateOnOrBeforeDate(
+    trackingYear.id,
+    input.currency,
+    input.conversionDate ?? new Date()
+  )
   if (matches.length === 0) {
     return {
       status: "needs_mapping" as const,
@@ -2758,6 +2777,7 @@ async function previewExternalActualBatchForMatches(input: {
       originalAmount: input.amount,
       originalCurrency: input.currency,
       rateToDkk: rate.rateToDkk,
+      rateEffectiveDate: rate.effectiveDate,
       totalDkk: Math.round(input.amount * rate.rateToDkk * 100) / 100,
       seats: [],
     }
@@ -2776,6 +2796,7 @@ async function previewExternalActualBatchForMatches(input: {
     originalAmount: input.amount,
     originalCurrency: input.currency,
     rateToDkk: rate.rateToDkk,
+    rateEffectiveDate: rate.effectiveDate,
     totalDkk: Math.round(input.amount * rate.rateToDkk * 100) / 100,
     seats: matches.map((match, index) => {
       const originalAmount = originalShares[index]
@@ -2868,6 +2889,7 @@ export async function createPastedExternalActual(input: {
   content: string
 }, actor?: AuditActor, viewer?: Pick<AppViewer, "role" | "scopes">) {
   const parsed = parsePastedInvoiceText(input.content)
+  const conversionDate = getMonthEndLookupDate(input.year, input.monthIndex)
 
   return createExternalActualBatchForMatches(
     {
@@ -2876,6 +2898,7 @@ export async function createPastedExternalActual(input: {
       spendPlanId: parsed.spendPlanId,
       amount: parsed.amount,
       currency: parsed.currency,
+      conversionDate,
       invoiceNumber: parsed.invoiceNumber,
       supplierName: parsed.supplierName,
       rawContent: input.content,
@@ -2894,8 +2917,6 @@ export async function previewPastedExternalActual(input: {
 }, viewer?: Pick<AppViewer, "role" | "scopes">) {
   const parsed = parsePastedInvoiceText(input.content)
   const trackingYear = await getOrCreateTrackingYear(input.year)
-  const rate = await getLatestExchangeRateOnOrBeforeNow(trackingYear.id, parsed.currency)
-  const totalDkk = Math.round(parsed.amount * rate.rateToDkk * 100) / 100
   const monthSelection = await getExternalActualMonthSelection(
     {
       year: input.year,
@@ -2903,6 +2924,19 @@ export async function previewPastedExternalActual(input: {
     },
     viewer
   )
+  const previewMonthIndex =
+    input.monthIndex ??
+    (monthSelection.candidates.length > 0 ? monthSelection.suggestedMonthIndex : undefined)
+  const conversionDate =
+    previewMonthIndex === undefined || previewMonthIndex === null
+      ? new Date()
+      : getMonthEndLookupDate(input.year, previewMonthIndex)
+  const rate = await getLatestExchangeRateOnOrBeforeDate(
+    trackingYear.id,
+    parsed.currency,
+    conversionDate
+  )
+  const totalDkk = Math.round(parsed.amount * rate.rateToDkk * 100) / 100
 
   const preview =
     monthSelection.candidates.length === 0
@@ -2917,6 +2951,7 @@ export async function previewPastedExternalActual(input: {
           originalAmount: parsed.amount,
           originalCurrency: parsed.currency,
           rateToDkk: rate.rateToDkk,
+          rateEffectiveDate: rate.effectiveDate,
           totalDkk,
           seats: [],
         }
@@ -2932,6 +2967,7 @@ export async function previewPastedExternalActual(input: {
             originalAmount: parsed.amount,
             originalCurrency: parsed.currency,
             rateToDkk: rate.rateToDkk,
+            rateEffectiveDate: rate.effectiveDate,
             totalDkk,
             seats: [],
           }
@@ -2942,6 +2978,7 @@ export async function previewPastedExternalActual(input: {
               spendPlanId: parsed.spendPlanId,
               amount: parsed.amount,
               currency: parsed.currency,
+              conversionDate,
               invoiceNumber: parsed.invoiceNumber,
               supplierName: parsed.supplierName,
               rawContent: input.content,
@@ -3995,7 +4032,7 @@ export async function getAdminPageData(year?: number) {
 
   const [statuses, exchangeRates, departmentMappings, accrualAccountMappings, rosterResourceTypes] = await Promise.all([
     ensureStatusDefinitions(activeYear),
-    getLatestExchangeRates(activeYear),
+    getExchangeRateHistory(activeYear),
     getDepartmentMappings(activeYear),
     getAccrualAccountMappings(activeYear),
     getActiveRosterResourceTypes(activeYear),
@@ -5122,6 +5159,21 @@ export async function getLatestExchangeRates(year: number): Promise<LatestExchan
   }
 
   return Array.from(latestByCurrency.values()).map((rate) => ({
+    currency: rate.currency,
+    rateToDkk: rate.rateToDkk,
+    effectiveDate: rate.effectiveDate,
+    notes: rate.notes,
+  }))
+}
+
+export async function getExchangeRateHistory(year: number): Promise<LatestExchangeRate[]> {
+  const trackingYear = await getOrCreateTrackingYear(year)
+  const rates = await prisma.exchangeRate.findMany({
+    where: { trackingYearId: trackingYear.id },
+    orderBy: [{ currency: "asc" }, { effectiveDate: "desc" }],
+  })
+
+  return rates.map((rate) => ({
     currency: rate.currency,
     rateToDkk: rate.rateToDkk,
     effectiveDate: rate.effectiveDate,

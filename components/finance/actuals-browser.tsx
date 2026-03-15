@@ -134,6 +134,7 @@ type PastedExternalActualPreview = {
   originalAmount: number
   originalCurrency: "DKK" | "EUR" | "USD"
   rateToDkk: number
+  rateEffectiveDate: Date
   totalDkk: number
   seats: {
     trackerSeatId: string
@@ -208,6 +209,14 @@ function formatDateTime(value: Date) {
     day: "numeric",
     hour: "2-digit",
     minute: "2-digit",
+  }).format(new Date(value))
+}
+
+function formatDate(value: Date) {
+  return new Intl.DateTimeFormat("en-GB", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
   }).format(new Date(value))
 }
 
@@ -1133,7 +1142,8 @@ export function ActualsBrowser({
                         {formatCurrency(pastedInvoicePreview.totalDkk)}
                       </div>
                       <div className="text-xs text-muted-foreground">
-                        FX rate: {formatNumber(pastedInvoicePreview.rateToDkk)}
+                        FX rate: {formatNumber(pastedInvoicePreview.rateToDkk)} from{" "}
+                        {formatDate(pastedInvoicePreview.rateEffectiveDate)}
                       </div>
                     </div>
                   </div>

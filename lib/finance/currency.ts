@@ -19,6 +19,34 @@ export function buildExchangeRateLookup(rates: ExchangeRate[]) {
   return lookup
 }
 
+export function findClosestPriorExchangeRate(
+  currency: CurrencyCode,
+  rates: ExchangeRate[],
+  effectiveOn: Date
+) {
+  if (currency === "DKK") {
+    return null
+  }
+
+  let closestRate: ExchangeRate | null = null
+
+  for (const rate of rates) {
+    if (rate.currency !== currency) {
+      continue
+    }
+
+    if (rate.effectiveDate > effectiveOn) {
+      continue
+    }
+
+    if (!closestRate || closestRate.effectiveDate < rate.effectiveDate) {
+      closestRate = rate
+    }
+  }
+
+  return closestRate
+}
+
 export function convertAmountToDkk(
   amount: number,
   currency: CurrencyCode,
