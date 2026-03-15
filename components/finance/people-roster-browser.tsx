@@ -45,6 +45,10 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { formatNumber } from "@/lib/finance/format"
+import {
+  buildCascadingHierarchyOptions,
+  pruneInvalidSelections,
+} from "@/lib/finance/hierarchy-filters"
 import type { AppRole } from "@/lib/roles"
 import type { PeopleRosterFilters, PeopleRosterView } from "@/lib/finance/types"
 import { cn } from "@/lib/utils"
@@ -78,6 +82,11 @@ type PeopleRosterBrowserProps = {
     domains: string[]
     teams: string[]
     subDomains: string[]
+    hierarchyRows: {
+      domain: string | null
+      subDomain: string | null
+      team: string | null
+    }[]
     projectCodes: Array<{ value: string; label: string }>
     vendors: string[]
     locations: string[]
@@ -162,6 +171,9 @@ export function PeopleRosterBrowser({
   const [isImporting, startImportTransition] = useTransition()
   const [isRollingBack, startRollbackTransition] = useTransition()
   const [isSavingOverride, startOverrideTransition] = useTransition()
+  const [selectedDomains, setSelectedDomains] = useState(filters.domains)
+  const [selectedSubDomains, setSelectedSubDomains] = useState(filters.subDomains)
+  const [selectedTeams, setSelectedTeams] = useState(filters.teams)
   const [overrideDialogPersonId, setOverrideDialogPersonId] = useState<string | null>(null)
   const [pillarPickerOpen, setPillarPickerOpen] = useState(false)
   const [overrideValues, setOverrideValues] = useState(() => ({
@@ -197,6 +209,11 @@ export function PeopleRosterBrowser({
         }))
         .sort((left, right) => left.label.localeCompare(right.label))
     : []
+  const hierarchyOptions = buildCascadingHierarchyOptions(
+    filterOptions.hierarchyRows,
+    selectedDomains,
+    selectedSubDomains
+  )
   const selectedOverrideArea =
     scopedPillarOptions.find((option) => option.id === overrideValues.budgetAreaId)?.area ?? null
 
@@ -589,19 +606,45 @@ export function PeopleRosterBrowser({
                   label="Domain"
                   name="domain"
                   options={filterOptions.domains}
-                  selectedValues={filters.domains}
+                  selectedValues={selectedDomains}
+                  onSelectedValuesChange={(values) => {
+                    setSelectedDomains(values)
+                    const nextHierarchyOptions = buildCascadingHierarchyOptions(
+                      filterOptions.hierarchyRows,
+                      values,
+                      selectedSubDomains
+                    )
+                    setSelectedSubDomains((current) =>
+                      pruneInvalidSelections(current, nextHierarchyOptions.subDomains)
+                    )
+                    setSelectedTeams((current) =>
+                      pruneInvalidSelections(current, nextHierarchyOptions.teams)
+                    )
+                  }}
                 />
                 <MultiSelectFilter
                   label="Sub-domain"
                   name="subDomain"
-                  options={filterOptions.subDomains}
-                  selectedValues={filters.subDomains}
+                  options={hierarchyOptions.subDomains}
+                  selectedValues={selectedSubDomains}
+                  onSelectedValuesChange={(values) => {
+                    setSelectedSubDomains(values)
+                    const nextHierarchyOptions = buildCascadingHierarchyOptions(
+                      filterOptions.hierarchyRows,
+                      selectedDomains,
+                      values
+                    )
+                    setSelectedTeams((current) =>
+                      pruneInvalidSelections(current, nextHierarchyOptions.teams)
+                    )
+                  }}
                 />
                 <MultiSelectFilter
                   label="Team"
                   name="team"
-                  options={filterOptions.teams}
-                  selectedValues={filters.teams}
+                  options={hierarchyOptions.teams}
+                  selectedValues={selectedTeams}
+                  onSelectedValuesChange={setSelectedTeams}
                 />
                 <MultiSelectFilter
                   label="Project code"

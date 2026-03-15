@@ -70,6 +70,12 @@ export default async function PeopleRosterPage({ searchParams }: PageProps) {
       currentPath="/people-roster"
     >
       <PeopleRosterBrowser
+        key={[
+          data.activeYear,
+          data.filters.domains.join("|"),
+          data.filters.subDomains.join("|"),
+          data.filters.teams.join("|"),
+        ].join(":")}
         userRole={viewer.role}
         activeYear={data.activeYear}
         trackingYears={data.trackingYears}

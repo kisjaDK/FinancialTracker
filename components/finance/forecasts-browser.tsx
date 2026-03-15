@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState, useTransition } from "react"
+import { useEffect, useMemo, useState, useTransition } from "react"
 import Link from "next/link"
 import { useRouter, useSearchParams } from "next/navigation"
 import { PenLine } from "lucide-react"
@@ -32,6 +32,10 @@ import {
 } from "@/components/ui/table"
 import { MONTH_NAMES } from "@/lib/finance/constants"
 import { formatCurrency, formatPercent } from "@/lib/finance/format"
+import {
+  buildCascadingHierarchyOptions,
+  pruneInvalidSelections,
+} from "@/lib/finance/hierarchy-filters"
 import { cn } from "@/lib/utils"
 
 type TrackingYearOption = {
@@ -100,9 +104,10 @@ type ForecastsBrowserProps = {
     seats: {
       id: string
       seatId: string
-      name: string
-      team: string
+      domain: string
       subDomain: string
+      team: string
+      name: string
       status: string
     }[]
   }
@@ -181,6 +186,9 @@ export function ForecastsBrowser({
   const [isPending, startTransition] = useTransition()
   const [isSaving, startSavingTransition] = useTransition()
   const [selectedYear, setSelectedYear] = useState(String(activeYear))
+  const [selectedDomains, setSelectedDomains] = useState(filters.domains)
+  const [selectedSubDomains, setSelectedSubDomains] = useState(filters.subDomains)
+  const [selectedTeams, setSelectedTeams] = useState(filters.teams)
   const [hideInactiveStatuses, setHideInactiveStatuses] = useState(
     filters.hideInactiveStatuses
   )
@@ -212,6 +220,20 @@ export function ForecastsBrowser({
   useEffect(() => {
     setMonthDrafts(buildMonthDrafts(selectedSeat))
   }, [selectedSeat])
+
+  const hierarchyOptions = useMemo(
+    () =>
+      buildCascadingHierarchyOptions(
+        filterOptions.seats.map((seat) => ({
+          domain: seat.domain,
+          subDomain: seat.subDomain,
+          team: seat.team,
+        })),
+        selectedDomains,
+        selectedSubDomains
+      ),
+    [filterOptions.seats, selectedDomains, selectedSubDomains]
+  )
 
   const forecastTotals = selectedSeat
     ? MONTH_NAMES.reduce(
@@ -273,9 +295,9 @@ export function ForecastsBrowser({
       params.set("year", year)
     }
 
-    appendValues("subDomain", formData.getAll("subDomain"))
-    appendValues("domain", formData.getAll("domain"))
-    appendValues("team", formData.getAll("team"))
+    appendValues("domain", selectedDomains)
+    appendValues("subDomain", selectedSubDomains)
+    appendValues("team", selectedTeams)
     appendValues("seatId", formData.getAll("seatId"))
     appendValues("name", formData.getAll("name"))
     appendValues("status", formData.getAll("status"))
@@ -304,6 +326,9 @@ export function ForecastsBrowser({
   }
 
   function resetFilters() {
+    setSelectedDomains([])
+    setSelectedSubDomains([])
+    setSelectedTeams([])
     setHideInactiveStatuses(true)
     setNonMonthStart(false)
     setNonMonthEnd(false)
@@ -398,25 +423,56 @@ export function ForecastsBrowser({
                   </select>
                 </div>
                 <MultiSelectFilter
-                  key={`forecast-domains:${filters.domains.join("|")}`}
                   label="Domain"
                   name="domain"
                   options={filterOptions.domains}
-                  selectedValues={filters.domains}
+                  selectedValues={selectedDomains}
+                  onSelectedValuesChange={(values) => {
+                    setSelectedDomains(values)
+                    const nextHierarchyOptions = buildCascadingHierarchyOptions(
+                      filterOptions.seats.map((seat) => ({
+                        domain: seat.domain,
+                        subDomain: seat.subDomain,
+                        team: seat.team,
+                      })),
+                      values,
+                      selectedSubDomains
+                    )
+                    setSelectedSubDomains((current) =>
+                      pruneInvalidSelections(current, nextHierarchyOptions.subDomains)
+                    )
+                    setSelectedTeams((current) =>
+                      pruneInvalidSelections(current, nextHierarchyOptions.teams)
+                    )
+                  }}
                 />
                 <MultiSelectFilter
-                  key={`forecast-subDomains:${filters.subDomains.join("|")}`}
                   label="Sub-domain"
                   name="subDomain"
-                  options={filterOptions.subDomains}
-                  selectedValues={filters.subDomains}
+                  options={hierarchyOptions.subDomains}
+                  selectedValues={selectedSubDomains}
+                  onSelectedValuesChange={(values) => {
+                    setSelectedSubDomains(values)
+                    const nextHierarchyOptions = buildCascadingHierarchyOptions(
+                      filterOptions.seats.map((seat) => ({
+                        domain: seat.domain,
+                        subDomain: seat.subDomain,
+                        team: seat.team,
+                      })),
+                      selectedDomains,
+                      values
+                    )
+                    setSelectedTeams((current) =>
+                      pruneInvalidSelections(current, nextHierarchyOptions.teams)
+                    )
+                  }}
                 />
                 <MultiSelectFilter
-                  key={`forecast-teams:${filters.teams.join("|")}`}
                   label="Team"
                   name="team"
-                  options={filterOptions.teams}
-                  selectedValues={filters.teams}
+                  options={hierarchyOptions.teams}
+                  selectedValues={selectedTeams}
+                  onSelectedValuesChange={setSelectedTeams}
                 />
                 <MultiSelectFilter
                   key={`forecast-seatIds:${filters.seatIds.join("|")}`}

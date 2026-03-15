@@ -65,6 +65,12 @@ export default async function ForecastsPage({ searchParams }: PageProps) {
       currentPath="/forecasts"
     >
       <ForecastsBrowser
+        key={[
+          data.activeYear,
+          data.filters.domains.join("|"),
+          data.filters.subDomains.join("|"),
+          data.filters.teams.join("|"),
+        ].join(":")}
         activeYear={data.activeYear}
         trackingYears={data.trackingYears}
         seats={data.seats}

@@ -4,6 +4,7 @@ import {
   BriefcaseBusiness,
   ClipboardList,
   Database,
+  FileSpreadsheet,
   LayoutDashboard,
   ReceiptText,
   Settings2,
@@ -18,6 +19,7 @@ export type FinancePath =
   | "/staffing"
   | "/budget-movements"
   | "/actuals"
+  | "/accruals"
   | "/forecasts"
   | "/people-roster"
   | "/internal-costs"
@@ -57,6 +59,12 @@ export const FINANCE_NAV_ITEMS: FinanceNavItem[] = [
     label: "Actuals",
     minimumRole: "MEMBER",
     icon: ReceiptText,
+  },
+  {
+    href: "/accruals",
+    label: "Accruals",
+    minimumRole: "MEMBER",
+    icon: FileSpreadsheet,
   },
   {
     href: "/forecasts",

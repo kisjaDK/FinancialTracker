@@ -18,6 +18,7 @@ import {
 } from "@/lib/finance/constants"
 import type { AuditActor } from "@/lib/finance/audit"
 import { buildAuditChanges, writeAuditLog } from "@/lib/finance/audit"
+import { buildAccrualsPageModel } from "@/lib/finance/accruals"
 import { buildExchangeRateLookup, convertAmountToDkk } from "@/lib/finance/currency"
 import {
   buildCostAssumptionLookup,
@@ -34,8 +35,10 @@ import type {
   ExternalActualImportFilters,
   ExternalActualImportView,
   BudgetMovementImportBatchView,
+  AccrualFilters,
   BudgetMovementFilters,
   BudgetMovementFilterOption,
+  AccrualSummaryRow,
   BudgetMovementView,
   DepartmentMappingView,
   LatestExchangeRate,
@@ -967,6 +970,35 @@ function normalizeValues(values: string[]) {
   return new Set(values.map((value) => normalizeValue(value)).filter(Boolean))
 }
 
+export function shouldHideForecastSeatForInactiveStatus(input: {
+  hideInactiveStatuses: boolean
+  status: string | null | undefined
+  hasSeatIdSearch: boolean
+  hasNameSearch: boolean
+}) {
+  if (!input.hideInactiveStatuses) {
+    return false
+  }
+
+  const normalizedStatus = normalizeValue(input.status)
+  const isCancelled =
+    normalizedStatus === "cancelled" ||
+    normalizedStatus === "cancelled- account still active in ad"
+  const isClosed =
+    normalizedStatus === "closed" ||
+    normalizedStatus === "closed- account still active in ad"
+
+  if (isCancelled) {
+    return true
+  }
+
+  if (isClosed && !input.hasSeatIdSearch && !input.hasNameSearch) {
+    return true
+  }
+
+  return false
+}
+
 function findMatchingBudgetArea(
   budgetAreas: {
     id: string
@@ -1482,7 +1514,7 @@ export async function getForecastsPageData(input?: {
       exchangeRates,
       activeYear
     )
-    const cancelled = isTrackerCancelledSeat(seat, effectiveSeat, exchangeRates)
+    const cancelled = isTrackerCancelledSeat(effectiveSeat)
 
     return {
       ...effectiveSeat,
@@ -1540,18 +1572,15 @@ export async function getForecastsPageData(input?: {
   const seatIdFilter = normalizeValues(filters.seatIds)
   const nameFilter = normalizeValues(filters.names)
   const reducedOnLeaveLocations = new Set(["denmark", "uk", "poland", "usa"])
-  const inactiveForecastStatuses = new Set([
-    "cancelled",
-    "closed",
-    "closed- account still active in ad",
-    "cancelled- account still active in ad",
-  ])
-
   const filteredSeats = mappedSeats
     .filter((seat) => {
       if (
-        filters.hideInactiveStatuses &&
-        inactiveForecastStatuses.has(normalizeValue(seat.status))
+        shouldHideForecastSeatForInactiveStatus({
+          hideInactiveStatuses: filters.hideInactiveStatuses,
+          status: seat.status,
+          hasSeatIdSearch: seatIdFilter.size > 0,
+          hasNameSearch: nameFilter.size > 0,
+        })
       ) {
         return false
       }
@@ -1656,13 +1685,72 @@ export async function getForecastsPageData(input?: {
       seats: mappedSeats.map((seat) => ({
         id: seat.id,
         seatId: seat.seatId,
-        name: seat.inSeat || "",
-        team: seat.team || "",
+        domain: seat.domain || "",
         subDomain: seat.subDomain || "",
+        team: seat.team || "",
+        name: seat.inSeat || "",
         status: seat.status || "",
       })),
     },
     internalCostServiceMessage: internalActualsMessage?.content ?? null,
+  }
+}
+
+export async function getAccrualsPageData(input?: {
+  year?: number
+  domain?: string
+  pillar?: string
+  months?: string[]
+}, viewer?: Pick<AppViewer, "role" | "scopes"> & { name?: string | null }) {
+  const trackingYears = await prisma.trackingYear.findMany({
+    orderBy: { year: "asc" },
+  })
+
+  const activeYear =
+    input?.year ??
+    trackingYears.find((trackingYear) => trackingYear.isActive)?.year ??
+    trackingYears.at(-1)?.year ??
+    new Date().getFullYear()
+
+  const trackingYear = await getOrCreateTrackingYear(activeYear)
+  await ensureFreshTrackerDerivation(activeYear)
+
+  const snapshot = await loadTrackerYearSnapshot(trackingYear.id, {
+    includeBudgetMovements: false,
+    seatOrderBy: [{ vendor: "asc" }, { team: "asc" }, { inSeat: "asc" }],
+  })
+
+  const scopedSeats = filterScopedItems(
+    snapshot.seats,
+    viewer,
+    (seat) => {
+      const effectiveSeat = getEffectiveSeat(seat)
+      return { domain: effectiveSeat.domain, subDomain: effectiveSeat.subDomain }
+    }
+  )
+
+  const filters: AccrualFilters = {
+    domain: input?.domain?.trim() ?? "",
+    pillar: input?.pillar?.trim() ?? "",
+    months: (input?.months ?? []).map((month) => month.trim()).filter(Boolean),
+  }
+
+  const model = buildAccrualsPageModel({
+    year: activeYear,
+    seats: scopedSeats,
+    assumptions: snapshot.assumptions,
+    exchangeRates: snapshot.exchangeRates,
+    filters,
+    submittedBy: viewer?.name?.trim() || "Finance",
+  })
+
+  return {
+    activeYear,
+    trackingYears,
+    filters: model.filters,
+    filterOptions: model.filterOptions,
+    rows: model.summaryRows as AccrualSummaryRow[],
+    totals: model.totals,
   }
 }
 
@@ -3778,6 +3866,11 @@ export async function getPeopleRosterPageData(input?: {
       subDomains: collectSortedValues(
         scopedRosterViews.map((person) => person.mappedSubDomain || person.subDomain)
       ),
+      hierarchyRows: scopedRosterViews.map((person) => ({
+        domain: person.domain,
+        subDomain: person.mappedSubDomain || person.subDomain,
+        team: person.team,
+      })),
       projectCodes: collectSortedValues(scopedRosterViews.map((person) => person.projectCode)).map(
         (projectCode) => ({
           value: projectCode,
@@ -4682,7 +4775,7 @@ function buildTrackerDetailFromSnapshot(
         exchangeRates,
         year
       )
-      const cancelled = isTrackerCancelledSeat(seat, effectiveSeat, exchangeRates)
+      const cancelled = isTrackerCancelledSeat(effectiveSeat)
       const months: SeatMonthView[] = seat.months.map((month) => {
         const converted =
           month.actualAmountRaw !== null && month.actualAmountRaw !== undefined

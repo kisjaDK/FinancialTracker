@@ -1,3 +1,4 @@
+import { buildAccrualsPageModel, resolveAccrualAccount } from "@/lib/finance/accruals"
 import test from "node:test"
 import assert from "node:assert/strict"
 import { parseCsv } from "@/lib/finance/csv"
@@ -11,8 +12,13 @@ import {
   buildStaffingOverviewRows,
   resolveActualsScopeSelection,
   resolveRosterSeatAssignment,
+  shouldHideForecastSeatForInactiveStatus,
   validateStaffingTargetInput,
 } from "@/lib/finance/queries"
+import {
+  buildCascadingHierarchyOptions,
+  pruneInvalidSelections,
+} from "@/lib/finance/hierarchy-filters"
 import type { SeatWithRelations } from "@/lib/finance/types"
 import { formatFteAsPercent } from "@/lib/finance/format"
 import { getRichTextPlainText, renderRichTextToHtml } from "@/lib/rich-text"
@@ -224,6 +230,332 @@ test("deriveSeatMetrics returns zero forecast when start and end dates are the s
 
   assert.equal(metrics.totalForecast, 0)
   assert.deepEqual(metrics.monthlyForecast, Array(12).fill(0))
+})
+
+test("deriveSeatMetrics keeps forecast for closed external seats during active months", () => {
+  const lookup = buildCostAssumptionLookup([])
+
+  const seat = {
+    id: "seat-closed-ext",
+    trackingYearId: "year-1",
+    budgetAreaId: "area-1",
+    rosterPersonId: null,
+    sourceType: "ROSTER",
+    seatId: "300001",
+    sourceKey: "roster:300001",
+    isActive: true,
+    domain: "Data & Analytics",
+    subDomain: "Customer, Channel, Colleague & Brand",
+    funding: "D&T Run",
+    pillar: "Customer, Channel, Colleague & Brand",
+    costCenter: "D6821",
+    projectCode: "L68210001",
+    resourceType: "Time & Material",
+    team: "Sales & Channels",
+    inSeat: "Casper Brandenborg",
+    description: "Consultant",
+    band: "External",
+    ppid: null,
+    location: "Denmark",
+    vendor: "Epico",
+    dailyRate: 7520,
+    ritm: null,
+    sow: null,
+    spendPlanId: null,
+    status: "Closed",
+    allocation: 1,
+    startDate: new Date("2023-01-01T00:00:00.000Z"),
+    endDate: new Date("2026-02-28T00:00:00.000Z"),
+    notes: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    months: Array.from({ length: 12 }, (_, monthIndex) => ({
+      id: `month-closed-${monthIndex}`,
+      trackerSeatId: "seat-closed-ext",
+      monthIndex,
+      actualAmount: 0,
+      actualAmountRaw: null,
+      actualCurrency: "DKK" as const,
+      exchangeRateUsed: null,
+      forecastOverrideAmount: null,
+      forecastIncluded: true,
+      usedForecastAmount: null,
+      notes: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })),
+    override: null,
+    budgetArea: null,
+  } satisfies SeatWithRelations
+
+  const metrics = deriveSeatMetrics(seat, lookup, [], 2026)
+
+  assert.equal(metrics.monthlyForecast[0], 150400)
+  assert.equal(metrics.monthlyForecast[1], 150400)
+  assert.equal(metrics.monthlyForecast[2], 0)
+  assert.equal(metrics.totalForecast, 300800)
+})
+
+test("resolveAccrualAccount maps cloud and managed services to finance accounts", () => {
+  assert.equal(resolveAccrualAccount("Cloud Cost"), "4800211")
+  assert.equal(resolveAccrualAccount("Managed Services"), "4800209")
+  assert.equal(resolveAccrualAccount("External T&M"), "4800213")
+})
+
+test("buildAccrualsPageModel uses past external forecasts without actuals and excludes perm seats", () => {
+  const sharedDates = {
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  }
+
+  const externalSeat = {
+    id: "seat-ext",
+    trackingYearId: "year-1",
+    budgetAreaId: "area-1",
+    rosterPersonId: null,
+    sourceType: "ROSTER",
+    seatId: "C00372",
+    sourceKey: "roster:C00372",
+    isActive: true,
+    domain: "Data & Analytics",
+    subDomain: "AI & Automation",
+    funding: "D&T Run",
+    pillar: "AI & Automation CoE",
+    costCenter: "D4453",
+    projectCode: "L44530001",
+    resourceType: "External T&M",
+    team: "Cloud Engineering",
+    inSeat: "Morgan Vendor",
+    description: "Platform engineer",
+    band: "External",
+    ppid: null,
+    location: "India",
+    vendor: "TCS",
+    dailyRate: 1000,
+    ritm: null,
+    sow: null,
+    spendPlanId: null,
+    status: "Active",
+    allocation: 1,
+    startDate: new Date("2026-01-01T00:00:00.000Z"),
+    endDate: new Date("2026-12-31T00:00:00.000Z"),
+    notes: null,
+    ...sharedDates,
+    months: [
+      {
+        id: "ext-month-0",
+        trackerSeatId: "seat-ext",
+        monthIndex: 0,
+        actualAmount: 0,
+        actualAmountRaw: null,
+        actualCurrency: "DKK",
+        exchangeRateUsed: null,
+        forecastOverrideAmount: null,
+        forecastIncluded: true,
+        usedForecastAmount: null,
+        notes: null,
+        ...sharedDates,
+      },
+      {
+        id: "ext-month-1",
+        trackerSeatId: "seat-ext",
+        monthIndex: 1,
+        actualAmount: 10000,
+        actualAmountRaw: 10000,
+        actualCurrency: "DKK",
+        exchangeRateUsed: 1,
+        forecastOverrideAmount: null,
+        forecastIncluded: true,
+        usedForecastAmount: null,
+        notes: null,
+        ...sharedDates,
+      },
+      ...Array.from({ length: 10 }, (_, index) => ({
+        id: `ext-month-${index + 2}`,
+        trackerSeatId: "seat-ext",
+        monthIndex: index + 2,
+        actualAmount: 0,
+        actualAmountRaw: null,
+        actualCurrency: "DKK" as const,
+        exchangeRateUsed: null,
+        forecastOverrideAmount: null,
+        forecastIncluded: true,
+        usedForecastAmount: null,
+        notes: null,
+        ...sharedDates,
+      })),
+    ],
+    override: null,
+    budgetArea: null,
+  } satisfies SeatWithRelations
+
+  const permSeat = {
+    ...externalSeat,
+    id: "seat-perm",
+    seatId: "300127",
+    sourceKey: "roster:300127",
+    resourceType: "Internal",
+    band: "Band 5",
+    vendor: null,
+    dailyRate: null,
+    months: externalSeat.months.map((month) => ({
+      ...month,
+      id: `perm-${month.id}`,
+      trackerSeatId: "seat-perm",
+      actualAmount: 0,
+      actualAmountRaw: null,
+    })),
+  } satisfies SeatWithRelations
+
+  const result = buildAccrualsPageModel({
+    year: 2026,
+    seats: [externalSeat, permSeat],
+    assumptions: [],
+    exchangeRates: [],
+    filters: {
+      domain: "",
+      pillar: "",
+      months: [],
+    },
+    submittedBy: "Kim",
+    now: new Date("2026-03-15T08:00:00.000Z"),
+  })
+
+  assert.equal(result.summaryRows.length, 1)
+  assert.equal(result.detailLines.length, 1)
+  assert.equal(result.summaryRows[0].vendorName, "TCS")
+  assert.equal(result.summaryRows[0].periodLabel, "Jan 2026")
+  assert.equal(result.summaryRows[0].amountDkk, 20000)
+})
+
+test("buildAccrualsPageModel scopes accruals to the selected months", () => {
+  const sharedDates = {
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  }
+
+  const externalSeat = {
+    id: "seat-ext-period",
+    trackingYearId: "year-1",
+    budgetAreaId: "area-1",
+    rosterPersonId: null,
+    sourceType: "ROSTER",
+    seatId: "300001",
+    sourceKey: "roster:300001",
+    isActive: true,
+    domain: "Data & Analytics",
+    subDomain: "Customer, Channel, Colleague & Brand",
+    funding: "D&T Run",
+    pillar: "Customer, Channel, Colleague & Brand",
+    costCenter: "D6821",
+    projectCode: "L68210001",
+    resourceType: "Time & Material",
+    team: "Sales & Channels",
+    inSeat: "Casper Brandenborg",
+    description: "Consultant",
+    band: "External",
+    ppid: null,
+    location: "Denmark",
+    vendor: "Epico",
+    dailyRate: 1000,
+    ritm: null,
+    sow: null,
+    spendPlanId: null,
+    status: "Closed",
+    allocation: 1,
+    startDate: new Date("2026-01-01T00:00:00.000Z"),
+    endDate: new Date("2026-03-31T00:00:00.000Z"),
+    notes: null,
+    ...sharedDates,
+    months: Array.from({ length: 12 }, (_, monthIndex) => ({
+      id: `month-period-${monthIndex}`,
+      trackerSeatId: "seat-ext-period",
+      monthIndex,
+      actualAmount: 0,
+      actualAmountRaw: null,
+      actualCurrency: "DKK" as const,
+      exchangeRateUsed: null,
+      forecastOverrideAmount: null,
+      forecastIncluded: true,
+      usedForecastAmount: null,
+      notes: null,
+      ...sharedDates,
+    })),
+    override: null,
+    budgetArea: null,
+  } satisfies SeatWithRelations
+
+  const result = buildAccrualsPageModel({
+    year: 2026,
+    seats: [externalSeat],
+    assumptions: [],
+    exchangeRates: [],
+    filters: {
+      domain: "",
+      pillar: "",
+      months: ["Jan", "Feb"],
+    },
+    submittedBy: "Kim",
+    now: new Date("2026-04-15T08:00:00.000Z"),
+  })
+
+  assert.deepEqual(result.totals.includedMonthLabels, ["Jan", "Feb"])
+  assert.equal(result.detailLines.length, 2)
+  assert.equal(result.summaryRows[0].periodLabel, "Jan - Feb 2026")
+})
+
+test("shouldHideForecastSeatForInactiveStatus keeps closed seats searchable but still hides cancelled", () => {
+  assert.equal(
+    shouldHideForecastSeatForInactiveStatus({
+      hideInactiveStatuses: true,
+      status: "Closed",
+      hasSeatIdSearch: false,
+      hasNameSearch: false,
+    }),
+    true
+  )
+
+  assert.equal(
+    shouldHideForecastSeatForInactiveStatus({
+      hideInactiveStatuses: true,
+      status: "Closed",
+      hasSeatIdSearch: false,
+      hasNameSearch: true,
+    }),
+    false
+  )
+
+  assert.equal(
+    shouldHideForecastSeatForInactiveStatus({
+      hideInactiveStatuses: true,
+      status: "Cancelled",
+      hasSeatIdSearch: true,
+      hasNameSearch: true,
+    }),
+    true
+  )
+})
+
+test("buildCascadingHierarchyOptions limits sub-domains and teams from higher selections", () => {
+  const result = buildCascadingHierarchyOptions(
+    [
+      { domain: "D&A", subDomain: "AI", team: "Agents" },
+      { domain: "D&A", subDomain: "Data", team: "Platform" },
+      { domain: "Tech", subDomain: "Infra", team: "Ops" },
+    ],
+    ["D&A"],
+    ["AI"]
+  )
+
+  assert.deepEqual(result.subDomains, ["AI", "Data"])
+  assert.deepEqual(result.teams, ["Agents"])
+})
+
+test("pruneInvalidSelections removes values that are no longer available", () => {
+  assert.deepEqual(
+    pruneInvalidSelections(["AI", "Infra"], ["AI", "Data"]),
+    ["AI"]
+  )
 })
 
 test("resolveRosterSeatAssignment uses mapped budget area pillar for derived project code", () => {

@@ -252,3 +252,50 @@ export type StaffingOverviewGroup = {
   months: StaffingMonthBucket[]
   rows: StaffingOverviewRow[]
 }
+
+export type AccrualFilters = {
+  domain: string
+  pillar: string
+  months: string[]
+}
+
+export type AccrualDetailLine = {
+  id: string
+  trackerSeatId: string
+  seatId: string
+  domain: string | null
+  pillar: string | null
+  projectCode: string | null
+  departmentCode: string | null
+  departmentName: string | null
+  vendorName: string
+  account: string
+  resourceType: string | null
+  team: string | null
+  inSeat: string | null
+  description: string | null
+  periodLabel: string
+  serviceLabel: string
+  monthIndex: number
+  amountDkk: number
+}
+
+export type AccrualSummaryRow = {
+  id: string
+  departmentName: string
+  departmentCode: string
+  costType: "OPEX"
+  account: string
+  amountDkk: number
+  projectNumber: string
+  vendorName: string
+  itemService: string
+  periodLabel: string
+  submittedBy: string
+  invoiceNumber: string
+  domain: string | null
+  pillar: string | null
+  projectCode: string | null
+  detailCount: number
+  details: AccrualDetailLine[]
+}

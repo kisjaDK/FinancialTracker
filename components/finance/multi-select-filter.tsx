@@ -12,6 +12,7 @@ type MultiSelectFilterProps = {
   name: string
   options: readonly (string | { value: string; label: string })[]
   selectedValues: string[]
+  onSelectedValuesChange?: (values: string[]) => void
 }
 
 export function MultiSelectFilter({
@@ -19,11 +20,17 @@ export function MultiSelectFilter({
   name,
   options,
   selectedValues,
+  onSelectedValuesChange,
 }: MultiSelectFilterProps) {
   const [search, setSearch] = useState("")
   const [isOpen, setIsOpen] = useState(false)
-  const [selected, setSelected] = useState(new Set(selectedValues))
+  const [uncontrolledSelected, setUncontrolledSelected] = useState(
+    new Set(selectedValues)
+  )
   const containerRef = useRef<HTMLDivElement | null>(null)
+  const selected = onSelectedValuesChange
+    ? new Set(selectedValues)
+    : uncontrolledSelected
 
   const normalizedOptions = useMemo(
     () =>
@@ -74,7 +81,14 @@ export function MultiSelectFilter({
   }, [normalizedOptions, search])
 
   function toggleValue(value: string) {
-    setSelected((current) => {
+    const updateSelected = onSelectedValuesChange
+      ? (updater: (current: Set<string>) => Set<string>) => {
+          const next = updater(new Set(selectedValues))
+          onSelectedValuesChange(Array.from(next))
+        }
+      : setUncontrolledSelected
+
+    updateSelected((current) => {
       const next = new Set(current)
       if (next.has(value)) {
         next.delete(value)
@@ -89,7 +103,11 @@ export function MultiSelectFilter({
     event.preventDefault()
     const form = event.currentTarget.closest("form")
     setSearch("")
-    setSelected(new Set())
+    if (onSelectedValuesChange) {
+      onSelectedValuesChange([])
+    } else {
+      setUncontrolledSelected(new Set())
+    }
     setIsOpen(false)
     requestAnimationFrame(() => {
       form?.requestSubmit()
@@ -104,7 +122,11 @@ export function MultiSelectFilter({
     if (filteredOptions.length === 1) {
       event.preventDefault()
       const [onlyOption] = filteredOptions
-      setSelected((current) => new Set(current).add(onlyOption.value))
+      if (onSelectedValuesChange) {
+        onSelectedValuesChange(Array.from(new Set(selectedValues).add(onlyOption.value)))
+      } else {
+        setUncontrolledSelected((current) => new Set(current).add(onlyOption.value))
+      }
       setSearch("")
       setIsOpen(false)
       return

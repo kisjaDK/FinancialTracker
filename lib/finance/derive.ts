@@ -21,35 +21,6 @@ export function isCancelledSeat(
   )
 }
 
-function isClosedSeat(
-  seat: Pick<SeatWithRelations, "status"> | Pick<ReturnType<typeof getEffectiveSeat>, "status">
-) {
-  return normalizeValue(seat.status) === "closed"
-}
-
-function normalizeBandValue(value: string | null | undefined) {
-  const normalized = normalizeValue(value)
-  return normalized.startsWith("band ") ? normalized.slice(5) : normalized
-}
-
-function lookupAssumption(
-  assumptions: CostAssumptionLookup,
-  band: string | null | undefined,
-  location: string | null | undefined
-) {
-  return assumptions[`${normalizeBandValue(band)}::${normalizeValue(location)}`]
-}
-
-export function buildCostAssumptionLookup(assumptions: CostAssumption[]) {
-  return assumptions.reduce<CostAssumptionLookup>((accumulator, assumption) => {
-    accumulator[
-      `${normalizeBandValue(assumption.band)}::${normalizeValue(assumption.location)}`
-    ] = assumption
-
-    return accumulator
-  }, {})
-}
-
 function applyOverrideValue<T>(baseValue: T, overrideValue: T | null | undefined) {
   if (overrideValue === null || overrideValue === undefined) {
     return baseValue
@@ -137,32 +108,33 @@ export function isMonthActiveForSeat(
   return true
 }
 
-export function hasActualSpend(
-  seat: Pick<SeatWithRelations, "months">,
-  exchangeRates: ExchangeRate[]
+function normalizeBandValue(value: string | null | undefined) {
+  const normalized = normalizeValue(value)
+  return normalized.startsWith("band ") ? normalized.slice(5) : normalized
+}
+
+function lookupAssumption(
+  assumptions: CostAssumptionLookup,
+  band: string | null | undefined,
+  location: string | null | undefined
 ) {
-  const exchangeRateLookup = buildExchangeRateLookup(exchangeRates)
+  return assumptions[`${normalizeBandValue(band)}::${normalizeValue(location)}`]
+}
 
-  return seat.months.some((month) => {
-    const amount =
-      month.actualAmountRaw !== null && month.actualAmountRaw !== undefined
-        ? convertAmountToDkk(
-            month.actualAmountRaw,
-            month.actualCurrency,
-            exchangeRateLookup
-          ).amountDkk
-        : (month.actualAmount ?? 0)
+export function buildCostAssumptionLookup(assumptions: CostAssumption[]) {
+  return assumptions.reduce<CostAssumptionLookup>((accumulator, assumption) => {
+    accumulator[
+      `${normalizeBandValue(assumption.band)}::${normalizeValue(assumption.location)}`
+    ] = assumption
 
-    return amount > 0
-  })
+    return accumulator
+  }, {})
 }
 
 export function isTrackerCancelledSeat(
-  seat: Pick<SeatWithRelations, "status" | "months">,
-  effectiveSeat: Pick<ReturnType<typeof getEffectiveSeat>, "status">,
-  exchangeRates: ExchangeRate[]
+  effectiveSeat: Pick<ReturnType<typeof getEffectiveSeat>, "status">
 ) {
-  return isCancelledSeat(effectiveSeat) || (isClosedSeat(effectiveSeat) && !hasActualSpend(seat, exchangeRates))
+  return isCancelledSeat(effectiveSeat)
 }
 
 export function deriveSeatMetrics(
@@ -172,7 +144,7 @@ export function deriveSeatMetrics(
   targetYear: number
 ): SeatDerivedMetrics {
   const effectiveSeat = getEffectiveSeat(seat)
-  const cancelled = isTrackerCancelledSeat(seat, effectiveSeat, exchangeRates)
+  const cancelled = isTrackerCancelledSeat(effectiveSeat)
   const external = isExternalSeat(effectiveSeat)
   const assumption = lookupAssumption(assumptions, effectiveSeat.band, effectiveSeat.location)
   const allocation = effectiveSeat.allocation ?? 0
