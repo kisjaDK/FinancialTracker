@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState, useTransition } from "react"
 import Link from "next/link"
 import { useRouter, useSearchParams } from "next/navigation"
+import { PenLine } from "lucide-react"
 import { toast } from "sonner"
 import { GuidanceHover } from "@/components/finance/guidance-hover"
 import { FinancePageIntro } from "@/components/finance/page-intro"
@@ -43,6 +44,12 @@ import {
 } from "@/components/ui/table"
 import { Textarea } from "@/components/ui/textarea"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 
 type TrackingYearOption = {
   id: string
@@ -103,6 +110,7 @@ type BulkForecastPreview = {
     allocationPercent: number
     requiresConfirmation: boolean
     amount: number
+    baseAmount: number
   }[]
 }
 
@@ -897,16 +905,23 @@ export function ActualsBrowser({
         >
           <DialogContent className="max-h-[85vh] max-w-6xl overflow-hidden">
             <DialogHeader>
-              <div className="flex items-center gap-2">
-                <DialogTitle>Review forecast copy to actuals</DialogTitle>
-                <GuidanceHover
-                  content={internalActualsMessage}
-                  label="Internal actuals service message"
-                />
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <DialogTitle>Review forecast copy to actuals</DialogTitle>
+                  <GuidanceHover
+                    content={internalActualsMessage}
+                    label="Internal actuals service message"
+                  />
+                </div>
+                {bulkCopyPreview ? (
+                  <div className="mr-10 rounded-full border border-border bg-muted px-3 py-1 text-sm font-semibold tracking-[0.02em] text-foreground">
+                    {bulkCopyPreview.monthLabel}
+                  </div>
+                ) : null}
               </div>
               <DialogDescription>
                 {bulkCopyPreview
-                  ? `Month: ${bulkCopyPreview.monthLabel}. Review the internal seats in ${
+                  ? `Review the internal seats in ${
                       bulkCopyPreview.subDomain || "the selected sub-domain"
                     } before completing the copy.`
                   : "Review the affected seats before completing the copy."}
@@ -949,10 +964,40 @@ export function ActualsBrowser({
                         <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
                           Forecast
                         </div>
-                        <div className="mt-1 font-medium">{formatCurrency(seat.amount)}</div>
-                        <Badge variant="secondary" className="mt-2">
-                          {seat.status || "No status"}
-                        </Badge>
+                        <div className="mt-1 flex items-center gap-1 font-medium">
+                          {Math.abs(seat.baseAmount - seat.amount) > 0.009 ? (
+                            <PenLine
+                              className="size-3.5 text-rose-700 dark:text-rose-300"
+                              aria-hidden="true"
+                            />
+                          ) : null}
+                          <span>{formatCurrency(seat.amount)}</span>
+                        </div>
+                        {Math.abs(seat.baseAmount - seat.amount) > 0.009 ? (
+                          <div className="text-xs text-muted-foreground">
+                            Original {formatCurrency(seat.baseAmount)}
+                          </div>
+                        ) : null}
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Badge
+                                variant="secondary"
+                                className="mt-2 inline-flex max-w-full truncate"
+                              >
+                                <span className="block max-w-24 truncate">
+                                  {seat.status || "No status"}
+                                </span>
+                              </Badge>
+                            </TooltipTrigger>
+                            <TooltipContent
+                              sideOffset={6}
+                              className="max-w-64 border border-border bg-popover text-foreground"
+                            >
+                              {seat.status || "No status"}
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
                       </div>
                       <div className="space-y-2">
                         <Label htmlFor={`bulk-amount-${seat.trackerSeatId}`}>Override Actual</Label>
@@ -1140,10 +1185,8 @@ export function ActualsBrowser({
                         <TableHeader>
                           <TableRow>
                             <TableHead>Seat</TableHead>
-                            <TableHead>Allocation</TableHead>
-                            <TableHead>Original</TableHead>
-                            <TableHead>DKK</TableHead>
-                            <TableHead>Daily Rate</TableHead>
+                            <TableHead className="w-16">Alloc</TableHead>
+                            <TableHead>Amount</TableHead>
                             <TableHead>Days</TableHead>
                           </TableRow>
                         </TableHeader>
@@ -1161,28 +1204,34 @@ export function ActualsBrowser({
                               </TableCell>
                               <TableCell>{formatNumber(seat.allocation)}</TableCell>
                               <TableCell>
-                                {formatNumber(seat.originalAmount)}{" "}
-                                {pastedInvoicePreview.originalCurrency}
+                                <div className="font-medium">{formatCurrency(seat.amountDkk)}</div>
+                                {pastedInvoicePreview.originalCurrency !== "DKK" ? (
+                                  <div className="text-xs text-muted-foreground">
+                                    {formatNumber(seat.originalAmount)}{" "}
+                                    {pastedInvoicePreview.originalCurrency}
+                                  </div>
+                                ) : null}
                               </TableCell>
-                              <TableCell>{formatCurrency(seat.amountDkk)}</TableCell>
                               <TableCell>
-                                {seat.dailyRate && seat.dailyRate > 0
-                                  ? `${formatNumber(seat.dailyRate)} ${pastedInvoicePreview.originalCurrency}`
-                                  : "Not set"}
-                              </TableCell>
-                              <TableCell>
-                                {seat.daysEquivalent !== null
-                                  ? `${formatNumber(seat.daysEquivalent)} days`
-                                  : "Unavailable"}
+                                <div className="font-medium">
+                                  {seat.daysEquivalent !== null
+                                    ? `${formatNumber(seat.daysEquivalent)} days`
+                                    : "Unavailable"}
+                                </div>
+                                <div className="text-xs text-muted-foreground">
+                                  {seat.dailyRate && seat.dailyRate > 0
+                                    ? formatCurrency(seat.dailyRate)
+                                    : "Daily rate not set"}
+                                </div>
                               </TableCell>
                             </TableRow>
                           ))}
                         </TableBody>
                       </Table>
                       <div className="rounded-lg border border-border/70 bg-muted/30 p-3 text-sm text-muted-foreground">
-                        Validation uses the invoice amount divided by the mapped seat daily rate to
-                        show the implied number of billed days. Other invoice expenses beyond
-                        billable hours can skew this check.
+                        Validation uses each seat&apos;s DKK-converted invoice share divided by the
+                        mapped seat daily rate to show the implied number of billed days. Other
+                        invoice expenses beyond billable hours can skew this check.
                       </div>
                     </div>
                   ) : pastedInvoicePreview.status === "matched" ? (

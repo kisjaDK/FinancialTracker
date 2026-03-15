@@ -205,7 +205,7 @@ export function UserAdminBrowser({
             <CardHeader>
               <CardTitle>{editingEmail ? "Edit User" : "Add User"}</CardTitle>
               <CardDescription>
-                Admins can manage guests and members. Super-admins can also promote members to admins.
+                Admins can manage guests and members. Super-admins can also promote members to admins. Super-admin accounts cannot be edited here.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -405,7 +405,17 @@ export function UserAdminBrowser({
                       </TableCell>
                       <TableCell className="text-right">
                         <div className="flex justify-end gap-2">
-                          <Button type="button" variant="outline" onClick={() => startEdit(user)}>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={() => startEdit(user)}
+                            disabled={user.role === "SUPER_ADMIN"}
+                            title={
+                              user.role === "SUPER_ADMIN"
+                                ? "Super-admin accounts cannot be edited"
+                                : undefined
+                            }
+                          >
                             Edit
                           </Button>
                           <Button
@@ -414,8 +424,13 @@ export function UserAdminBrowser({
                             size="icon-sm"
                             className="text-red-600 hover:text-red-700"
                             onClick={() => removeUser(user.email)}
+                            disabled={user.role === "SUPER_ADMIN"}
                             aria-label={`Remove ${user.email}`}
-                            title="Remove user"
+                            title={
+                              user.role === "SUPER_ADMIN"
+                                ? "Super-admin accounts cannot be removed"
+                                : "Remove user"
+                            }
                           >
                             <Trash2 />
                           </Button>

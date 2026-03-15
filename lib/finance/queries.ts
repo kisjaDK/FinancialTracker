@@ -2777,22 +2777,27 @@ async function previewExternalActualBatchForMatches(input: {
     originalCurrency: input.currency,
     rateToDkk: rate.rateToDkk,
     totalDkk: Math.round(input.amount * rate.rateToDkk * 100) / 100,
-    seats: matches.map((match, index) => ({
-      trackerSeatId: match.trackerSeatId,
-      seatId: match.seatId,
-      team: match.team,
-      inSeat: match.inSeat,
-      description: input.description ?? match.description,
-      allocation: match.allocation,
-      dailyRate: match.dailyRate,
-      originalAmount: originalShares[index],
-      amountDkk: Math.round(originalShares[index] * rate.rateToDkk * 100) / 100,
-      daysEquivalent:
-        match.dailyRate && match.dailyRate > 0
-          ? Math.round((originalShares[index] / match.dailyRate) * 100) / 100
-          : null,
-      usedForecastAmount: match.usedForecastAmount,
-    })),
+    seats: matches.map((match, index) => {
+      const originalAmount = originalShares[index]
+      const amountDkk = Math.round(originalAmount * rate.rateToDkk * 100) / 100
+
+      return {
+        trackerSeatId: match.trackerSeatId,
+        seatId: match.seatId,
+        team: match.team,
+        inSeat: match.inSeat,
+        description: input.description ?? match.description,
+        allocation: match.allocation,
+        dailyRate: match.dailyRate,
+        originalAmount,
+        amountDkk,
+        daysEquivalent:
+          match.dailyRate && match.dailyRate > 0
+            ? Math.round((amountDkk / match.dailyRate) * 100) / 100
+            : null,
+        usedForecastAmount: match.usedForecastAmount,
+      }
+    }),
   }
 }
 
@@ -6407,7 +6412,17 @@ async function getInternalForecastCopyCandidates(input: {
         exchangeRates,
         input.year
       )
+      const baseMetrics = deriveSeatMetrics(
+        seat,
+        assumptionLookup,
+        exchangeRates,
+        input.year,
+        {
+          ignoreForecastOverrides: true,
+        }
+      )
       const monthForecast = metrics.monthlyForecast[input.monthIndex] ?? 0
+      const baseMonthForecast = baseMetrics.monthlyForecast[input.monthIndex] ?? 0
 
       if (monthForecast <= 0) {
         return null
@@ -6428,6 +6443,7 @@ async function getInternalForecastCopyCandidates(input: {
         allocationPercent: allocation <= 1 ? allocation * 100 : allocation,
         requiresConfirmation: isOnLeave,
         amount: Math.round(monthForecast),
+        baseAmount: Math.round(baseMonthForecast),
       }
     })
     .filter(
@@ -6442,6 +6458,7 @@ async function getInternalForecastCopyCandidates(input: {
         allocationPercent: number
         requiresConfirmation: boolean
         amount: number
+        baseAmount: number
       } => Boolean(seat)
     )
     .sort((left, right) => {

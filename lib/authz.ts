@@ -236,6 +236,10 @@ export function canManageRole(
   currentRole: AppRole | null,
   nextRole: AppRole | null
 ) {
+  if (currentRole === "SUPER_ADMIN") {
+    return false
+  }
+
   if (actorRole === "SUPER_ADMIN") {
     if (nextRole === "SUPER_ADMIN") {
       return false
@@ -256,7 +260,7 @@ export function canManageRole(
     return false
   }
 
-  if (currentRole === "ADMIN" || currentRole === "SUPER_ADMIN") {
+  if (currentRole === "ADMIN") {
     return false
   }
 
