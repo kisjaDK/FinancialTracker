@@ -484,7 +484,11 @@ export function PeopleRosterBrowser({
             </div>
           </CardHeader>
           <CardContent>
-            <form className="grid gap-4 lg:grid-cols-3" method="GET">
+            <form
+              action={`/people-roster#imported-roster-rows`}
+              className="grid gap-4 lg:grid-cols-3"
+              method="GET"
+            >
               <div className="grid gap-4 md:grid-cols-2 lg:col-span-3">
                 <div className="space-y-2">
                   <label htmlFor="staffingBucket" className="text-sm font-medium">
@@ -653,7 +657,7 @@ export function PeopleRosterBrowser({
           </CardContent>
         </Card>
 
-        <Card className="brand-card">
+        <Card id="imported-roster-rows" className="brand-card">
           <CardHeader>
             <CardTitle>Imported Roster Rows</CardTitle>
             <CardDescription>

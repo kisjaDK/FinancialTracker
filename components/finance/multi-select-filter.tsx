@@ -96,6 +96,26 @@ export function MultiSelectFilter({
     })
   }
 
+  function handleSearchKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
+    if (event.key !== "Enter") {
+      return
+    }
+
+    if (filteredOptions.length === 1) {
+      event.preventDefault()
+      const [onlyOption] = filteredOptions
+      setSelected((current) => new Set(current).add(onlyOption.value))
+      setSearch("")
+      setIsOpen(false)
+      return
+    }
+
+    if (selected.size > 0) {
+      event.preventDefault()
+      setIsOpen(false)
+    }
+  }
+
   return (
     <div ref={containerRef} className="space-y-2">
       <Label>{label}</Label>
@@ -106,6 +126,7 @@ export function MultiSelectFilter({
             setSearch(event.target.value)
             setIsOpen(true)
           }}
+          onKeyDown={handleSearchKeyDown}
           onFocus={() => setIsOpen(true)}
           placeholder={`Search ${label.toLowerCase()}`}
           className={search || selected.size > 0 ? "pr-10" : undefined}
