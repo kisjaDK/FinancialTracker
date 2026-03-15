@@ -66,6 +66,45 @@ model AppUser {
   createdAt DateTime          @default(now())
   updatedAt DateTime          @updatedAt
   scopes    UserAccessScope[]
+  createdFeatureRequests FeatureRequest[]     @relation("FeatureRequestCreator")
+  requestedFeatureRequestDeletions FeatureRequest[] @relation("FeatureRequestDeletionRequester")
+  featureRequestVotes FeatureRequestVote[]
+}
+
+model FeatureRequest {
+  id                        String               @id @default(cuid())
+  title                     String
+  userStory                 String
+  problemContext            String
+  createdByUserId           String?
+  createdByName             String
+  createdByEmail            String
+  votesCount                Int                  @default(0)
+  isHidden                  Boolean              @default(false)
+  deletionRequestedAt       DateTime?
+  deletionRequestedByUserId String?
+  createdAt                 DateTime             @default(now())
+  updatedAt                 DateTime             @updatedAt
+  createdBy                 AppUser?             @relation("FeatureRequestCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  deletionRequestedBy       AppUser?             @relation("FeatureRequestDeletionRequester", fields: [deletionRequestedByUserId], references: [id], onDelete: SetNull)
+  votes                     FeatureRequestVote[]
+
+  @@index([votesCount(sort: Desc), createdAt(sort: Desc)])
+  @@index([createdByUserId])
+  @@index([deletionRequestedByUserId])
+  @@index([isHidden, votesCount(sort: Desc), createdAt(sort: Desc)])
+}
+
+model FeatureRequestVote {
+  id               String         @id @default(cuid())
+  featureRequestId String
+  userId           String
+  createdAt        DateTime       @default(now())
+  featureRequest   FeatureRequest @relation(fields: [featureRequestId], references: [id], onDelete: Cascade)
+  user             AppUser        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([featureRequestId, userId])
+  @@index([userId])
 }
 
 model UserAccessScope {

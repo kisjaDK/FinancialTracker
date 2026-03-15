@@ -29,6 +29,7 @@ type FinanceHeaderProps = {
     | "/actuals"
     | "/accruals"
     | "/forecasts"
+    | "/feature-requests"
     | "/people-roster"
     | "/internal-costs"
     | "/admin"
@@ -67,6 +68,11 @@ const NAV_ITEMS = [
     href: "/forecasts",
     label: "Forecasts",
     minimumRole: "MEMBER",
+  },
+  {
+    href: "/feature-requests",
+    label: "Feature Requests",
+    minimumRole: "GUEST",
   },
   {
     href: "/people-roster",

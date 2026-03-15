@@ -46,7 +46,14 @@ export function FinanceAppShell({
   currentPath,
   children,
 }: FinanceAppShellProps) {
+  const featureRequestsItem = FINANCE_NAV_ITEMS.find(
+    (item) => item.href === "/feature-requests"
+  );
   const primaryItems = FINANCE_NAV_ITEMS.filter((item) => {
+    if (item.href === "/feature-requests") {
+      return false;
+    }
+
     if (ROLE_RANK[userRole] < ROLE_RANK[item.minimumRole]) {
       return false;
     }
@@ -60,6 +67,9 @@ export function FinanceAppShell({
 
   const adminItems =
     ROLE_RANK[userRole] >= ROLE_RANK.ADMIN ? FINANCE_ADMIN_NAV_ITEMS : [];
+  const showFeatureRequestsLink =
+    featureRequestsItem &&
+    ROLE_RANK[userRole] >= ROLE_RANK[featureRequestsItem.minimumRole];
 
   const currentItem =
     [...FINANCE_NAV_ITEMS, ...FINANCE_ADMIN_NAV_ITEMS].find(
@@ -166,6 +176,24 @@ export function FinanceAppShell({
         <SidebarSeparator />
 
         <SidebarFooter className="gap-3 p-3 group-data-[collapsible=icon]:items-center group-data-[collapsible=icon]:px-2">
+          {showFeatureRequestsLink ? (
+            <SidebarMenu className="w-full">
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  asChild
+                  isActive={featureRequestsItem.href === currentPath}
+                  tooltip={featureRequestsItem.label}
+                  className="w-full group-data-[collapsible=icon]:size-10! group-data-[collapsible=icon]:p-0! group-data-[collapsible=icon]:justify-center! group-data-[collapsible=icon]:[&>svg]:size-5 group-data-[collapsible=icon]:[&>span]:hidden"
+                >
+                  <Link href={buildHref(featureRequestsItem.href, activeYear)}>
+                    <featureRequestsItem.icon />
+                    <span>{featureRequestsItem.label}</span>
+                  </Link>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            </SidebarMenu>
+          ) : null}
+
           <div className="flex items-center gap-3 rounded-xl bg-sidebar-accent/60 px-3 py-3 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-2">
             <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-sidebar-accent text-xs font-semibold text-sidebar-accent-foreground">
               {initials || "P"}

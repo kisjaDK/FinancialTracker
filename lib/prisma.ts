@@ -1,6 +1,6 @@
 import { PrismaClient } from "@prisma/client"
 
-const PRISMA_SCHEMA_VERSION = "2026-03-15-accrual-account-mappings-v1"
+const PRISMA_SCHEMA_VERSION = "2026-03-15-feature-requests-v1"
 
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined
@@ -20,7 +20,9 @@ const supportsFinanceModels =
   "auditLog" in cachedPrisma &&
   "externalActualImport" in cachedPrisma &&
   "externalActualEntry" in cachedPrisma &&
-  "accrualAccountMapping" in cachedPrisma
+  "accrualAccountMapping" in cachedPrisma &&
+  "featureRequest" in cachedPrisma &&
+  "featureRequestVote" in cachedPrisma
 const isMatchingSchemaVersion =
   globalForPrisma.prismaSchemaVersion === PRISMA_SCHEMA_VERSION
 
@@ -48,7 +50,9 @@ export function getPrismaClient() {
     "auditLog" in globalPrisma &&
     "externalActualImport" in globalPrisma &&
     "externalActualEntry" in globalPrisma &&
-    "accrualAccountMapping" in globalPrisma
+    "accrualAccountMapping" in globalPrisma &&
+    "featureRequest" in globalPrisma &&
+    "featureRequestVote" in globalPrisma
   const globalMatchesSchemaVersion =
     globalForPrisma.prismaSchemaVersion === PRISMA_SCHEMA_VERSION
 

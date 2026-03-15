@@ -5,6 +5,7 @@ import {
   ClipboardList,
   Database,
   FileSpreadsheet,
+  Lightbulb,
   LayoutDashboard,
   ReceiptText,
   Settings2,
@@ -23,6 +24,7 @@ export type FinancePath =
   | "/forecasts"
   | "/people-roster"
   | "/internal-costs"
+  | "/feature-requests"
   | "/admin"
   | "/staffing-admin"
   | "/audit-log"
@@ -71,6 +73,12 @@ export const FINANCE_NAV_ITEMS: FinanceNavItem[] = [
     label: "Forecasts",
     minimumRole: "MEMBER",
     icon: ClipboardList,
+  },
+  {
+    href: "/feature-requests",
+    label: "Feature Requests",
+    minimumRole: "GUEST",
+    icon: Lightbulb,
   },
   {
     href: "/people-roster",
