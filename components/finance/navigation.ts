@@ -94,16 +94,16 @@ export const FINANCE_NAV_ITEMS: FinanceNavItem[] = [
 
 export const FINANCE_ADMIN_NAV_ITEMS: FinanceNavItem[] = [
   {
-    href: "/admin",
-    label: "Admin",
-    minimumRole: "ADMIN",
-    icon: Settings2,
-  },
-  {
     href: "/staffing-admin",
     label: "Staffing Admin",
     minimumRole: "ADMIN",
     icon: BriefcaseBusiness,
+  },
+  {
+    href: "/admin",
+    label: "Admin Home",
+    minimumRole: "ADMIN",
+    icon: Settings2,
   },
   {
     href: "/user-admin",

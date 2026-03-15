@@ -94,6 +94,7 @@ model TrackingYear {
   budgetMovements     BudgetMovement[]
   costAssumptions     CostAssumption[]
   departmentMappings  DepartmentMapping[]
+  accrualAccountMappings AccrualAccountMapping[]
   externalActualEntries ExternalActualEntry[]
   externalActualImports ExternalActualImport[]
   exchangeRates       ExchangeRate[]
@@ -188,6 +189,20 @@ model DepartmentMapping {
 
   @@unique([trackingYearId, codeType, sourceCode, subDomain, projectCode])
   @@index([trackingYearId, sourceCode])
+}
+
+model AccrualAccountMapping {
+  id             String       @id @default(cuid())
+  trackingYearId String
+  resourceType   String
+  accountCode    String
+  notes          String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  trackingYear   TrackingYear @relation(fields: [trackingYearId], references: [id], onDelete: Cascade)
+
+  @@unique([trackingYearId, resourceType])
+  @@index([trackingYearId, resourceType])
 }
 
 model BudgetMovementBatch {

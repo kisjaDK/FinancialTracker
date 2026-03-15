@@ -8,6 +8,7 @@ import {
   SidebarContent,
   SidebarFooter,
   SidebarGroup,
+  SidebarGroupContent,
   SidebarGroupLabel,
   SidebarHeader,
   SidebarInset,
@@ -103,34 +104,9 @@ export function FinanceAppShell({
             <SidebarGroupLabel className="px-3 text-[0.72rem] tracking-[0.18em] text-sidebar-foreground/55">
               Navigation
             </SidebarGroupLabel>
-            <SidebarMenu>
-              {primaryItems.map((item) => {
-                const Icon = item.icon;
-
-                return (
-                  <SidebarMenuItem key={item.href}>
-                    <SidebarMenuButton
-                      asChild
-                      isActive={item.href === currentPath}
-                      tooltip={item.label}
-                      className="group-data-[collapsible=icon]:size-10! group-data-[collapsible=icon]:p-0! group-data-[collapsible=icon]:justify-center! group-data-[collapsible=icon]:[&>svg]:size-5 group-data-[collapsible=icon]:[&>span]:hidden"
-                    >
-                      <Link href={buildHref(item.href, activeYear)}>
-                        <Icon />
-                        <span>{item.label}</span>
-                      </Link>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                );
-              })}
-            </SidebarMenu>
-          </SidebarGroup>
-
-          {adminItems.length > 0 ? (
-            <SidebarGroup className="group-data-[collapsible=icon]:items-center group-data-[collapsible=icon]:p-1">
-              <SidebarGroupLabel>Admin</SidebarGroupLabel>
+            <SidebarGroupContent className="pt-1">
               <SidebarMenu>
-                {adminItems.map((item) => {
+                {primaryItems.map((item) => {
                   const Icon = item.icon;
 
                   return (
@@ -150,6 +126,39 @@ export function FinanceAppShell({
                   );
                 })}
               </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+
+          {adminItems.length > 0 ? (
+            <SidebarGroup className="group-data-[collapsible=icon]:items-center group-data-[collapsible=icon]:p-1">
+              <SidebarGroupLabel>Admin Tools</SidebarGroupLabel>
+              <SidebarGroupContent className="pt-1">
+                <SidebarMenu>
+                  {/* Work around a sidebar rendering issue that drops the first admin entry. */}
+                  <SidebarMenuItem aria-hidden="true" className="hidden">
+                    <SidebarMenuButton tabIndex={-1} />
+                  </SidebarMenuItem>
+                  {adminItems.map((item) => {
+                    const Icon = item.icon;
+
+                    return (
+                      <SidebarMenuItem key={item.href}>
+                        <SidebarMenuButton
+                          asChild
+                          isActive={item.href === currentPath}
+                          tooltip={item.label}
+                          className="group-data-[collapsible=icon]:size-10! group-data-[collapsible=icon]:p-0! group-data-[collapsible=icon]:justify-center! group-data-[collapsible=icon]:[&>svg]:size-5 group-data-[collapsible=icon]:[&>span]:hidden"
+                        >
+                          <Link href={buildHref(item.href, activeYear)}>
+                            <Icon />
+                            <span>{item.label}</span>
+                          </Link>
+                        </SidebarMenuButton>
+                      </SidebarMenuItem>
+                    );
+                  })}
+                </SidebarMenu>
+              </SidebarGroupContent>
             </SidebarGroup>
           ) : null}
         </SidebarContent>

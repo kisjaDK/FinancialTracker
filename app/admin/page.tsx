@@ -29,6 +29,8 @@ export default async function AdminPage({ searchParams }: PageProps) {
         trackingYears={data.trackingYears}
         statuses={data.statuses}
         departmentMappings={data.departmentMappings}
+        accrualAccountMappings={data.accrualAccountMappings}
+        rosterResourceTypes={data.rosterResourceTypes}
         exchangeRates={data.exchangeRates}
       />
     </FinanceAppShell>

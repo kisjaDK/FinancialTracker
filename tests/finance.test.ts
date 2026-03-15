@@ -302,7 +302,16 @@ test("resolveAccrualAccount maps cloud and managed services to finance accounts"
   assert.equal(resolveAccrualAccount("External T&M"), "4800213")
 })
 
-test("buildAccrualsPageModel uses past external forecasts without actuals and excludes perm seats", () => {
+test("resolveAccrualAccount prefers admin-defined resource type mappings", () => {
+  assert.equal(
+    resolveAccrualAccount("Time & Material", {
+      "time & material": "4800999",
+    }),
+    "4800999"
+  )
+})
+
+test("buildAccrualsPageModel uses past and current external forecasts without actuals and excludes perm seats", () => {
   const sharedDates = {
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -422,10 +431,10 @@ test("buildAccrualsPageModel uses past external forecasts without actuals and ex
   })
 
   assert.equal(result.summaryRows.length, 1)
-  assert.equal(result.detailLines.length, 1)
+  assert.equal(result.detailLines.length, 2)
   assert.equal(result.summaryRows[0].vendorName, "TCS")
-  assert.equal(result.summaryRows[0].periodLabel, "Jan 2026")
-  assert.equal(result.summaryRows[0].amountDkk, 20000)
+  assert.equal(result.summaryRows[0].periodLabel, "Jan + Mar 2026")
+  assert.equal(result.summaryRows[0].amountDkk, 40000)
 })
 
 test("buildAccrualsPageModel scopes accruals to the selected months", () => {

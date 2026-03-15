@@ -142,11 +142,6 @@ function normalizeDomainLabel(value: string | null | undefined) {
     : trimmed
 }
 
-function normalizeSubDomainLabel(value: string | null | undefined) {
-  const trimmed = value?.trim()
-  return trimmed || null
-}
-
 function isCodeLikeAreaLabel(value: string | null | undefined) {
   const trimmed = value?.trim()
   if (!trimmed) {

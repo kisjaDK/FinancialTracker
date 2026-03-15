@@ -87,12 +87,12 @@ const NAV_ITEMS = [
 
 const ADMIN_NAV_ITEMS = [
   {
-    href: "/admin",
-    label: "Admin",
-  },
-  {
     href: "/staffing-admin",
     label: "Staffing Admin",
+  },
+  {
+    href: "/admin",
+    label: "Admin Home",
   },
   {
     href: "/user-admin",

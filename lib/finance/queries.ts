@@ -36,6 +36,7 @@ import type {
   ExternalActualImportView,
   BudgetMovementImportBatchView,
   AccrualFilters,
+  AccrualAccountMappingView,
   BudgetMovementFilters,
   BudgetMovementFilterOption,
   AccrualSummaryRow,
@@ -53,7 +54,7 @@ import type {
   StatusDefinitionView,
 } from "@/lib/finance/types"
 import { filterByScopes, hasScopeRestrictions, type AppViewer } from "@/lib/authz"
-import { prisma } from "@/lib/prisma"
+import { getPrismaClient, prisma } from "@/lib/prisma"
 
 export const INTERNAL_ACTUALS_SERVICE_MESSAGE_KEY: ServiceMessageKey =
   "INTERNAL_ACTUALS"
@@ -970,6 +971,22 @@ function normalizeValues(values: string[]) {
   return new Set(values.map((value) => normalizeValue(value)).filter(Boolean))
 }
 
+function getAccrualAccountMappingDelegate() {
+  const currentPrisma = getPrismaClient()
+  const delegate = (currentPrisma as typeof prisma & {
+    accrualAccountMapping?: {
+      findMany: typeof prisma.departmentMapping.findMany
+      findFirst: typeof prisma.departmentMapping.findFirst
+      findFirstOrThrow: typeof prisma.departmentMapping.findFirstOrThrow
+      create: typeof prisma.departmentMapping.create
+      update: typeof prisma.departmentMapping.update
+      delete: typeof prisma.departmentMapping.delete
+    }
+  }).accrualAccountMapping
+
+  return delegate ?? null
+}
+
 export function shouldHideForecastSeatForInactiveStatus(input: {
   hideInactiveStatuses: boolean
   status: string | null | undefined
@@ -1735,11 +1752,16 @@ export async function getAccrualsPageData(input?: {
     months: (input?.months ?? []).map((month) => month.trim()).filter(Boolean),
   }
 
+  const accountMappings = await getAccrualAccountMappings(activeYear)
+
   const model = buildAccrualsPageModel({
     year: activeYear,
     seats: scopedSeats,
     assumptions: snapshot.assumptions,
     exchangeRates: snapshot.exchangeRates,
+    accountMappings: Object.fromEntries(
+      accountMappings.map((mapping) => [normalizeValue(mapping.resourceType), mapping.accountCode])
+    ),
     filters,
     submittedBy: viewer?.name?.trim() || "Finance",
   })
@@ -3972,10 +3994,12 @@ export async function getAdminPageData(year?: number) {
     trackingYears.at(-1)?.year ??
     new Date().getFullYear()
 
-  const [statuses, exchangeRates, departmentMappings] = await Promise.all([
+  const [statuses, exchangeRates, departmentMappings, accrualAccountMappings, rosterResourceTypes] = await Promise.all([
     ensureStatusDefinitions(activeYear),
     getLatestExchangeRates(activeYear),
     getDepartmentMappings(activeYear),
+    getAccrualAccountMappings(activeYear),
+    getActiveRosterResourceTypes(activeYear),
   ])
 
   return {
@@ -3984,6 +4008,8 @@ export async function getAdminPageData(year?: number) {
     statuses,
     exchangeRates,
     departmentMappings,
+    accrualAccountMappings,
+    rosterResourceTypes,
   }
 }
 
@@ -5126,6 +5152,60 @@ export async function getDepartmentMappings(
   }))
 }
 
+export async function getAccrualAccountMappings(
+  year: number
+): Promise<AccrualAccountMappingView[]> {
+  const trackingYear = await getOrCreateTrackingYear(year)
+  const delegate = getAccrualAccountMappingDelegate()
+  if (!delegate) {
+    return []
+  }
+
+  const mappings = await delegate.findMany({
+    where: {
+      trackingYearId: trackingYear.id,
+    },
+    orderBy: [{ resourceType: "asc" }],
+  })
+
+  return mappings.map((mapping) => ({
+    id: mapping.id,
+    resourceType: mapping.resourceType,
+    accountCode: mapping.accountCode,
+    notes: mapping.notes,
+  }))
+}
+
+export async function getActiveRosterResourceTypes(year: number) {
+  const trackingYear = await getOrCreateTrackingYear(year)
+  const people = await prisma.rosterPerson.findMany({
+    where: {
+      trackingYearId: trackingYear.id,
+      import: {
+        status: "APPROVED",
+      },
+    },
+    include: {
+      import: true,
+    },
+    orderBy: [{ import: { importedAt: "desc" } }, { createdAt: "desc" }],
+  })
+
+  const latestPeople = Array.from(
+    people
+      .reduce<Map<string, (typeof people)[number]>>((latestBySeat, person) => {
+        if (!latestBySeat.has(person.seatId)) {
+          latestBySeat.set(person.seatId, person)
+        }
+
+        return latestBySeat
+      }, new Map())
+      .values()
+  )
+
+  return collectSortedValues(latestPeople.map((person) => person.resourceType))
+}
+
 export async function upsertExchangeRate(input: {
   year: number
   currency: CurrencyCode
@@ -5373,6 +5453,120 @@ export async function upsertDepartmentMapping(input: {
   })
 
   return mapping
+}
+
+export async function upsertAccrualAccountMapping(input: {
+  id?: string
+  year: number
+  resourceType: string
+  accountCode: string
+  notes?: string
+}, actor?: AuditActor) {
+  const trackingYear = await getOrCreateTrackingYear(input.year)
+  const delegate = getAccrualAccountMappingDelegate()
+  if (!delegate) {
+    throw new Error(
+      "Accrual account mappings are unavailable until the Prisma client and database schema are updated."
+    )
+  }
+
+  const resourceType = input.resourceType.trim()
+  const accountCode = input.accountCode.trim()
+
+  if (!resourceType) {
+    throw new Error("Resource type is required.")
+  }
+
+  if (!accountCode) {
+    throw new Error("Account code is required.")
+  }
+
+  const before = input.id
+    ? await delegate.findFirst({
+        where: {
+          id: input.id,
+          trackingYearId: trackingYear.id,
+        },
+      })
+    : await delegate.findFirst({
+        where: {
+          trackingYearId: trackingYear.id,
+          resourceType,
+        },
+      })
+
+  const mapping = before
+    ? await delegate.update({
+        where: { id: before.id },
+        data: {
+          resourceType,
+          accountCode,
+          notes: input.notes?.trim() || null,
+        },
+      })
+    : await delegate.create({
+        data: {
+          trackingYearId: trackingYear.id,
+          resourceType,
+          accountCode,
+          notes: input.notes?.trim() || null,
+        },
+      })
+
+  await writeAuditLog({
+    trackingYearId: trackingYear.id,
+    entityType: "AccrualAccountMapping",
+    entityId: mapping.id,
+    action: before ? "UPDATE" : "CREATE",
+    actor,
+    changes: buildAuditChanges(before, mapping, [
+      "resourceType",
+      "accountCode",
+      "notes",
+    ]),
+  })
+
+  return mapping
+}
+
+export async function deleteAccrualAccountMapping(input: {
+  year: number
+  id: string
+}, actor?: AuditActor) {
+  ensureValidYear(input.year)
+  const trackingYear = await getOrCreateTrackingYear(input.year)
+  const delegate = getAccrualAccountMappingDelegate()
+  if (!delegate) {
+    throw new Error(
+      "Accrual account mappings are unavailable until the Prisma client and database schema are updated."
+    )
+  }
+
+  const before = await delegate.findFirstOrThrow({
+    where: {
+      id: input.id,
+      trackingYearId: trackingYear.id,
+    },
+  })
+
+  await delegate.delete({
+    where: { id: before.id },
+  })
+
+  await writeAuditLog({
+    trackingYearId: trackingYear.id,
+    entityType: "AccrualAccountMapping",
+    entityId: before.id,
+    action: "DELETE",
+    actor,
+    changes: buildAuditChanges(before, null, [
+      "resourceType",
+      "accountCode",
+      "notes",
+    ]),
+  })
+
+  return before
 }
 
 export async function deleteDepartmentMapping(input: {

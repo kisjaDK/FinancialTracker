@@ -28,6 +28,7 @@ type BuildAccrualsPageModelInput = {
     updatedAt: Date
   }>
   exchangeRates: ExchangeRate[]
+  accountMappings?: Record<string, string>
   filters: AccrualFilters
   submittedBy: string
   now?: Date
@@ -50,7 +51,15 @@ function collectSortedValues(values: (string | null | undefined)[]) {
   ).sort((left, right) => left.localeCompare(right))
 }
 
-export function resolveAccrualAccount(resourceType: string | null | undefined) {
+export function resolveAccrualAccount(
+  resourceType: string | null | undefined,
+  accountMappings?: Record<string, string>
+) {
+  const mappedAccount = resourceType ? accountMappings?.[normalizeValue(resourceType)] : undefined
+  if (mappedAccount) {
+    return mappedAccount
+  }
+
   const normalized = normalizeValue(resourceType)
 
   if (normalized.includes("cloud")) {
@@ -75,7 +84,7 @@ export function getEligibleAccrualMonthIndexes(year: number, now = new Date()) {
     return []
   }
 
-  return Array.from({ length: now.getMonth() }, (_, monthIndex) => monthIndex)
+  return Array.from({ length: now.getMonth() + 1 }, (_, monthIndex) => monthIndex)
 }
 
 export function formatAccrualPeriodLabel(year: number, monthIndexes: number[]) {
@@ -169,6 +178,7 @@ export function buildAccrualsPageModel({
   seats,
   assumptions,
   exchangeRates,
+  accountMappings,
   filters,
   submittedBy,
   now = new Date(),
@@ -229,7 +239,7 @@ export function buildAccrualsPageModel({
           departmentCode: entry.effectiveSeat.costCenter,
           departmentName: entry.effectiveSeat.domain,
           vendorName,
-          account: resolveAccrualAccount(entry.effectiveSeat.resourceType),
+          account: resolveAccrualAccount(entry.effectiveSeat.resourceType, accountMappings),
           resourceType: entry.effectiveSeat.resourceType,
           team: entry.effectiveSeat.team,
           inSeat: entry.effectiveSeat.inSeat,

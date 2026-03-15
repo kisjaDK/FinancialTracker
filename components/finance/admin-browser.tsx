@@ -56,6 +56,13 @@ type ExchangeRate = {
   notes: string | null
 }
 
+type AccrualAccountMapping = {
+  id: string
+  resourceType: string
+  accountCode: string
+  notes: string | null
+}
+
 type ResetDataset =
   | "people-roster"
   | "forecasts"
@@ -68,6 +75,8 @@ type AdminBrowserProps = {
   trackingYears: TrackingYearOption[]
   statuses: StatusDefinition[]
   departmentMappings: DepartmentMapping[]
+  accrualAccountMappings: AccrualAccountMapping[]
+  rosterResourceTypes: string[]
   exchangeRates: ExchangeRate[]
 }
 
@@ -103,6 +112,8 @@ export function AdminBrowser({
   trackingYears,
   statuses,
   departmentMappings,
+  accrualAccountMappings,
+  rosterResourceTypes,
   exchangeRates,
 }: AdminBrowserProps) {
   const router = useRouter()
@@ -118,7 +129,16 @@ export function AdminBrowser({
     notes: "",
   })
   const [pendingDelete, setPendingDelete] = useState<DepartmentMapping | null>(null)
+  const [editingAccrualMappingId, setEditingAccrualMappingId] = useState<string | null>(null)
+  const [accrualMappingValues, setAccrualMappingValues] = useState({
+    resourceType: "",
+    accountCode: "",
+    notes: "",
+  })
+  const [pendingAccrualMappingDelete, setPendingAccrualMappingDelete] =
+    useState<AccrualAccountMapping | null>(null)
   const [isDeletingMapping, setIsDeletingMapping] = useState(false)
+  const [isDeletingAccrualMapping, setIsDeletingAccrualMapping] = useState(false)
   const [pendingReset, setPendingReset] = useState<ResetDataset | null>(null)
   const [isResetting, setIsResetting] = useState(false)
   const [pendingOverrideDelete, setPendingOverrideDelete] = useState<
@@ -131,6 +151,12 @@ export function AdminBrowser({
     effectiveDate: `${activeYear}-01-01`,
     notes: "",
   })
+  const availableAccrualResourceTypes = Array.from(
+    new Set([
+      ...rosterResourceTypes,
+      ...accrualAccountMappings.map((mapping) => mapping.resourceType),
+    ])
+  ).sort((left, right) => left.localeCompare(right))
 
   function resetMappingForm() {
     setEditingMappingId(null)
@@ -139,6 +165,15 @@ export function AdminBrowser({
       domain: "",
       subDomain: "",
       projectCode: "",
+      notes: "",
+    })
+  }
+
+  function resetAccrualMappingForm() {
+    setEditingAccrualMappingId(null)
+    setAccrualMappingValues({
+      resourceType: "",
+      accountCode: "",
       notes: "",
     })
   }
@@ -159,6 +194,9 @@ export function AdminBrowser({
       toast.success(successMessage)
       if (endpoint === "/api/department-mappings") {
         resetMappingForm()
+      }
+      if (endpoint === "/api/accrual-account-mappings") {
+        resetAccrualMappingForm()
       }
       router.refresh()
     } catch (error) {
@@ -217,6 +255,37 @@ export function AdminBrowser({
       toast.error(error instanceof Error ? error.message : "Delete failed")
     } finally {
       setIsDeletingMapping(false)
+    }
+  }
+
+  async function deleteAccrualMapping() {
+    if (!pendingAccrualMappingDelete) {
+      return
+    }
+
+    setIsDeletingAccrualMapping(true)
+
+    try {
+      await fetchJson("/api/accrual-account-mappings", {
+        method: "DELETE",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          year: activeYear,
+          id: pendingAccrualMappingDelete.id,
+        }),
+      })
+      toast.success("Accrual account mapping deleted")
+      setPendingAccrualMappingDelete(null)
+      if (pendingAccrualMappingDelete.id === editingAccrualMappingId) {
+        resetAccrualMappingForm()
+      }
+      router.refresh()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Delete failed")
+    } finally {
+      setIsDeletingAccrualMapping(false)
     }
   }
 
@@ -380,6 +449,38 @@ export function AdminBrowser({
                 }}
               >
                 {isDeletingMapping ? "Deleting..." : "Delete"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+
+        <AlertDialog
+          open={Boolean(pendingAccrualMappingDelete)}
+          onOpenChange={(open) => {
+            if (!open) {
+              setPendingAccrualMappingDelete(null)
+            }
+          }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete accrual account mapping?</AlertDialogTitle>
+              <AlertDialogDescription>
+                {pendingAccrualMappingDelete
+                  ? `This will remove the account mapping for ${pendingAccrualMappingDelete.resourceType}. This action cannot be undone.`
+                  : "This action cannot be undone."}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={isDeletingAccrualMapping}>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                variant="destructive"
+                disabled={isDeletingAccrualMapping}
+                onClick={() => {
+                  void deleteAccrualMapping()
+                }}
+              >
+                {isDeletingAccrualMapping ? "Deleting..." : "Delete"}
               </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>
@@ -976,6 +1077,138 @@ export function AdminBrowser({
                 {!exchangeRates.some((rate) => rate.currency === "DKK") ? (
                   <div className="text-muted-foreground">DKK is treated as 1.00 automatically.</div>
                 ) : null}
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="brand-card">
+            <CardHeader>
+              <CardTitle>Accrual Account Mapping</CardTitle>
+              <CardDescription>
+                Map current roster resource types to the finance account code used in accrual exports.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid gap-3">
+                <select
+                  className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
+                  value={accrualMappingValues.resourceType}
+                  onChange={(event) =>
+                    setAccrualMappingValues((current) => ({
+                      ...current,
+                      resourceType: event.target.value,
+                    }))
+                  }
+                >
+                  <option value="">Select resource type</option>
+                  {availableAccrualResourceTypes.map((resourceType) => (
+                    <option key={resourceType} value={resourceType}>
+                      {resourceType}
+                    </option>
+                  ))}
+                </select>
+                <Input
+                  placeholder="4800213"
+                  value={accrualMappingValues.accountCode}
+                  onChange={(event) =>
+                    setAccrualMappingValues((current) => ({
+                      ...current,
+                      accountCode: event.target.value,
+                    }))
+                  }
+                />
+                <Input
+                  placeholder="Optional notes"
+                  value={accrualMappingValues.notes}
+                  onChange={(event) =>
+                    setAccrualMappingValues((current) => ({
+                      ...current,
+                      notes: event.target.value,
+                    }))
+                  }
+                />
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    onClick={() => {
+                      void handleJsonSubmit(
+                        {
+                          id: editingAccrualMappingId,
+                          year: activeYear,
+                          resourceType: accrualMappingValues.resourceType,
+                          accountCode: accrualMappingValues.accountCode,
+                          notes: accrualMappingValues.notes,
+                        },
+                        "/api/accrual-account-mappings",
+                        editingAccrualMappingId
+                          ? "Accrual account mapping updated"
+                          : "Accrual account mapping saved"
+                      )
+                    }}
+                  >
+                    {editingAccrualMappingId ? "Update Mapping" : "Save Mapping"}
+                  </Button>
+                  <Button variant="ghost" onClick={resetAccrualMappingForm}>
+                    {editingAccrualMappingId ? "Cancel Edit" : "Clear"}
+                  </Button>
+                </div>
+              </div>
+
+              <div className="max-h-72 overflow-y-auto rounded-xl border">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Resource Type</TableHead>
+                      <TableHead>Account</TableHead>
+                      <TableHead>Notes</TableHead>
+                      <TableHead />
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {accrualAccountMappings.map((mapping) => (
+                      <TableRow key={mapping.id}>
+                        <TableCell>{mapping.resourceType}</TableCell>
+                        <TableCell>{mapping.accountCode}</TableCell>
+                        <TableCell>{mapping.notes || "No notes"}</TableCell>
+                        <TableCell className="text-right">
+                          <div className="flex justify-end gap-2">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => {
+                                setEditingAccrualMappingId(mapping.id)
+                                setAccrualMappingValues({
+                                  resourceType: mapping.resourceType,
+                                  accountCode: mapping.accountCode,
+                                  notes: mapping.notes || "",
+                                })
+                              }}
+                            >
+                              Edit
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="text-red-600 hover:text-red-700"
+                              onClick={() => {
+                                setPendingAccrualMappingDelete(mapping)
+                              }}
+                            >
+                              Delete
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                    {accrualAccountMappings.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={4} className="py-6 text-center text-muted-foreground">
+                          No accrual account mappings saved yet.
+                        </TableCell>
+                      </TableRow>
+                    ) : null}
+                  </TableBody>
+                </Table>
               </div>
             </CardContent>
           </Card>

@@ -259,6 +259,13 @@ export type AccrualFilters = {
   months: string[]
 }
 
+export type AccrualAccountMappingView = {
+  id: string
+  resourceType: string
+  accountCode: string
+  notes: string | null
+}
+
 export type AccrualDetailLine = {
   id: string
   trackerSeatId: string

@@ -1,6 +1,6 @@
 import { PrismaClient } from "@prisma/client"
 
-const PRISMA_SCHEMA_VERSION = "2026-03-13-forecast-overrides-v1"
+const PRISMA_SCHEMA_VERSION = "2026-03-15-accrual-account-mappings-v1"
 
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined
@@ -19,9 +19,55 @@ const supportsFinanceModels =
   "serviceMessage" in cachedPrisma &&
   "auditLog" in cachedPrisma &&
   "externalActualImport" in cachedPrisma &&
-  "externalActualEntry" in cachedPrisma
+  "externalActualEntry" in cachedPrisma &&
+  "accrualAccountMapping" in cachedPrisma
 const isMatchingSchemaVersion =
   globalForPrisma.prismaSchemaVersion === PRISMA_SCHEMA_VERSION
+
+function createPrismaClient() {
+  return new PrismaClient({
+    datasources: prismaUrl
+      ? {
+          db: {
+            url: prismaUrl,
+          },
+        }
+      : undefined,
+  })
+}
+
+export function getPrismaClient() {
+  const globalPrisma = globalForPrisma.prisma
+  const globalSupportsFinanceModels =
+    globalPrisma &&
+    "trackingYear" in globalPrisma &&
+    "exchangeRate" in globalPrisma &&
+    "budgetArea" in globalPrisma &&
+    "statusDefinition" in globalPrisma &&
+    "serviceMessage" in globalPrisma &&
+    "auditLog" in globalPrisma &&
+    "externalActualImport" in globalPrisma &&
+    "externalActualEntry" in globalPrisma &&
+    "accrualAccountMapping" in globalPrisma
+  const globalMatchesSchemaVersion =
+    globalForPrisma.prismaSchemaVersion === PRISMA_SCHEMA_VERSION
+
+  const client =
+    globalPrisma &&
+    globalForPrisma.prismaUrl === prismaUrl &&
+    globalSupportsFinanceModels &&
+    globalMatchesSchemaVersion
+      ? globalPrisma
+      : createPrismaClient()
+
+  if (process.env.NODE_ENV !== "production") {
+    globalForPrisma.prisma = client
+    globalForPrisma.prismaUrl = prismaUrl
+    globalForPrisma.prismaSchemaVersion = PRISMA_SCHEMA_VERSION
+  }
+
+  return client
+}
 
 export const prisma =
   cachedPrisma &&
@@ -29,15 +75,7 @@ export const prisma =
   supportsFinanceModels &&
   isMatchingSchemaVersion
     ? cachedPrisma
-    : new PrismaClient({
-        datasources: prismaUrl
-          ? {
-              db: {
-                url: prismaUrl,
-              },
-            }
-          : undefined,
-      })
+    : getPrismaClient()
 
 if (process.env.NODE_ENV !== "production") {
   globalForPrisma.prisma = prisma
