@@ -5,7 +5,12 @@ import {
   WORK_DAYS_PER_MONTH,
   WORK_DAYS_PER_YEAR,
 } from "@/lib/finance/constants"
-import type { CostAssumptionLookup, SeatDerivedMetrics, SeatWithRelations } from "@/lib/finance/types"
+import type {
+  CostAssumptionLookup,
+  DeriveSeatMetricsOptions,
+  SeatDerivedMetrics,
+  SeatWithRelations,
+} from "@/lib/finance/types"
 
 function normalizeValue(value: string | null | undefined) {
   return value?.trim().toLowerCase() ?? ""
@@ -141,7 +146,8 @@ export function deriveSeatMetrics(
   seat: SeatWithRelations,
   assumptions: CostAssumptionLookup,
   exchangeRates: ExchangeRate[],
-  targetYear: number
+  targetYear: number,
+  options?: DeriveSeatMetricsOptions
 ): SeatDerivedMetrics {
   const effectiveSeat = getEffectiveSeat(seat)
   const cancelled = isTrackerCancelledSeat(effectiveSeat)
@@ -149,7 +155,8 @@ export function deriveSeatMetrics(
   const assumption = lookupAssumption(assumptions, effectiveSeat.band, effectiveSeat.location)
   const allocation = effectiveSeat.allocation ?? 0
   const dailyRate = effectiveSeat.dailyRate ?? 0
-  const exchangeRateLookup = buildExchangeRateLookup(exchangeRates)
+  const exchangeRateLookup =
+    options?.exchangeRateLookup ?? buildExchangeRateLookup(exchangeRates)
   const yearlyCostInternal = external ? 0 : (assumption?.yearlyCost ?? 0)
   const internalDailyRate = yearlyCostInternal / WORK_DAYS_PER_YEAR
   const yearlyCostExternal = external ? dailyRate * WORK_DAYS_PER_MONTH * 12 : 0
@@ -171,6 +178,7 @@ export function deriveSeatMetrics(
     }
 
     if (
+      !options?.ignoreForecastOverrides &&
       month?.forecastOverrideAmount !== null &&
       month?.forecastOverrideAmount !== undefined
     ) {

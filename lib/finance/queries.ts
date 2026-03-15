@@ -1518,19 +1518,13 @@ export async function getForecastsPageData(input?: {
   const exchangeRateLookup = buildExchangeRateLookup(exchangeRates)
   const mappedSeats = scopedSeats.map((seat) => {
     const effectiveSeat = getEffectiveSeat(seat)
-    const metrics = deriveSeatMetrics(seat, assumptionLookup, exchangeRates, activeYear)
-    const baseMetrics = deriveSeatMetrics(
-      {
-        ...seat,
-        months: seat.months.map((month) => ({
-          ...month,
-          forecastOverrideAmount: null,
-        })),
-      },
-      assumptionLookup,
-      exchangeRates,
-      activeYear
-    )
+    const metrics = deriveSeatMetrics(seat, assumptionLookup, exchangeRates, activeYear, {
+      exchangeRateLookup,
+    })
+    const baseMetrics = deriveSeatMetrics(seat, assumptionLookup, exchangeRates, activeYear, {
+      exchangeRateLookup,
+      ignoreForecastOverrides: true,
+    })
     const cancelled = isTrackerCancelledSeat(effectiveSeat)
 
     return {
@@ -6015,6 +6009,138 @@ export async function deleteTrackerOverridesForYear(
   return { deletedCount: overrides.length }
 }
 
+type TrackerSeatMonthUpdatePayload = {
+  monthIndex?: number
+  actualAmount?: number
+  actualCurrency?: CurrencyCode
+  forecastOverrideAmount?: number | null
+  forecastIncluded?: boolean
+  notes?: string
+}
+
+async function applyTrackerSeatMonthUpdate(input: {
+  seat: SeatWithRelations
+  payload: TrackerSeatMonthUpdatePayload
+  actor?: AuditActor
+  beforeMonth?: SeatWithRelations["months"][number] | null
+  exchangeRateRows: ExchangeRate[]
+  exchangeRateLookup?: ReturnType<typeof buildExchangeRateLookup>
+  yearRecord?: { year: number } | null
+  costAssumptionRows?: CostAssumption[]
+}) {
+  if (input.payload.monthIndex === undefined) {
+    return null
+  }
+
+  const beforeMonth =
+    input.beforeMonth ??
+    (await prisma.seatMonth.findUnique({
+      where: {
+        trackerSeatId_monthIndex: {
+          trackerSeatId: input.seat.id,
+          monthIndex: input.payload.monthIndex,
+        },
+      },
+    }))
+  const requiresForecastSnapshot =
+    input.payload.actualAmount === undefined &&
+    !(input.payload.forecastIncluded ?? beforeMonth?.forecastIncluded ?? true) &&
+    beforeMonth?.usedForecastAmount == null
+  const exchangeRates =
+    input.exchangeRateLookup ?? buildExchangeRateLookup(input.exchangeRateRows)
+  const currency =
+    input.payload.actualCurrency ?? beforeMonth?.actualCurrency ?? "DKK"
+  const rawAmount =
+    input.payload.actualAmount ??
+    beforeMonth?.actualAmountRaw ??
+    beforeMonth?.actualAmount ??
+    0
+  const isClearingActual = rawAmount <= 0
+  const converted = isClearingActual
+    ? {
+        amountDkk: 0,
+        exchangeRateUsed: null,
+      }
+    : convertAmountToDkk(rawAmount, currency, exchangeRates)
+  const forecastIncluded =
+    input.payload.actualAmount !== undefined && isClearingActual
+      ? true
+      : (input.payload.forecastIncluded ?? beforeMonth?.forecastIncluded ?? true)
+  const notes =
+    input.payload.notes === undefined ? beforeMonth?.notes ?? null : input.payload.notes
+  const forecastOverrideAmount =
+    input.payload.forecastOverrideAmount === undefined
+      ? beforeMonth?.forecastOverrideAmount ?? null
+      : input.payload.forecastOverrideAmount
+  const usedForecastAmount =
+    input.payload.actualAmount !== undefined && isClearingActual
+      ? null
+      : forecastIncluded
+        ? null
+        : (beforeMonth?.usedForecastAmount ??
+          (requiresForecastSnapshot
+            ? await computeSeatMonthForecastSnapshot({
+                seat: input.seat,
+                year: input.yearRecord!.year,
+                monthIndex: input.payload.monthIndex,
+                assumptions: input.costAssumptionRows ?? [],
+                exchangeRates: input.exchangeRateRows,
+              })
+            : null))
+
+  const month = await prisma.seatMonth.upsert({
+    where: {
+      trackerSeatId_monthIndex: {
+        trackerSeatId: input.seat.id,
+        monthIndex: input.payload.monthIndex,
+      },
+    },
+    update: {
+      actualAmount: converted.amountDkk,
+      actualAmountRaw: isClearingActual ? null : rawAmount,
+      actualCurrency: currency,
+      exchangeRateUsed: converted.exchangeRateUsed,
+      forecastOverrideAmount,
+      forecastIncluded,
+      usedForecastAmount,
+      notes,
+    },
+    create: {
+      trackerSeatId: input.seat.id,
+      monthIndex: input.payload.monthIndex,
+      actualAmount: converted.amountDkk,
+      actualAmountRaw: isClearingActual ? null : rawAmount,
+      actualCurrency: currency,
+      exchangeRateUsed: converted.exchangeRateUsed,
+      forecastOverrideAmount,
+      forecastIncluded,
+      usedForecastAmount,
+      notes,
+    },
+  })
+
+  await writeAuditLog({
+    trackingYearId: input.seat.trackingYearId,
+    entityType: "SeatMonth",
+    entityId: month.id,
+    action: beforeMonth ? "UPDATE" : "CREATE",
+    actor: input.actor,
+    changes: buildAuditChanges(beforeMonth, month, [
+      "monthIndex",
+      "actualAmount",
+      "actualAmountRaw",
+      "actualCurrency",
+      "exchangeRateUsed",
+      "forecastOverrideAmount",
+      "forecastIncluded",
+      "usedForecastAmount",
+      "notes",
+    ]),
+  })
+
+  return month
+}
+
 export async function updateTrackerSeat(
   seatId: string,
   payload: {
@@ -6057,21 +6183,11 @@ export async function updateTrackerSeat(
   })
 
   if (payload.monthIndex !== undefined) {
-    const beforeMonth = await prisma.seatMonth.findUnique({
-      where: {
-        trackerSeatId_monthIndex: {
-          trackerSeatId: seat.id,
-          monthIndex: payload.monthIndex,
-        },
-      },
-    })
+    const beforeMonth =
+      seat.months.find((month) => month.monthIndex === payload.monthIndex) ?? null
     const requiresForecastSnapshot =
       payload.actualAmount === undefined &&
-      !(
-        payload.forecastIncluded ??
-        beforeMonth?.forecastIncluded ??
-        true
-      ) &&
+      !(payload.forecastIncluded ?? beforeMonth?.forecastIncluded ?? true) &&
       beforeMonth?.usedForecastAmount == null
     const [yearRecord, exchangeRateRows, costAssumptionRows] = await Promise.all([
       requiresForecastSnapshot
@@ -6090,88 +6206,15 @@ export async function updateTrackerSeat(
           })
         : Promise.resolve([]),
     ])
-    const exchangeRates = buildExchangeRateLookup(exchangeRateRows)
-    const currency = payload.actualCurrency ?? beforeMonth?.actualCurrency ?? "DKK"
-    const rawAmount =
-      payload.actualAmount ?? beforeMonth?.actualAmountRaw ?? beforeMonth?.actualAmount ?? 0
-    const isClearingActual = rawAmount <= 0
-    const converted = isClearingActual
-      ? {
-          amountDkk: 0,
-          exchangeRateUsed: null,
-        }
-      : convertAmountToDkk(rawAmount, currency, exchangeRates)
-    const forecastIncluded =
-      payload.actualAmount !== undefined && isClearingActual
-        ? true
-        : (payload.forecastIncluded ?? beforeMonth?.forecastIncluded ?? true)
-    const notes = payload.notes === undefined ? beforeMonth?.notes ?? null : payload.notes
-    const forecastOverrideAmount =
-      payload.forecastOverrideAmount === undefined
-        ? beforeMonth?.forecastOverrideAmount ?? null
-        : payload.forecastOverrideAmount
-    const usedForecastAmount =
-      payload.actualAmount !== undefined && isClearingActual
-        ? null
-        : forecastIncluded
-          ? null
-          : (beforeMonth?.usedForecastAmount ??
-            (await computeSeatMonthForecastSnapshot({
-              seat: seat as SeatWithRelations,
-              year: yearRecord!.year,
-              monthIndex: payload.monthIndex,
-              assumptions: costAssumptionRows,
-              exchangeRates: exchangeRateRows,
-            })))
 
-    const month = await prisma.seatMonth.upsert({
-      where: {
-        trackerSeatId_monthIndex: {
-          trackerSeatId: seat.id,
-          monthIndex: payload.monthIndex,
-        },
-      },
-      update: {
-        actualAmount: converted.amountDkk,
-        actualAmountRaw: isClearingActual ? null : rawAmount,
-        actualCurrency: currency,
-        exchangeRateUsed: converted.exchangeRateUsed,
-        forecastOverrideAmount,
-        forecastIncluded,
-        usedForecastAmount,
-        notes,
-      },
-      create: {
-        trackerSeatId: seat.id,
-        monthIndex: payload.monthIndex,
-        actualAmount: converted.amountDkk,
-        actualAmountRaw: isClearingActual ? null : rawAmount,
-        actualCurrency: currency,
-        exchangeRateUsed: converted.exchangeRateUsed,
-        forecastOverrideAmount,
-        forecastIncluded,
-        usedForecastAmount,
-        notes,
-      },
-    })
-
-    await writeAuditLog({
-      trackingYearId: seat.trackingYearId,
-      entityType: "SeatMonth",
-      entityId: month.id,
-      action: beforeMonth ? "UPDATE" : "CREATE",
+    await applyTrackerSeatMonthUpdate({
+      seat: seat as SeatWithRelations,
+      payload,
       actor,
-      changes: buildAuditChanges(beforeMonth, month, [
-        "monthIndex",
-        "actualAmount",
-        "actualAmountRaw",
-        "actualCurrency",
-        "exchangeRateUsed",
-        "forecastOverrideAmount",
-        "forecastIncluded",
-        "usedForecastAmount",
-        "notes",
-      ]),
+      beforeMonth,
+      exchangeRateRows,
+      yearRecord,
+      costAssumptionRows,
     })
   }
 
@@ -6213,6 +6256,89 @@ export async function updateTrackerSeat(
         "notes",
       ]),
     })
+  }
+
+  return prisma.trackerSeat.findUnique({
+    where: { id: seat.id },
+    include: {
+      months: {
+        orderBy: { monthIndex: "asc" },
+      },
+      override: true,
+      budgetArea: true,
+    },
+  })
+}
+
+export async function updateTrackerSeatMonths(
+  seatId: string,
+  payloads: TrackerSeatMonthUpdatePayload[],
+  actor?: AuditActor
+) {
+  const seat = await prisma.trackerSeat.findUniqueOrThrow({
+    where: { id: seatId },
+    include: {
+      months: {
+        orderBy: { monthIndex: "asc" },
+      },
+      override: true,
+      budgetArea: true,
+    },
+  })
+  const beforeMonthsByIndex = new Map(
+    seat.months.map((month) => [month.monthIndex, month])
+  )
+  const requiresForecastSnapshot = payloads.some((payload) => {
+    if (payload.monthIndex === undefined) {
+      return false
+    }
+
+    const beforeMonth = beforeMonthsByIndex.get(payload.monthIndex)
+    return (
+      payload.actualAmount === undefined &&
+      !(payload.forecastIncluded ?? beforeMonth?.forecastIncluded ?? true) &&
+      beforeMonth?.usedForecastAmount == null
+    )
+  })
+
+  const [yearRecord, exchangeRateRows, costAssumptionRows] = await Promise.all([
+    requiresForecastSnapshot
+      ? prisma.trackingYear.findUniqueOrThrow({
+          where: { id: seat.trackingYearId },
+          select: { year: true },
+        })
+      : Promise.resolve(null),
+    prisma.exchangeRate.findMany({
+      where: { trackingYearId: seat.trackingYearId },
+      orderBy: { effectiveDate: "desc" },
+    }),
+    requiresForecastSnapshot
+      ? prisma.costAssumption.findMany({
+          where: { trackingYearId: seat.trackingYearId },
+        })
+      : Promise.resolve([]),
+  ])
+  const exchangeRateLookup = buildExchangeRateLookup(exchangeRateRows)
+
+  for (const payload of payloads) {
+    if (payload.monthIndex === undefined) {
+      continue
+    }
+
+    const month = await applyTrackerSeatMonthUpdate({
+      seat: seat as SeatWithRelations,
+      payload,
+      actor,
+      beforeMonth: beforeMonthsByIndex.get(payload.monthIndex) ?? null,
+      exchangeRateRows,
+      exchangeRateLookup,
+      yearRecord,
+      costAssumptionRows,
+    })
+
+    if (month) {
+      beforeMonthsByIndex.set(payload.monthIndex, month)
+    }
   }
 
   return prisma.trackerSeat.findUnique({

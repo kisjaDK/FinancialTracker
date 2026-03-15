@@ -198,8 +198,11 @@ export function ForecastsBrowser({
     filters.reducedOnLeaveForecast
   )
   const [monthDrafts, setMonthDrafts] = useState<Record<number, MonthDraft>>({})
+  const [localSelectedSeatId, setLocalSelectedSeatId] = useState(
+    selectedSeatId ?? seats[0]?.id ?? ""
+  )
 
-  const selectedSeat = seats.find((seat) => seat.id === selectedSeatId) ?? seats[0]
+  const selectedSeat = seats.find((seat) => seat.id === localSelectedSeatId) ?? seats[0]
 
   useEffect(() => {
     setSelectedYear(String(activeYear))
@@ -216,6 +219,13 @@ export function ForecastsBrowser({
     filters.nonMonthStart,
     filters.reducedOnLeaveForecast,
   ])
+
+  useEffect(() => {
+    const nextSelectedSeatId =
+      seats.find((seat) => seat.id === selectedSeatId)?.id ?? seats[0]?.id ?? ""
+
+    setLocalSelectedSeatId(nextSelectedSeatId)
+  }, [seats, selectedSeatId])
 
   useEffect(() => {
     setMonthDrafts(buildMonthDrafts(selectedSeat))
@@ -276,6 +286,17 @@ export function ForecastsBrowser({
     startTransition(() => {
       router.replace(`/forecasts?${params.toString()}`, { scroll: false })
     })
+  }
+
+  function selectSeat(seatId: string) {
+    setLocalSelectedSeatId(seatId)
+
+    const params = new URLSearchParams(searchParams.toString())
+    params.set("selectedSeatId", seatId)
+    const query = params.toString()
+    const nextUrl = query ? `/forecasts?${query}` : "/forecasts"
+
+    window.history.replaceState(window.history.state, "", nextUrl)
   }
 
   function handleFilterSubmit(event: React.FormEvent<HTMLFormElement>) {
@@ -371,17 +392,13 @@ export function ForecastsBrowser({
         }
       })
 
-      await Promise.all(
-        payloads.map((payload) => {
-          return fetchJson(`/api/tracker-seats/${selectedSeat.id}`, {
-            method: "PATCH",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify(payload),
-          })
-        })
-      )
+      await fetchJson(`/api/tracker-seats/${selectedSeat.id}`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ months: payloads }),
+      })
 
       toast.success("Forecast overrides updated")
       router.refresh()
@@ -611,11 +628,11 @@ export function ForecastsBrowser({
                         key={seat.id}
                         role="button"
                         tabIndex={0}
-                        onClick={() => updateParams({ selectedSeatId: seat.id })}
+                        onClick={() => selectSeat(seat.id)}
                         onKeyDown={(event) => {
                           if (event.key === "Enter" || event.key === " ") {
                             event.preventDefault()
-                            updateParams({ selectedSeatId: seat.id })
+                            selectSeat(seat.id)
                           }
                         }}
                         className={cn(

@@ -8,6 +8,7 @@ import type {
   TrackerOverride,
   TrackerSeat,
 } from "@prisma/client"
+import type { ExchangeRateLookup } from "@/lib/finance/currency"
 
 export type SeatWithRelations = TrackerSeat & {
   months: SeatMonth[]
@@ -53,6 +54,11 @@ export type SeatDerivedMetrics = {
   cloudCostForecast: number
   quarterlyForecast: [number, number, number, number]
   monthlyForecast: number[]
+}
+
+export type DeriveSeatMetricsOptions = {
+  exchangeRateLookup?: ExchangeRateLookup
+  ignoreForecastOverrides?: boolean
 }
 
 export type CostAssumptionLookup = Record<string, CostAssumption>
