@@ -48,17 +48,10 @@ export default async function TrackerPage({ searchParams }: PageProps) {
       currentPath="/tracker"
     >
       <FinanceWorkspace
-        userRole={viewer.role}
         activeYear={workspace.activeYear}
         trackingYears={workspace.trackingYears}
         summary={workspace.summary}
         seats={workspace.seats}
-        budgetAreas={workspace.budgetAreas.map((area) => ({
-          ...area,
-          displayName:
-            area.displayName ||
-            `${area.subDomain || area.pillar || area.projectCode} · ${area.costCenter}`,
-        }))}
         selectedAreaId={workspace.selectedAreaId}
         statusDefinitions={workspace.statusDefinitions}
         trackerTeamFilters={workspace.trackerTeamFilters}

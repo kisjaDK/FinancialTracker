@@ -1,7 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState, useTransition } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useTransition,
+} from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Eye, PenLine } from "lucide-react";
 import { toast } from "sonner";
@@ -40,23 +46,11 @@ import {
 } from "@/lib/finance/format";
 import { MONTH_NAMES } from "@/lib/finance/constants";
 import { cn } from "@/lib/utils";
-import type { AppRole } from "@/lib/roles";
 
 type TrackingYearOption = {
   id: string;
   year: number;
   isActive: boolean;
-};
-
-type BudgetArea = {
-  id: string;
-  domain: string | null;
-  subDomain: string | null;
-  funding: string | null;
-  pillar: string | null;
-  costCenter: string;
-  projectCode: string;
-  displayName: string | null;
 };
 
 type SummaryRow = {
@@ -124,12 +118,10 @@ type SeatRow = {
 };
 
 type WorkspaceProps = {
-  userRole: AppRole;
   activeYear: number;
   trackingYears: TrackingYearOption[];
   summary: SummaryRow[];
   seats: SeatRow[];
-  budgetAreas: BudgetArea[];
   selectedAreaId: string | null;
   statusDefinitions: {
     id: string;
@@ -198,18 +190,26 @@ function formatForecastCoverage(seat: SeatRow) {
   return `${firstMonth}-${lastMonth} (${coveredMonths.length})`;
 }
 
-function isCodeLikeAreaLabel(value: string | null | undefined) {
-  const trimmed = value?.trim();
-  if (!trimmed) {
-    return false;
-  }
-
-  return /^[A-Z]\d+\s*·\s*[A-Z]\d+$/i.test(trimmed);
-}
-
 function getDomainFilterValue(domain: string | null | undefined) {
   const trimmed = domain?.trim();
   return trimmed ? trimmed : UNMAPPED_DOMAIN_FILTER;
+}
+
+function isOpenSeatStatus(
+  status: string | null | undefined,
+  openStatuses?: Set<string>,
+) {
+  const normalizedStatus = (status || "").trim().toLowerCase();
+
+  if (!normalizedStatus) {
+    return false;
+  }
+
+  if (openStatuses && openStatuses.size > 0) {
+    return openStatuses.has(normalizedStatus);
+  }
+
+  return normalizedStatus === "open";
 }
 
 function sumQuarter(values: number[], quarterIndex: number) {
@@ -250,12 +250,10 @@ function getSeatStartMonthIndex(seat: SeatRow, activeYear: number) {
 }
 
 export function FinanceWorkspace({
-  userRole,
   activeYear,
   trackingYears,
   summary,
   seats,
-  budgetAreas,
   selectedAreaId,
   statusDefinitions,
   trackerTeamFilters,
@@ -268,6 +266,7 @@ export function FinanceWorkspace({
 }: WorkspaceProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const seatFilterFormRef = useRef<HTMLFormElement | null>(null);
   const [isPending, startTransition] = useTransition();
   const initialSelectedAreaId = selectedAreaId ?? summary[0]?.id ?? null;
   const [isAreaLoading, setIsAreaLoading] = useState(
@@ -342,6 +341,15 @@ export function FinanceWorkspace({
 
   const activeSeatSortDirection: SeatSortDirection =
     seatSortDirection === "desc" ? "desc" : "asc";
+  const openSeatStatuses = useMemo(
+    () =>
+      new Set(
+        statusDefinitions
+          .map((definition) => (definition.label || "").trim().toLowerCase())
+          .filter((label) => label === "open" || label.startsWith("open ")),
+      ),
+    [statusDefinitions],
+  );
 
   useEffect(() => {
     setActiveSummaryAreaId(initialSelectedAreaId);
@@ -412,6 +420,10 @@ export function FinanceWorkspace({
     );
 
     return areaSeats.filter((seat) => {
+      if (openSeatsOnly && !isOpenSeatStatus(seat.status, openSeatStatuses)) {
+        return false;
+      }
+
       if (
         teamFilter.size > 0 &&
         !teamFilter.has((seat.team || "").trim().toLowerCase())
@@ -420,7 +432,7 @@ export function FinanceWorkspace({
       }
 
       if (monthFilter.size > 0) {
-        if ((seat.status || "").trim().toLowerCase() === "open") {
+        if (isOpenSeatStatus(seat.status, openSeatStatuses)) {
           return false;
         }
 
@@ -453,7 +465,14 @@ export function FinanceWorkspace({
 
       return true;
     });
-  }, [activeYear, areaSeats, missingActualMonthFilters, trackerTeamFilters]);
+  }, [
+    activeYear,
+    areaSeats,
+    missingActualMonthFilters,
+    openSeatsOnly,
+    openSeatStatuses,
+    trackerTeamFilters,
+  ]);
   const sortedSeats = useMemo(() => {
     if (!activeSeatSortField) {
       return filteredSeats;
@@ -636,6 +655,19 @@ export function FinanceWorkspace({
     });
   }
 
+  function handleOpenSeatsOnlyChange(checked: boolean) {
+    setOpenSeatsOnlyDraft(checked);
+
+    const form = seatFilterFormRef.current;
+    if (!form) {
+      return;
+    }
+
+    requestAnimationFrame(() => {
+      form.requestSubmit();
+    });
+  }
+
   async function handleAreaSelection(areaId: string) {
     await handleAreaSelectionWithParams(
       areaId,
@@ -708,26 +740,6 @@ export function FinanceWorkspace({
     }
 
     void handleAreaSelectionWithParams(nextSummary[0].id, params);
-  }
-
-  async function handleJsonSubmit(
-    payload: unknown,
-    endpoint: string,
-    successMessage: string,
-  ) {
-    try {
-      await fetchJson(endpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
-      });
-      toast.success(successMessage);
-      router.refresh();
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Request failed");
-    }
   }
 
   return (
@@ -1073,6 +1085,7 @@ export function FinanceWorkspace({
               method="GET"
               className="mb-5 grid gap-4 lg:grid-cols-[1fr_1fr_auto]"
               onSubmit={handleSeatTrackerFilterSubmit}
+              ref={seatFilterFormRef}
             >
               <input type="hidden" name="year" value={String(activeYear)} />
               {activeDomainFilter ? (
@@ -1123,7 +1136,7 @@ export function FinanceWorkspace({
                     ) : null}
                     <Switch
                       checked={openSeatsOnlyDraft}
-                      onCheckedChange={setOpenSeatsOnlyDraft}
+                      onCheckedChange={handleOpenSeatsOnlyChange}
                     />
                   </div>
                 </div>
@@ -1157,9 +1170,9 @@ export function FinanceWorkspace({
                 </span>
               </div>
               <div className="flex items-center gap-2">
-                <span className="text-muted-foreground">Seats</span>
+                <span className="text-muted-foreground">Showing</span>
                 <span className="font-medium">
-                  {formatNumber(sortedSeats.length)}
+                  {formatNumber(sortedSeats.length)} of {formatNumber(areaSeats.length)} seats
                 </span>
               </div>
             </div>
