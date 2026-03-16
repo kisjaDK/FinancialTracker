@@ -352,6 +352,7 @@ export function FinanceWorkspace({
         (domain) =>
           normalizeLookupValue(domain) === normalizeLookupValue(activeDomainFilter),
       ));
+  const showExportControls = canExportSelectedDomain;
   const exportDomainHint =
     !activeDomainFilter
       ? "Select a domain to export its underlying seat data."
@@ -870,7 +871,7 @@ export function FinanceWorkspace({
 
       <section className="space-y-6">
         <Card className="brand-panel overflow-hidden">
-          <CardHeader className="flex-col items-start justify-between gap-5 border-b border-border/60 pb-5 md:flex-row md:items-end">
+          <CardHeader className="flex-col items-start justify-between gap-5 border-b border-border/60 pb-5 lg:flex-row lg:items-end">
             <div>
               <CardTitle className="text-[1.7rem] font-semibold tracking-tight">
                 Budget Summary
@@ -881,64 +882,79 @@ export function FinanceWorkspace({
               </CardDescription>
             </div>
 
-            <div className="flex flex-wrap items-center gap-3">
-              <div className="hidden max-w-64 text-right text-xs text-muted-foreground xl:block">
-                {exportDomainHint}
-              </div>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => void handleExportDomainCsv()}
-                disabled={!canExportSelectedDomain || isExportingDomainCsv}
-              >
-                <Download className="mr-2 h-4 w-4" />
-                {isExportingDomainCsv ? "Exporting..." : "Export CSV"}
-              </Button>
-              <Label
-                htmlFor="year-select"
-                className="text-xs uppercase tracking-[0.18em] text-muted-foreground"
-              >
-                Year
-              </Label>
-              <select
-                id="year-select"
-                className="h-10 rounded-xl border border-border bg-background/80 px-4 text-sm"
-                value={String(activeYear)}
-                onChange={(event) => updateParams({ year: event.target.value })}
-              >
-                {trackingYears.map((year) => (
-                  <option key={year.id} value={year.year}>
-                    {year.year}
-                  </option>
-                ))}
-                {!trackingYears.some((year) => year.year === activeYear) ? (
-                  <option value={activeYear}>{activeYear}</option>
+            <div className="flex w-full flex-col gap-3 lg:max-w-4xl lg:self-end">
+              <div className="flex w-full flex-wrap items-center justify-between gap-4">
+                <div className="flex flex-wrap items-center gap-6">
+                  <div className="flex items-center gap-3">
+                    <Label
+                      htmlFor="year-select"
+                      className="text-xs uppercase tracking-[0.18em] text-muted-foreground"
+                    >
+                      Year
+                    </Label>
+                    <select
+                      id="year-select"
+                      className="h-10 rounded-xl border border-border bg-background/80 px-4 text-sm"
+                      value={String(activeYear)}
+                      onChange={(event) => updateParams({ year: event.target.value })}
+                    >
+                      {trackingYears.map((year) => (
+                        <option key={year.id} value={year.year}>
+                          {year.year}
+                        </option>
+                      ))}
+                      {!trackingYears.some((year) => year.year === activeYear) ? (
+                        <option value={activeYear}>{activeYear}</option>
+                      ) : null}
+                    </select>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <Label
+                      htmlFor="domain-select"
+                      className="text-xs uppercase tracking-[0.18em] text-muted-foreground"
+                    >
+                      Domain
+                    </Label>
+                    <select
+                      id="domain-select"
+                      className="h-10 rounded-xl border border-border bg-background/80 px-4 text-sm"
+                      value={activeDomainFilter}
+                      onChange={(event) =>
+                        handleDomainFilterChange(event.target.value)
+                      }
+                    >
+                      <option value="">All domains</option>
+                      {domainOptions.map(([value, label]) => (
+                        <option key={value} value={value}>
+                          {label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                <div className="flex-1" />
+                {showExportControls ? (
+                  <div className="ml-auto flex flex-wrap items-center justify-end gap-3">
+                    <div className="hidden max-w-64 text-right text-xs text-muted-foreground xl:block">
+                      {exportDomainHint}
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => void handleExportDomainCsv()}
+                      disabled={isExportingDomainCsv}
+                    >
+                      <Download className="mr-2 h-4 w-4" />
+                      {isExportingDomainCsv ? "Exporting..." : "Export CSV"}
+                    </Button>
+                  </div>
                 ) : null}
-              </select>
-              <Label
-                htmlFor="domain-select"
-                className="ml-2 text-xs uppercase tracking-[0.18em] text-muted-foreground"
-              >
-                Domain
-              </Label>
-              <select
-                id="domain-select"
-                className="h-10 rounded-xl border border-border bg-background/80 px-4 text-sm"
-                value={activeDomainFilter}
-                onChange={(event) =>
-                  handleDomainFilterChange(event.target.value)
-                }
-              >
-                <option value="">All domains</option>
-                {domainOptions.map(([value, label]) => (
-                  <option key={value} value={value}>
-                    {label}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="text-xs text-muted-foreground xl:hidden">
-              {exportDomainHint}
+              </div>
+              {showExportControls ? (
+                <div className="w-full text-xs text-muted-foreground xl:hidden lg:text-right">
+                  {exportDomainHint}
+                </div>
+              ) : null}
             </div>
           </CardHeader>
           <CardContent className="pt-5">
