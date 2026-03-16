@@ -9,7 +9,7 @@ import {
   useTransition,
 } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Eye, PenLine } from "lucide-react";
+import { Download, Eye, PenLine } from "lucide-react";
 import { toast } from "sonner";
 import { MultiSelectFilter } from "@/components/finance/multi-select-filter";
 import { FinancePageIntro } from "@/components/finance/page-intro";
@@ -134,6 +134,8 @@ type WorkspaceProps = {
   missingActualMonthFilters: string[];
   missingActualMonthOptions: readonly string[];
   openSeatsOnly: boolean;
+  hasUnrestrictedDomainExportAccess: boolean;
+  exportableDomains: string[];
   seatSortField?: string;
   seatSortDirection?: string;
 };
@@ -193,6 +195,10 @@ function formatForecastCoverage(seat: SeatRow) {
 function getDomainFilterValue(domain: string | null | undefined) {
   const trimmed = domain?.trim();
   return trimmed ? trimmed : UNMAPPED_DOMAIN_FILTER;
+}
+
+function normalizeLookupValue(value: string | null | undefined) {
+  return value?.trim().toLowerCase() ?? "";
 }
 
 function isOpenSeatStatus(
@@ -261,6 +267,8 @@ export function FinanceWorkspace({
   missingActualMonthFilters,
   missingActualMonthOptions,
   openSeatsOnly,
+  hasUnrestrictedDomainExportAccess,
+  exportableDomains,
   seatSortField,
   seatSortDirection,
 }: WorkspaceProps) {
@@ -279,6 +287,7 @@ export function FinanceWorkspace({
   const [selectedSeatId, setSelectedSeatId] = useState(seats[0]?.id ?? "");
   const [showSpentQuarterly, setShowSpentQuarterly] = useState(false);
   const [showForecastQuarterly, setShowForecastQuarterly] = useState(false);
+  const [isExportingDomainCsv, setIsExportingDomainCsv] = useState(false);
   const [openSeatsOnlyDraft, setOpenSeatsOnlyDraft] = useState(openSeatsOnly);
   const [detailDialogSeatId, setDetailDialogSeatId] = useState<string | null>(
     null,
@@ -330,6 +339,27 @@ export function FinanceWorkspace({
       (row) => getDomainFilterValue(row.domain) === activeDomainFilter,
     );
   }, [activeDomainFilter, summary]);
+  const activeDomainLabel = useMemo(
+    () =>
+      domainOptions.find(([value]) => value === activeDomainFilter)?.[1] ?? null,
+    [activeDomainFilter, domainOptions],
+  );
+  const canExportSelectedDomain =
+    activeDomainFilter.length > 0 &&
+    activeDomainFilter !== UNMAPPED_DOMAIN_FILTER &&
+    (hasUnrestrictedDomainExportAccess ||
+      exportableDomains.some(
+        (domain) =>
+          normalizeLookupValue(domain) === normalizeLookupValue(activeDomainFilter),
+      ));
+  const exportDomainHint =
+    !activeDomainFilter
+      ? "Select a domain to export its underlying seat data."
+      : activeDomainFilter === UNMAPPED_DOMAIN_FILTER
+        ? "Only mapped domains can be exported."
+        : canExportSelectedDomain
+          ? `Exports all seat, actual, forecast, and roster data for ${activeDomainLabel || activeDomainFilter}.`
+          : "Export requires access to all data in the selected domain.";
 
   const activeSeatSortField: SeatSortField | null =
     seatSortField === "seat" ||
@@ -742,6 +772,50 @@ export function FinanceWorkspace({
     void handleAreaSelectionWithParams(nextSummary[0].id, params);
   }
 
+  function downloadCsv(fileName: string, content: string) {
+    const blob = new Blob([content], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = fileName;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function handleExportDomainCsv() {
+    if (!canExportSelectedDomain || !activeDomainFilter) {
+      return;
+    }
+
+    setIsExportingDomainCsv(true);
+
+    try {
+      const response = await fetch(
+        `/api/tracker/export?year=${activeYear}&domain=${encodeURIComponent(activeDomainFilter)}`,
+      );
+
+      if (!response.ok) {
+        const body = await response.json();
+        throw new Error(body.error || "Export failed");
+      }
+
+      const safeDomainName = (activeDomainLabel || activeDomainFilter)
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+
+      downloadCsv(
+        `tracker-domain-${safeDomainName || "export"}-${activeYear}.csv`,
+        await response.text(),
+      );
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Export failed");
+    } finally {
+      setIsExportingDomainCsv(false);
+    }
+  }
+
   return (
     <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 py-1">
       <FinancePageIntro
@@ -808,6 +882,18 @@ export function FinanceWorkspace({
             </div>
 
             <div className="flex flex-wrap items-center gap-3">
+              <div className="hidden max-w-64 text-right text-xs text-muted-foreground xl:block">
+                {exportDomainHint}
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => void handleExportDomainCsv()}
+                disabled={!canExportSelectedDomain || isExportingDomainCsv}
+              >
+                <Download className="mr-2 h-4 w-4" />
+                {isExportingDomainCsv ? "Exporting..." : "Export CSV"}
+              </Button>
               <Label
                 htmlFor="year-select"
                 className="text-xs uppercase tracking-[0.18em] text-muted-foreground"
@@ -850,6 +936,9 @@ export function FinanceWorkspace({
                   </option>
                 ))}
               </select>
+            </div>
+            <div className="text-xs text-muted-foreground xl:hidden">
+              {exportDomainHint}
             </div>
           </CardHeader>
           <CardContent className="pt-5">

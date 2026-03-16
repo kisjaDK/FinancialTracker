@@ -63,6 +63,76 @@ import { getPrismaClient, prisma } from "@/lib/prisma"
 export const INTERNAL_ACTUALS_SERVICE_MESSAGE_KEY: ServiceMessageKey =
   "INTERNAL_ACTUALS"
 
+export const TRACKER_DOMAIN_EXPORT_HEADERS = [
+  "Tracker Seat ID",
+  "Source Key",
+  "Seat ID",
+  "Source Type",
+  "Budget Area ID",
+  "Domain",
+  "Sub-domain",
+  "Funding",
+  "Pillar",
+  "Cost Center",
+  "Project Code",
+  "Team",
+  "In Seat",
+  "Description",
+  "Resource Type",
+  "Band",
+  "Location",
+  "Vendor",
+  "Daily Rate",
+  "Status",
+  "Allocation",
+  "Start Date",
+  "End Date",
+  "Spend Plan ID",
+  "RITM",
+  "SOW",
+  "Notes",
+  "Total Spent DKK",
+  "Total Forecast DKK",
+  "Yearly Cost Internal DKK",
+  "Yearly Cost External DKK",
+  "Has Forecast Adjustments",
+  "Roster Seat ID",
+  "Roster Import File",
+  "Roster Domain",
+  "Roster Product Line",
+  "Roster Team",
+  "Roster Name",
+  "Roster Email",
+  "Roster Role Category",
+  "Roster Specific Role",
+  "Roster Title",
+  "Roster Status",
+  "Roster Allocation",
+  "Roster Resource Type",
+  "Roster Vendor",
+  "Roster Daily Rate",
+  "Roster Manager",
+  "Roster Location",
+  "Roster Expected Funding",
+  "Roster Expected Funding 2025",
+  "Roster Funding Type",
+  "Roster Hourly Rate",
+  "Roster Start Date",
+  "Roster End Date",
+  "Roster Import Error",
+  ...MONTH_NAMES.flatMap((label) => [
+    `${label} Forecast`,
+    `${label} Actual DKK`,
+    `${label} Actual Raw`,
+    `${label} Actual Currency`,
+    `${label} Actual FX Rate`,
+    `${label} Forecast Included`,
+    `${label} Forecast Override`,
+    `${label} Used Forecast`,
+    `${label} Month Notes`,
+  ]),
+] as const
+
 const trackerSeatDerivationByYear = new Map<number, Promise<void>>()
 
 type TrackerYearSnapshot = {
@@ -187,6 +257,14 @@ function normalizeAllocation(value: number | null | undefined) {
   }
 
   return value > 1 ? value / 100 : value
+}
+
+function formatExportDate(value: Date | string | null | undefined) {
+  if (!value) {
+    return ""
+  }
+
+  return new Date(value).toISOString().slice(0, 10)
 }
 
 async function computeSeatMonthForecastSnapshot(input: {
@@ -4805,6 +4883,178 @@ export async function getTrackerDetail(
     }))
 
   return buildTrackerDetailFromSnapshot(year, budgetAreaId, snapshot, viewer)
+}
+
+export async function getTrackerDomainExportRows(
+  year: number,
+  domain: string,
+  viewer?: Pick<AppViewer, "role" | "scopes">
+) {
+  const normalizedDomain = normalizeValue(domain)
+  if (!normalizedDomain) {
+    throw new Error("Domain is required.")
+  }
+
+  const trackingYear = await getOrCreateTrackingYear(year)
+  await ensureFreshTrackerDerivation(year)
+  const statusDefinitions = await ensureStatusDefinitions(year)
+  const snapshot = await loadTrackerYearSnapshot(trackingYear.id, {
+    includeBudgetMovements: true,
+    seatOrderBy: [{ team: "asc" }, { inSeat: "asc" }],
+  })
+  const rosterPersonIds = snapshot.seats
+    .map((seat) => seat.rosterPersonId)
+    .filter((rosterPersonId): rosterPersonId is string => Boolean(rosterPersonId))
+  const rosterPeople =
+    rosterPersonIds.length > 0
+      ? await prisma.rosterPerson.findMany({
+          where: {
+            id: {
+              in: rosterPersonIds,
+            },
+          },
+          include: {
+            import: true,
+          },
+        })
+      : []
+  const rosterPeopleById = new Map(rosterPeople.map((person) => [person.id, person]))
+  const summaryKeys = new Set(
+    buildBudgetAreaSummaryFromSnapshot(year, statusDefinitions, snapshot, viewer)
+      .filter((row) => normalizeValue(row.domain) === normalizedDomain)
+      .map((row) => row.id)
+  )
+
+  if (summaryKeys.size === 0) {
+    return []
+  }
+
+  const assumptionLookup = buildCostAssumptionLookup(snapshot.assumptions)
+  const exchangeRateLookup = buildExchangeRateLookup(snapshot.exchangeRates)
+
+  return (snapshot.seats as SeatWithRelations[])
+    .map((seat) => {
+      const effectiveSeat = getEffectiveSeat(seat)
+      return {
+        seat,
+        effectiveSeat,
+        summaryKey: buildSummaryKey({
+          subDomain: effectiveSeat.subDomain,
+          projectCode: effectiveSeat.projectCode,
+        }),
+      }
+    })
+    .filter(({ summaryKey }) => summaryKeys.has(summaryKey))
+    .map(({ seat, effectiveSeat }) => {
+      const rosterPerson = seat.rosterPersonId
+        ? rosterPeopleById.get(seat.rosterPersonId) ?? null
+        : null
+      const metrics = deriveSeatMetrics(
+        seat,
+        assumptionLookup,
+        snapshot.exchangeRates,
+        year,
+        {
+          exchangeRateLookup,
+        }
+      )
+      const cancelled = isTrackerCancelledSeat(effectiveSeat)
+      const monthsByIndex = new Map(seat.months.map((month) => [month.monthIndex, month]))
+      const row: Record<string, string | number | null | undefined> = {
+        "Tracker Seat ID": seat.id,
+        "Source Key": seat.sourceKey,
+        "Seat ID": seat.seatId,
+        "Source Type": seat.sourceType,
+        "Budget Area ID": effectiveSeat.budgetAreaId,
+        "Domain": effectiveSeat.domain,
+        "Sub-domain": effectiveSeat.subDomain,
+        "Funding": effectiveSeat.funding,
+        "Pillar": effectiveSeat.pillar,
+        "Cost Center": effectiveSeat.costCenter,
+        "Project Code": effectiveSeat.projectCode,
+        "Team": effectiveSeat.team,
+        "In Seat": effectiveSeat.inSeat,
+        "Description": effectiveSeat.description,
+        "Resource Type": effectiveSeat.resourceType,
+        "Band": effectiveSeat.band,
+        "Location": effectiveSeat.location,
+        "Vendor": effectiveSeat.vendor,
+        "Daily Rate": effectiveSeat.dailyRate,
+        "Status": effectiveSeat.status,
+        "Allocation": effectiveSeat.allocation,
+        "Start Date": formatExportDate(effectiveSeat.startDate),
+        "End Date": formatExportDate(effectiveSeat.endDate),
+        "Spend Plan ID": effectiveSeat.spendPlanId,
+        "RITM": effectiveSeat.ritm,
+        "SOW": effectiveSeat.sow,
+        "Notes": effectiveSeat.notes,
+        "Total Spent DKK": metrics.totalSpent,
+        "Total Forecast DKK": metrics.totalForecast,
+        "Yearly Cost Internal DKK": metrics.yearlyCostInternal,
+        "Yearly Cost External DKK": metrics.yearlyCostExternal,
+        "Has Forecast Adjustments": seat.months.some(
+          (month) =>
+            month.forecastOverrideAmount !== null || month.forecastIncluded === false
+        )
+          ? "TRUE"
+          : "FALSE",
+        "Roster Seat ID": rosterPerson?.seatId ?? seat.seatId,
+        "Roster Import File": rosterPerson?.import.fileName,
+        "Roster Domain": rosterPerson?.domain,
+        "Roster Product Line": rosterPerson?.productLine,
+        "Roster Team": rosterPerson?.teamName,
+        "Roster Name": rosterPerson?.resourceName,
+        "Roster Email": rosterPerson?.email,
+        "Roster Role Category": rosterPerson?.roleCategory,
+        "Roster Specific Role": rosterPerson?.specificRole,
+        "Roster Title": rosterPerson?.title,
+        "Roster Status": rosterPerson?.status,
+        "Roster Allocation": rosterPerson?.allocation,
+        "Roster Resource Type": rosterPerson?.resourceType,
+        "Roster Vendor": rosterPerson?.vendor,
+        "Roster Daily Rate": rosterPerson?.dailyRate,
+        "Roster Manager": rosterPerson?.lineManager,
+        "Roster Location": rosterPerson?.location,
+        "Roster Expected Funding": rosterPerson?.expectedFunding,
+        "Roster Expected Funding 2025": rosterPerson?.expectedFunding2025,
+        "Roster Funding Type": rosterPerson?.fundingType,
+        "Roster Hourly Rate": rosterPerson?.hourlyRate,
+        "Roster Start Date": formatExportDate(rosterPerson?.expectedStartDate),
+        "Roster End Date": formatExportDate(rosterPerson?.expectedEndDate),
+        "Roster Import Error": rosterPerson?.importError,
+      }
+
+      for (let monthIndex = 0; monthIndex < MONTH_NAMES.length; monthIndex += 1) {
+        const label = MONTH_NAMES[monthIndex]
+        const month = monthsByIndex.get(monthIndex)
+        const converted =
+          month?.actualAmountRaw !== null && month?.actualAmountRaw !== undefined
+            ? convertAmountToDkk(
+                month.actualAmountRaw,
+                month.actualCurrency,
+                exchangeRateLookup
+              )
+            : {
+                amountDkk: month?.actualAmount ?? 0,
+                exchangeRateUsed: month?.exchangeRateUsed ?? null,
+              }
+
+        row[`${label} Forecast`] = metrics.monthlyForecast[monthIndex] ?? 0
+        row[`${label} Actual DKK`] = cancelled ? 0 : (converted.amountDkk ?? 0)
+        row[`${label} Actual Raw`] = cancelled ? null : (month?.actualAmountRaw ?? null)
+        row[`${label} Actual Currency`] = month?.actualCurrency ?? null
+        row[`${label} Actual FX Rate`] = cancelled
+          ? null
+          : (converted.exchangeRateUsed ?? null)
+        row[`${label} Forecast Included`] =
+          month?.forecastIncluded === false ? "FALSE" : "TRUE"
+        row[`${label} Forecast Override`] = month?.forecastOverrideAmount ?? null
+        row[`${label} Used Forecast`] = month?.usedForecastAmount ?? null
+        row[`${label} Month Notes`] = month?.notes ?? null
+      }
+
+      return row
+    })
 }
 
 function buildTrackerDetailFromSnapshot(

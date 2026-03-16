@@ -79,10 +79,17 @@ export function parseCsv(content: string) {
   })
 }
 
-function escapeCsvValue(value: string | number | null | undefined) {
+function escapeDelimitedValue(
+  value: string | number | null | undefined,
+  delimiter: string
+) {
   const normalized = value === null || value === undefined ? "" : String(value)
 
-  if (/[",\n]/.test(normalized)) {
+  if (
+    normalized.includes(delimiter) ||
+    normalized.includes('"') ||
+    normalized.includes("\n")
+  ) {
     return `"${normalized.replaceAll('"', '""')}"`
   }
 
@@ -91,11 +98,17 @@ function escapeCsvValue(value: string | number | null | undefined) {
 
 export function serializeCsv(
   rows: Array<Record<string, string | number | null | undefined>>,
-  headers: string[]
+  headers: string[],
+  options?: {
+    delimiter?: string
+  }
 ) {
-  const headerLine = headers.map((header) => escapeCsvValue(header)).join(",")
+  const delimiter = options?.delimiter ?? ","
+  const headerLine = headers
+    .map((header) => escapeDelimitedValue(header, delimiter))
+    .join(delimiter)
   const dataLines = rows.map((row) =>
-    headers.map((header) => escapeCsvValue(row[header])).join(",")
+    headers.map((header) => escapeDelimitedValue(row[header], delimiter)).join(delimiter)
   )
 
   return [headerLine, ...dataLines].join("\n")

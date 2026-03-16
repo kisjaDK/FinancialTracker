@@ -1,7 +1,7 @@
 import { FinanceAppShell } from "@/components/finance/app-shell";
 import { FinanceWorkspace } from "@/components/finance/workspace";
 import { getFinanceWorkspaceData } from "@/lib/finance/queries";
-import { requirePageAccess } from "@/lib/authz";
+import { hasScopeRestrictions, requirePageAccess } from "@/lib/authz";
 
 type SearchParamValue = string | string[] | undefined;
 
@@ -39,6 +39,17 @@ export default async function TrackerPage({ searchParams }: PageProps) {
     resolvedSearchParams?.openSeatsOnly === "true",
     viewer,
   );
+  const hasUnrestrictedDomainExportAccess = !hasScopeRestrictions(viewer);
+  const exportableDomains = hasUnrestrictedDomainExportAccess
+    ? []
+    : Array.from(
+        new Set(
+          viewer.scopes
+            .filter((scope) => !scope.subDomain?.trim())
+            .map((scope) => scope.domain.trim())
+            .filter(Boolean),
+        ),
+      );
 
   return (
     <FinanceAppShell
@@ -59,6 +70,8 @@ export default async function TrackerPage({ searchParams }: PageProps) {
         missingActualMonthFilters={workspace.missingActualMonthFilters}
         missingActualMonthOptions={workspace.missingActualMonthOptions}
         openSeatsOnly={workspace.openSeatsOnly}
+        hasUnrestrictedDomainExportAccess={hasUnrestrictedDomainExportAccess}
+        exportableDomains={exportableDomains}
         seatSortField={resolvedSearchParams?.seatSortField}
         seatSortDirection={resolvedSearchParams?.seatSortDirection}
       />

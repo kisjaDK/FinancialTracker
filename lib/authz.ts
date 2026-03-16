@@ -148,6 +148,27 @@ export function matchesAccessScope(
   })
 }
 
+export function hasFullDomainAccess(
+  viewer: Pick<AppViewer, "role" | "scopes">,
+  domain: string | null | undefined
+) {
+  const normalizedDomain = normalizeValue(domain)
+  if (!normalizedDomain) {
+    return false
+  }
+
+  if (!hasScopeRestrictions(viewer)) {
+    return true
+  }
+
+  return viewer.scopes.some((scope) => {
+    const scopeDomain = normalizeValue(scope.domain)
+    const scopeSubDomain = normalizeValue(scope.subDomain)
+
+    return scopeDomain === normalizedDomain && scopeSubDomain.length === 0
+  })
+}
+
 export function filterByScopes<T>(
   items: T[],
   viewer: Pick<AppViewer, "role" | "scopes">,
