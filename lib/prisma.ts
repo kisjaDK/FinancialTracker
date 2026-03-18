@@ -1,6 +1,6 @@
 import { PrismaClient } from "@prisma/client"
 
-const PRISMA_SCHEMA_VERSION = "2026-03-15-feature-requests-v1"
+const PRISMA_SCHEMA_VERSION = "2026-03-18-service-users-v1"
 
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined
@@ -21,6 +21,8 @@ const supportsFinanceModels =
   "externalActualImport" in cachedPrisma &&
   "externalActualEntry" in cachedPrisma &&
   "accrualAccountMapping" in cachedPrisma &&
+  "serviceUser" in cachedPrisma &&
+  "serviceApiKey" in cachedPrisma &&
   "featureRequest" in cachedPrisma &&
   "featureRequestVote" in cachedPrisma
 const isMatchingSchemaVersion =
@@ -51,6 +53,8 @@ export function getPrismaClient() {
     "externalActualImport" in globalPrisma &&
     "externalActualEntry" in globalPrisma &&
     "accrualAccountMapping" in globalPrisma &&
+    "serviceUser" in globalPrisma &&
+    "serviceApiKey" in globalPrisma &&
     "featureRequest" in globalPrisma &&
     "featureRequestVote" in globalPrisma
   const globalMatchesSchemaVersion =

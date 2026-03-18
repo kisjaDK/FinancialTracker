@@ -1,5 +1,6 @@
 import type { LucideIcon } from "lucide-react"
 import {
+  Brain,
   BadgeDollarSign,
   BriefcaseBusiness,
   ClipboardList,
@@ -16,6 +17,7 @@ import {
 import type { AppRole } from "@/lib/roles"
 
 export type FinancePath =
+  | "/analysis"
   | "/tracker"
   | "/staffing"
   | "/budget-movements"
@@ -38,6 +40,12 @@ export type FinanceNavItem = {
 }
 
 export const FINANCE_NAV_ITEMS: FinanceNavItem[] = [
+  {
+    href: "/analysis",
+    label: "Analysis",
+    minimumRole: "SUPER_ADMIN",
+    icon: Brain,
+  },
   {
     href: "/tracker",
     label: "Tracker",

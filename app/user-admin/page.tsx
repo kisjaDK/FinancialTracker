@@ -16,6 +16,7 @@ export default async function UserAdminPage() {
     >
       <UserAdminBrowser
         users={data.users}
+        serviceUsers={data.serviceUsers}
         scopeOptions={data.scopeOptions}
         allowedRoles={data.allowedRoles}
       />

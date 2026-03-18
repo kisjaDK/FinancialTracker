@@ -1,10 +1,11 @@
 "use client"
 
 import { useMemo, useState } from "react"
-import { Trash2 } from "lucide-react"
+import { Copy, KeyRound, Power, RefreshCcw, Trash2 } from "lucide-react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { FinancePageIntro } from "@/components/finance/page-intro"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import {
   Card,
@@ -34,6 +35,24 @@ type UserRecord = {
 
 type UserAdminBrowserProps = {
   users: UserRecord[]
+  serviceUsers: {
+    id: string
+    label: string
+    role: AppRole
+    isActive: boolean
+    createdAt: Date
+    updatedAt: Date
+    createdByName: string | null
+    createdByEmail: string | null
+    deactivatedAt: Date | null
+    currentKey: {
+      id: string
+      keyId: string
+      name: string | null
+      createdAt: Date
+      lastUsedAt: Date | null
+    } | null
+  }[]
   scopeOptions: AccessScope[]
   allowedRoles: AppRole[]
 }
@@ -45,9 +64,19 @@ type EditableUser = {
   scopes: AccessScope[]
 }
 
+type ServiceUserForm = {
+  label: string
+  keyName: string
+}
+
 const EMPTY_SCOPE = {
   domain: "",
   subDomain: "",
+}
+
+const EMPTY_SERVICE_USER_FORM: ServiceUserForm = {
+  label: "",
+  keyName: "Primary key",
 }
 
 function emptyForm(allowedRoles: AppRole[]): EditableUser {
@@ -70,14 +99,41 @@ async function fetchJson(input: RequestInfo, init?: RequestInit) {
   return body
 }
 
+function formatDateTime(value: Date | string | null | undefined) {
+  if (!value) {
+    return "Never"
+  }
+
+  const date = value instanceof Date ? value : new Date(value)
+  if (Number.isNaN(date.getTime())) {
+    return "Never"
+  }
+
+  return new Intl.DateTimeFormat("en-GB", {
+    year: "numeric",
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date)
+}
+
 export function UserAdminBrowser({
   users,
+  serviceUsers,
   scopeOptions,
   allowedRoles,
 }: UserAdminBrowserProps) {
   const router = useRouter()
   const [editingEmail, setEditingEmail] = useState<string | null>(null)
   const [form, setForm] = useState<EditableUser>(() => emptyForm(allowedRoles))
+  const [serviceUserForm, setServiceUserForm] = useState<ServiceUserForm>(
+    EMPTY_SERVICE_USER_FORM
+  )
+  const [generatedApiKey, setGeneratedApiKey] = useState<{
+    ownerLabel: string
+    value: string
+  } | null>(null)
 
   const domainOptions = useMemo(
     () =>
@@ -192,6 +248,125 @@ export function UserAdminBrowser({
         entryIndex === index ? updater(entry) : entry
       ),
     }))
+  }
+
+  async function createServiceUser() {
+    try {
+      const body = await fetchJson("/api/service-users", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          label: serviceUserForm.label,
+          role: "MEMBER",
+          keyName: serviceUserForm.keyName,
+        }),
+      })
+
+      setGeneratedApiKey({
+        ownerLabel: body.serviceUser.label,
+        value: body.apiKey,
+      })
+      setServiceUserForm(EMPTY_SERVICE_USER_FORM)
+      toast.success("Service user created")
+      router.refresh()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Create failed")
+    }
+  }
+
+  async function rotateServiceUser(id: string, label: string) {
+    if (!window.confirm(`Rotate the API key for ${label}? The current key will stop working.`)) {
+      return
+    }
+
+    try {
+      const body = await fetchJson("/api/service-users", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          action: "rotate",
+          id,
+        }),
+      })
+
+      setGeneratedApiKey({
+        ownerLabel: body.serviceUser.label,
+        value: body.apiKey,
+      })
+      toast.success("API key rotated")
+      router.refresh()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Rotate failed")
+    }
+  }
+
+  async function revokeServiceUserKey(id: string, label: string) {
+    if (!window.confirm(`Revoke the active API key for ${label}?`)) {
+      return
+    }
+
+    try {
+      await fetchJson("/api/service-users", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          action: "revoke-key",
+          id,
+        }),
+      })
+      toast.success("API key revoked")
+      router.refresh()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Revoke failed")
+    }
+  }
+
+  async function toggleServiceUser(id: string, label: string, isActive: boolean) {
+    const nextState = !isActive
+    if (
+      !window.confirm(
+        `${nextState ? "Activate" : "Deactivate"} service user ${label}?`
+      )
+    ) {
+      return
+    }
+
+    try {
+      await fetchJson("/api/service-users", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          action: "set-active",
+          id,
+          isActive: nextState,
+        }),
+      })
+      toast.success(nextState ? "Service user activated" : "Service user deactivated")
+      router.refresh()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Update failed")
+    }
+  }
+
+  async function copyGeneratedKey() {
+    if (!generatedApiKey?.value) {
+      return
+    }
+
+    try {
+      await navigator.clipboard.writeText(generatedApiKey.value)
+      toast.success("API key copied")
+    } catch {
+      toast.error("Copy failed")
+    }
   }
 
   return (
@@ -438,6 +613,205 @@ export function UserAdminBrowser({
                       </TableCell>
                     </TableRow>
                   ))}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+        </div>
+
+        <div className="grid gap-6 lg:grid-cols-[30rem_minmax(0,1fr)]">
+          <Card className="w-full brand-card">
+            <CardHeader>
+              <CardTitle>Service Users</CardTitle>
+              <CardDescription>
+                Create machine identities for roster imports. Plaintext API keys are shown only once when created or rotated.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {generatedApiKey ? (
+                <Alert>
+                  <KeyRound />
+                  <AlertTitle>{generatedApiKey.ownerLabel} API key</AlertTitle>
+                  <AlertDescription className="w-full">
+                    <p>Copy this key now. It will not be visible again after you leave this page.</p>
+                    <code className="block w-full overflow-x-auto rounded-md bg-muted px-3 py-2 font-mono text-xs text-foreground">
+                      {generatedApiKey.value}
+                    </code>
+                    <div className="flex gap-2 pt-1">
+                      <Button type="button" variant="outline" size="sm" onClick={copyGeneratedKey}>
+                        <Copy className="mr-2 size-4" />
+                        Copy Key
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setGeneratedApiKey(null)}
+                      >
+                        Dismiss
+                      </Button>
+                    </div>
+                  </AlertDescription>
+                </Alert>
+              ) : null}
+
+              <div className="space-y-2">
+                <label htmlFor="service-user-label" className="text-sm font-medium">
+                  Label
+                </label>
+                <Input
+                  id="service-user-label"
+                  value={serviceUserForm.label}
+                  onChange={(event) =>
+                    setServiceUserForm((current) => ({
+                      ...current,
+                      label: event.target.value,
+                    }))
+                  }
+                  placeholder="Power Automate Roster Import"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label htmlFor="service-user-key-name" className="text-sm font-medium">
+                  Key label
+                </label>
+                <Input
+                  id="service-user-key-name"
+                  value={serviceUserForm.keyName}
+                  onChange={(event) =>
+                    setServiceUserForm((current) => ({
+                      ...current,
+                      keyName: event.target.value,
+                    }))
+                  }
+                  placeholder="Primary key"
+                />
+              </div>
+
+              <div className="rounded-xl border border-border/70 bg-muted/30 p-3 text-sm text-muted-foreground">
+                New service users currently receive the fixed role <span className="font-medium text-foreground">member</span> and authenticate with <span className="font-mono text-foreground">Authorization: Bearer &lt;key&gt;</span>.
+              </div>
+
+              <div className="flex gap-3">
+                <Button type="button" onClick={createServiceUser}>
+                  Create Service User
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setServiceUserForm(EMPTY_SERVICE_USER_FORM)}
+                >
+                  Reset
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="min-w-0 brand-card">
+            <CardHeader>
+              <CardTitle>Issued Service Users</CardTitle>
+              <CardDescription>
+                Rotate keys when integrations change and deactivate service users that should no longer import data.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Identity</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>Key</TableHead>
+                    <TableHead>Activity</TableHead>
+                    <TableHead className="text-right">Actions</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {serviceUsers.map((serviceUser) => (
+                    <TableRow key={serviceUser.id}>
+                      <TableCell>
+                        <div className="font-medium">{serviceUser.label}</div>
+                        <div className="text-xs text-muted-foreground">
+                          Role: {roleLabel(serviceUser.role)} · Created {formatDateTime(serviceUser.createdAt)}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <div className={serviceUser.isActive ? "font-medium text-foreground" : "font-medium text-red-600"}>
+                          {serviceUser.isActive ? "Active" : "Inactive"}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          {serviceUser.deactivatedAt
+                            ? `Disabled ${formatDateTime(serviceUser.deactivatedAt)}`
+                            : "Available for roster imports"}
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-sm text-muted-foreground">
+                        {serviceUser.currentKey ? (
+                          <>
+                            <div className="font-mono text-foreground">
+                              {serviceUser.currentKey.keyId}
+                            </div>
+                            <div>{serviceUser.currentKey.name || "Unnamed key"}</div>
+                          </>
+                        ) : (
+                          "No active key"
+                        )}
+                      </TableCell>
+                      <TableCell className="text-sm text-muted-foreground">
+                        <div>
+                          Last used: {formatDateTime(serviceUser.currentKey?.lastUsedAt ?? null)}
+                        </div>
+                        <div>
+                          Key created: {formatDateTime(serviceUser.currentKey?.createdAt ?? null)}
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex justify-end gap-2">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={() => rotateServiceUser(serviceUser.id, serviceUser.label)}
+                            disabled={!serviceUser.isActive}
+                          >
+                            <RefreshCcw className="mr-2 size-4" />
+                            Rotate
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={() =>
+                              toggleServiceUser(
+                                serviceUser.id,
+                                serviceUser.label,
+                                serviceUser.isActive
+                              )
+                            }
+                          >
+                            <Power className="mr-2 size-4" />
+                            {serviceUser.isActive ? "Deactivate" : "Activate"}
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            className="text-red-600 hover:text-red-700"
+                            onClick={() =>
+                              revokeServiceUserKey(serviceUser.id, serviceUser.label)
+                            }
+                            disabled={!serviceUser.currentKey}
+                          >
+                            Revoke Key
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                  {serviceUsers.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={5} className="text-center text-sm text-muted-foreground">
+                        No service users created yet.
+                      </TableCell>
+                    </TableRow>
+                  ) : null}
                 </TableBody>
               </Table>
             </CardContent>

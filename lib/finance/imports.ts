@@ -12,6 +12,39 @@ import { prisma } from "@/lib/prisma"
 import { parseCsv } from "@/lib/finance/csv"
 import { deriveTrackerSeatsForYear, updateTrackerSeat } from "@/lib/finance/queries"
 
+type NormalizedRosterImportRow = {
+  seatId: string
+  domain: string | null
+  productLine: string | null
+  teamName: string | null
+  band: string | null
+  peoplePortalPositionId: string | null
+  resourceName: string | null
+  email: string | null
+  roleCategory: string | null
+  specificRole: string | null
+  title: string | null
+  status: string | null
+  allocation: number | null
+  resourceType: string | null
+  vendor: string | null
+  dailyRate: number | null
+  lineManager: string | null
+  location: string | null
+  expectedFunding: string | null
+  expectedFunding2025: string | null
+  expectedStartDate: Date | null
+  expectedEndDate: Date | null
+  fundingType: string | null
+  hourlyRate: number | null
+}
+
+type PersistRosterImportOptions = {
+  sourceRowCount: number
+  skippedBlankSeatRows?: number
+  skippedHistoricalRows?: number
+}
+
 function requireAnyHeader(
   rows: Record<string, string>[],
   headerGroups: Array<{ label: string; headers: string[] }>
@@ -461,6 +494,217 @@ function isHistoricalRosterRow(
   )
 }
 
+function createDepartmentMappingLookup(
+  departmentMappings: Awaited<ReturnType<typeof prisma.departmentMapping.findMany>>
+) {
+  return departmentMappings.reduce<Map<string, typeof departmentMappings>>((map, mapping) => {
+    const key = buildDepartmentCodeKey(mapping.sourceCode)
+    const current = map.get(key) || []
+    current.push(mapping)
+    map.set(key, current)
+    return map
+  }, new Map())
+}
+
+function resolveRosterImportValues(
+  row: Pick<
+    NormalizedRosterImportRow,
+    "domain" | "productLine" | "resourceType" | "vendor"
+  >,
+  departmentMappings: Awaited<ReturnType<typeof prisma.departmentMapping.findMany>>,
+  departmentMappingLookup: ReturnType<typeof createDepartmentMappingLookup>
+) {
+  const resourceValidation = normalizeRosterVendor(row.resourceType, row.vendor)
+  const mapping =
+    resolveDepartmentMapping(departmentMappingLookup as never, {
+      sourceCode: row.domain,
+      subDomain: row.productLine,
+    }) ||
+    resolveDepartmentMappingByDomain(departmentMappings as never, {
+      domain: row.domain,
+      subDomain: row.productLine,
+    })
+
+  return {
+    domain: row.domain,
+    resourceType: row.resourceType,
+    vendor: resourceValidation.vendor,
+    importError: getRosterImportError({
+      departmentCode: row.domain,
+      rosterSubDomain: row.productLine,
+      resourceValidationError: resourceValidation.importError,
+      mapping,
+    }),
+  }
+}
+
+function dedupeRosterRows(rows: NormalizedRosterImportRow[]) {
+  return Array.from(
+    new Map(rows.map((row) => [row.seatId.trim(), { ...row, seatId: row.seatId.trim() }])).values()
+  )
+}
+
+function normalizeJsonText(value: unknown) {
+  if (typeof value !== "string") {
+    return value === null || value === undefined ? null : String(value)
+  }
+
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : null
+}
+
+function parseJsonNumber(value: unknown) {
+  if (value === null || value === undefined || value === "") {
+    return null
+  }
+
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null
+  }
+
+  return parseNumber(String(value))
+}
+
+function parseJsonDate(value: unknown) {
+  if (value === null || value === undefined || value === "") {
+    return null
+  }
+
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value
+  }
+
+  return parseDate(String(value))
+}
+
+async function persistRosterImportRows(
+  year: number,
+  fileName: string,
+  rows: NormalizedRosterImportRow[],
+  actor: AuditActor | undefined,
+  options: PersistRosterImportOptions
+) {
+  if (rows.length === 0) {
+    throw new Error("Roster payload is empty.")
+  }
+
+  const trackingYear = await getOrCreateTrackingYear(year)
+  const departmentMappings = await prisma.departmentMapping.findMany({
+    where: {
+      trackingYearId: trackingYear.id,
+      codeType: "DEPARTMENT_CODE",
+    },
+  })
+  const departmentMappingLookup = createDepartmentMappingLookup(departmentMappings)
+  const [existingImports, existingPeople, existingSeats] = await Promise.all([
+    prisma.rosterImport.count({ where: { trackingYearId: trackingYear.id } }),
+    prisma.rosterPerson.count({ where: { trackingYearId: trackingYear.id } }),
+    prisma.trackerSeat.count({
+      where: {
+        trackingYearId: trackingYear.id,
+        sourceType: SeatSourceType.ROSTER,
+      },
+    }),
+  ])
+
+  const dedupedRows = dedupeRosterRows(rows)
+  const errorRowCount = dedupedRows.filter((row) =>
+    Boolean(
+      resolveRosterImportValues(row, departmentMappings, departmentMappingLookup).importError
+    )
+  ).length
+
+  const batch = await prisma.$transaction(async (transaction) => {
+    const nextBatch = await transaction.rosterImport.create({
+      data: {
+        trackingYearId: trackingYear.id,
+        fileName,
+        status: ImportStatus.APPROVED,
+        importedByName: actor?.name ?? null,
+        importedByEmail: actor?.email ?? null,
+        approvedAt: new Date(),
+        rowCount: dedupedRows.length,
+      },
+    })
+
+    await transaction.rosterPerson.createMany({
+      data: dedupedRows.map((row) => {
+        const resolved = resolveRosterImportValues(
+          row,
+          departmentMappings,
+          departmentMappingLookup
+        )
+
+        return {
+          trackingYearId: trackingYear.id,
+          importId: nextBatch.id,
+          seatId: row.seatId,
+          domain: resolved.domain,
+          productLine: row.productLine,
+          importError: resolved.importError,
+          teamName: row.teamName,
+          band: row.band,
+          peoplePortalPositionId: row.peoplePortalPositionId,
+          resourceName: row.resourceName,
+          email: row.email,
+          roleCategory: row.roleCategory,
+          specificRole: row.specificRole,
+          title: row.title,
+          status: row.status,
+          allocation: row.allocation ?? 0,
+          resourceType: resolved.resourceType,
+          vendor: resolved.vendor,
+          dailyRate: row.dailyRate,
+          lineManager: row.lineManager,
+          location: row.location,
+          expectedFunding: row.expectedFunding,
+          expectedFunding2025: row.expectedFunding2025,
+          expectedStartDate: row.expectedStartDate,
+          expectedEndDate: row.expectedEndDate,
+          fundingType: row.fundingType,
+          hourlyRate: row.hourlyRate,
+        }
+      }),
+    })
+
+    return nextBatch
+  })
+
+  await deriveTrackerSeatsForYear(year)
+  await writeAuditLog({
+    trackingYearId: trackingYear.id,
+    entityType: "RosterImport",
+    entityId: batch.id,
+    action: "IMPORT",
+    actor,
+    changes: [
+      {
+        field: "rosterImport",
+        oldValue: JSON.stringify({
+          previousImports: existingImports,
+          previousPeople: existingPeople,
+          previousSeats: existingSeats,
+        }),
+        newValue: JSON.stringify({
+          fileName,
+          sourceRowCount: options.sourceRowCount,
+          importedRowCount: dedupedRows.length,
+          skippedBlankSeatRows: options.skippedBlankSeatRows ?? 0,
+          skippedHistoricalRows: options.skippedHistoricalRows ?? 0,
+          errorRowCount,
+          importedPeople: dedupedRows.length,
+        }),
+      },
+    ],
+  })
+
+  return {
+    batch,
+    errorRowCount,
+    skippedHistoricalRows: options.skippedHistoricalRows ?? 0,
+  }
+}
+
 export async function importRosterCsv(
   year: number,
   fileName: string,
@@ -489,33 +733,6 @@ export async function importRosterCsv(
     { label: "End date", headers: ["Expected end date", "End date"] },
     { label: "Funding type", headers: ["Funding type"] },
   ])
-  const trackingYear = await getOrCreateTrackingYear(year)
-  const departmentMappings = await prisma.departmentMapping.findMany({
-    where: {
-      trackingYearId: trackingYear.id,
-      codeType: "DEPARTMENT_CODE",
-    },
-  })
-  const departmentMappingLookup = departmentMappings.reduce<
-    Map<string, typeof departmentMappings>
-  >((map, mapping) => {
-    const key = buildDepartmentCodeKey(mapping.sourceCode)
-    const current = map.get(key) || []
-    current.push(mapping)
-    map.set(key, current)
-    return map
-  }, new Map())
-  const [existingImports, existingPeople, existingSeats] = await Promise.all([
-    prisma.rosterImport.count({ where: { trackingYearId: trackingYear.id } }),
-    prisma.rosterPerson.count({ where: { trackingYearId: trackingYear.id } }),
-    prisma.trackerSeat.count({
-      where: {
-        trackingYearId: trackingYear.id,
-        sourceType: SeatSourceType.ROSTER,
-      },
-    }),
-  ])
-
   const rowsWithSeatId = rows.filter(
     (row) => String(rosterHeaderValue(row, "Seat ID")).trim().length > 0
   )
@@ -532,109 +749,25 @@ export async function importRosterCsv(
     throw new Error(`Roster file does not contain any rows active on or after January 1, ${year}.`)
   }
 
-  const dedupedRows = Array.from(
-    new Map(
-      activeRowsWithSeatId.map((row) => [
-        String(rosterHeaderValue(row, "Seat ID")).trim(),
-        row,
-      ])
-    ).values()
-  )
-  const errorRowCount = dedupedRows.filter((row) =>
-    Boolean((() => {
-      const departmentCode = rosterHeaderValue(
-        row,
-        "Department Code",
-        "Department code",
-        "Department",
-        "Cost Center",
-        "Cost centre",
-        "Cost center"
-      ) || null
+  return persistRosterImportRows(
+    year,
+    fileName,
+    activeRowsWithSeatId.map((row) => {
+      const departmentCode =
+        rosterHeaderValue(
+          row,
+          "Department Code",
+          "Department code",
+          "Department",
+          "Cost Center",
+          "Cost centre",
+          "Cost center"
+        ) || null
       const domain = rosterHeaderValue(row, "Domain") || null
-      const rosterSubDomain =
-        rosterHeaderValue(row, "Name of Product line / Project", "Sub-Domain") || null
-      const resourceType =
-        rosterHeaderValue(row, "Type of resource", "Resource type") || null
-      const vendor = rosterHeaderValue(row, "Vendor (if external)", "Vendor") || null
-      const resourceValidation = normalizeRosterVendor(resourceType, vendor)
-      const mapping =
-        resolveDepartmentMapping(departmentMappingLookup as never, {
-          sourceCode: departmentCode,
-          subDomain: rosterSubDomain,
-        }) ||
-        resolveDepartmentMappingByDomain(departmentMappings as never, {
-          domain,
-          subDomain: rosterSubDomain,
-        })
 
-      return getRosterImportError({
-        departmentCode: departmentCode || domain,
-        rosterSubDomain,
-        resourceValidationError: resourceValidation.importError,
-        mapping,
-      })
-    })())
-  ).length
-
-  const batch = await prisma.$transaction(async (transaction) => {
-    const nextBatch = await transaction.rosterImport.create({
-      data: {
-        trackingYearId: trackingYear.id,
-        fileName,
-        status: ImportStatus.APPROVED,
-        importedByName: actor?.name ?? null,
-        importedByEmail: actor?.email ?? null,
-        approvedAt: new Date(),
-        rowCount: dedupedRows.length,
-      },
-    })
-
-    await transaction.rosterPerson.createMany({
-      data: dedupedRows.map((row) => ({
-        ...(() => {
-          const departmentCode = rosterHeaderValue(
-            row,
-            "Department Code",
-            "Department code",
-            "Department",
-            "Cost Center",
-            "Cost centre",
-            "Cost center"
-          ) || null
-          const domain = rosterHeaderValue(row, "Domain") || null
-          const rosterSubDomain =
-            rosterHeaderValue(row, "Name of Product line / Project", "Sub-Domain") ||
-            null
-          const resourceType =
-            rosterHeaderValue(row, "Type of resource", "Resource type") || null
-          const vendor = rosterHeaderValue(row, "Vendor (if external)", "Vendor") || null
-          const resourceValidation = normalizeRosterVendor(resourceType, vendor)
-          const mapping =
-            resolveDepartmentMapping(departmentMappingLookup as never, {
-              sourceCode: departmentCode,
-              subDomain: rosterSubDomain,
-            }) ||
-            resolveDepartmentMappingByDomain(departmentMappings as never, {
-              domain,
-              subDomain: rosterSubDomain,
-            })
-
-          return {
-            domain: departmentCode || domain,
-            importError: getRosterImportError({
-              departmentCode: departmentCode || domain,
-              rosterSubDomain,
-              resourceValidationError: resourceValidation.importError,
-              mapping,
-            }),
-            resourceType,
-            vendor: resourceValidation.vendor,
-          }
-        })(),
-        trackingYearId: trackingYear.id,
-        importId: nextBatch.id,
+      return {
         seatId: String(rosterHeaderValue(row, "Seat ID")).trim(),
+        domain: departmentCode || domain,
         productLine:
           rosterHeaderValue(row, "Name of Product line / Project", "Sub-Domain") ||
           null,
@@ -652,6 +785,9 @@ export async function importRosterCsv(
         status: rosterHeaderValue(row, "Status") || null,
         allocation:
           parseNumber(rosterHeaderValue(row, "FTE allocation to team (%)", "FTE")) ?? 0,
+        resourceType:
+          rosterHeaderValue(row, "Type of resource", "Resource type") || null,
+        vendor: rosterHeaderValue(row, "Vendor (if external)", "Vendor") || null,
         dailyRate: parseNumber(rosterHeaderValue(row, "Daily rate (if external)")),
         lineManager:
           rosterHeaderValue(row, "Pandora line manager", "Manager") || null,
@@ -666,44 +802,70 @@ export async function importRosterCsv(
         ),
         fundingType: rosterHeaderValue(row, "Funding type") || null,
         hourlyRate: parseNumber(rosterHeaderValue(row, "Hourly rate")),
-      })),
-    })
-
-    return nextBatch
-  })
-
-  await deriveTrackerSeatsForYear(year)
-  await writeAuditLog({
-    trackingYearId: trackingYear.id,
-    entityType: "RosterImport",
-    entityId: batch.id,
-    action: "IMPORT",
+      }
+    }),
     actor,
-    changes: [
-      {
-        field: "rosterImport",
-        oldValue: JSON.stringify({
-          previousImports: existingImports,
-          previousPeople: existingPeople,
-          previousSeats: existingSeats,
-        }),
-        newValue: JSON.stringify({
-          fileName,
-          sourceRowCount: rows.length,
-          importedRowCount: dedupedRows.length,
-          skippedBlankSeatRows: rows.length - rowsWithSeatId.length,
-          skippedHistoricalRows,
-          errorRowCount,
-          importedPeople: dedupedRows.length,
-        }),
-      },
-    ],
-  })
-  return {
-    batch,
-    errorRowCount,
-    skippedHistoricalRows,
+    {
+      sourceRowCount: rows.length,
+      skippedBlankSeatRows: rows.length - rowsWithSeatId.length,
+      skippedHistoricalRows,
+    }
+  )
+}
+
+export async function importRosterJson(
+  year: number,
+  fileName: string,
+  payloadRows: unknown,
+  actor?: AuditActor
+) {
+  const rows = Array.isArray(payloadRows) ? payloadRows : [payloadRows]
+  if (rows.length === 0) {
+    throw new Error("Roster payload is empty.")
   }
+
+  const normalizedRows = rows.map((row, index) => {
+    if (!row || typeof row !== "object" || Array.isArray(row)) {
+      throw new Error(`Roster row ${index + 1} must be an object.`)
+    }
+
+    const body = row as Record<string, unknown>
+    const seatId = normalizeJsonText(body.seatId)
+    if (!seatId) {
+      throw new Error(`Roster row ${index + 1} is missing seatId.`)
+    }
+
+    return {
+      seatId,
+      domain: normalizeJsonText(body.domain),
+      productLine: normalizeJsonText(body.productLine),
+      teamName: normalizeJsonText(body.teamName),
+      band: normalizeJsonText(body.band),
+      peoplePortalPositionId: normalizeJsonText(body.peoplePortalPositionId),
+      resourceName: normalizeJsonText(body.resourceName),
+      email: normalizeJsonText(body.email),
+      roleCategory: normalizeJsonText(body.roleCategory),
+      specificRole: normalizeJsonText(body.specificRole),
+      title: normalizeJsonText(body.title),
+      status: normalizeJsonText(body.status),
+      allocation: parseJsonNumber(body.allocation),
+      resourceType: normalizeJsonText(body.resourceType),
+      vendor: normalizeJsonText(body.vendor),
+      dailyRate: parseJsonNumber(body.dailyRate),
+      lineManager: normalizeJsonText(body.lineManager),
+      location: normalizeJsonText(body.location),
+      expectedFunding: normalizeJsonText(body.expectedFunding),
+      expectedFunding2025: normalizeJsonText(body.expectedFunding2025),
+      expectedStartDate: parseJsonDate(body.expectedStartDate),
+      expectedEndDate: parseJsonDate(body.expectedEndDate),
+      fundingType: normalizeJsonText(body.fundingType),
+      hourlyRate: parseJsonNumber(body.hourlyRate),
+    } satisfies NormalizedRosterImportRow
+  })
+
+  return persistRosterImportRows(year, fileName, normalizedRows, actor, {
+    sourceRowCount: rows.length,
+  })
 }
 
 export async function importBudgetMovementsCsv(

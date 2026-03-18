@@ -26,6 +26,12 @@ import {
 import type { SeatWithRelations } from "@/lib/finance/types"
 import { formatFteAsPercent } from "@/lib/finance/format"
 import { getRichTextPlainText, renderRichTextToHtml } from "@/lib/rich-text"
+import {
+  generateServiceApiKey,
+  hashServiceApiKey,
+  isServiceApiKey,
+  verifyServiceApiKeyHash,
+} from "@/lib/service-users"
 
 test("parseCsv handles quoted values and headers", () => {
   const rows = parseCsv('Seat ID,Name of resource,Location\n300127,"Doe, Jane",Denmark')
@@ -94,6 +100,24 @@ test("normalizeRosterVendor clears internal vendor values for internal resources
 
   assert.equal(normalized.vendor, null)
   assert.equal(normalized.importError, null)
+})
+
+test("generateServiceApiKey returns a recognizable bearer token format", () => {
+  const generated = generateServiceApiKey()
+
+  assert.equal(isServiceApiKey(generated.apiKey), true)
+  assert.match(generated.apiKey, /^pnd_srv_[a-f0-9]{12}_[A-Za-z0-9_-]{16,}$/)
+  assert.equal(generated.keyHash, hashServiceApiKey(generated.apiKey))
+})
+
+test("verifyServiceApiKeyHash rejects tampered service keys", () => {
+  const generated = generateServiceApiKey()
+
+  assert.equal(verifyServiceApiKeyHash(generated.apiKey, generated.keyHash), true)
+  assert.equal(
+    verifyServiceApiKeyHash(`${generated.apiKey}tampered`, generated.keyHash),
+    false
+  )
 })
 
 test("deriveSeatMetrics uses internal cost assumptions", () => {

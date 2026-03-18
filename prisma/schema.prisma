@@ -71,6 +71,42 @@ model AppUser {
   featureRequestVotes FeatureRequestVote[]
 }
 
+model ServiceUser {
+  id                   String          @id @default(cuid())
+  label                String
+  role                 AppRole         @default(MEMBER)
+  isActive             Boolean         @default(true)
+  createdByName        String?
+  createdByEmail       String?
+  deactivatedAt        DateTime?
+  deactivatedByName    String?
+  deactivatedByEmail   String?
+  createdAt            DateTime        @default(now())
+  updatedAt            DateTime        @updatedAt
+  apiKeys              ServiceApiKey[]
+
+  @@index([isActive, createdAt])
+}
+
+model ServiceApiKey {
+  id               String       @id @default(cuid())
+  serviceUserId    String
+  keyId            String       @unique
+  keyHash          String
+  name             String?
+  revokedAt        DateTime?
+  revokedByName    String?
+  revokedByEmail   String?
+  lastUsedAt       DateTime?
+  createdByName    String?
+  createdByEmail   String?
+  createdAt        DateTime     @default(now())
+  serviceUser      ServiceUser  @relation(fields: [serviceUserId], references: [id], onDelete: Cascade)
+
+  @@index([serviceUserId, createdAt])
+  @@index([serviceUserId, revokedAt])
+}
+
 model FeatureRequest {
   id                        String               @id @default(cuid())
   title                     String

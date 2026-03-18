@@ -5,6 +5,7 @@ import {
   filterByScopes,
   normalizeEmail,
 } from "@/lib/authz"
+import { listServiceUsers } from "@/lib/service-users"
 
 type UserMutationInput = {
   email: string
@@ -35,7 +36,7 @@ export async function getUserAdminPageData(viewer: {
   role: AppRole
   scopes: AccessScope[]
 }) {
-  const [users, budgetAreas, trackerSeats, mappings, trackingYears] = await Promise.all([
+  const [users, budgetAreas, trackerSeats, mappings, trackingYears, serviceUsers] = await Promise.all([
     prisma.appUser.findMany({
       include: {
         scopes: {
@@ -75,6 +76,7 @@ export async function getUserAdminPageData(viewer: {
         isActive: true,
       },
     }),
+    listServiceUsers(),
   ])
 
   const scopeOptions = filterByScopes(
@@ -123,6 +125,7 @@ export async function getUserAdminPageData(viewer: {
       return (left.subDomain ?? "").localeCompare(right.subDomain ?? "")
     }),
     allowedRoles,
+    serviceUsers,
   }
 }
 
