@@ -58,6 +58,15 @@ enum ExternalActualSourceKind {
   PASTE
 }
 
+enum SeatReferenceValueType {
+  VENDOR
+  LOCATION
+  MANAGER
+  ROLE
+  BAND
+  RESOURCE_TYPE
+}
+
 model AppUser {
   id        String            @id @default(cuid())
   email     String            @unique
@@ -178,8 +187,22 @@ model TrackingYear {
   rosterImports       RosterImport[]
   rosterPeople        RosterPerson[]
   trackerSeats        TrackerSeat[]
+  seatReferenceValues SeatReferenceValue[]
   staffingTargets     StaffingTarget[]
   auditLogs           AuditLog[]
+}
+
+model SeatReferenceValue {
+  id             String                 @id @default(cuid())
+  trackingYearId String
+  type           SeatReferenceValueType
+  value          String
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+  trackingYear   TrackingYear           @relation(fields: [trackingYearId], references: [id], onDelete: Cascade)
+
+  @@unique([trackingYearId, type, value])
+  @@index([trackingYearId, type, value])
 }
 
 model ServiceMessage {
@@ -257,6 +280,7 @@ model DepartmentMapping {
   domain         String
   subDomain      String
   projectCode    String          @default("")
+  teams          String[]        @default([])
   notes          String?
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @updatedAt
@@ -471,6 +495,7 @@ model TrackerSeat {
   ppid           String?
   location       String?
   vendor         String?
+  manager        String?
   dailyRate      Float?
   ritm           String?
   sow            String?
@@ -526,6 +551,14 @@ model TrackerOverride {
   costCenter     String?
   projectCode    String?
   resourceType   String?
+  team           String?
+  inSeat         String?
+  description    String?
+  band           String?
+  location       String?
+  vendor         String?
+  manager        String?
+  dailyRate      Float?
   ritm           String?
   sow            String?
   spendPlanId    String?

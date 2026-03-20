@@ -6,6 +6,7 @@ import type {
   DepartmentMapping,
   ExchangeRate,
   Prisma,
+  SeatReferenceValueType,
   ServiceMessageKey,
   StaffingTargetScopeLevel,
 } from "@prisma/client"
@@ -50,6 +51,7 @@ import type {
   PeopleRosterFilters,
   PeopleRosterView,
   SeatMonthView,
+  SeatReferenceValueView,
   SeatWithRelations,
   StaffingMonthBucket,
   StaffingOverviewGroup,
@@ -309,10 +311,11 @@ function buildDepartmentMappingLookup(
     domain: string
     subDomain: string
     projectCode?: string | null
+    teams?: string[]
   }[]
 ) {
   return mappings.reduce<
-    Record<string, { id?: string; domain: string; subDomain: string; projectCode: string }[]>
+    Record<string, { id?: string; domain: string; subDomain: string; projectCode: string; teams: string[] }[]>
   >(
     (accumulator, mapping) => {
       const key = buildDepartmentCodeKey(mapping.sourceCode)
@@ -322,12 +325,17 @@ function buildDepartmentMappingLookup(
         domain: normalizeDomainLabel(mapping.domain) || mapping.domain,
         subDomain: normalizeSubDomainLabel(mapping.subDomain) || mapping.subDomain,
         projectCode: mapping.projectCode?.trim() || "",
+        teams: collectSortedValues(mapping.teams ?? []),
       })
 
       return accumulator
     },
     {}
   )
+}
+
+function normalizeDepartmentMappingTeams(input: Array<string | null | undefined>) {
+  return collectSortedValues(input.map((team) => normalizeOptionalString(team)))
 }
 
 function resolveDepartmentMapping(
@@ -437,6 +445,21 @@ function normalizeOptionalString(value: string | null | undefined) {
 
 function normalizeOptionalNumber(value: number | null | undefined) {
   return typeof value === "number" && Number.isFinite(value) ? value : null
+}
+
+function parseNextSeatId(seatIds: string[]) {
+  const numericSeatIds = seatIds
+    .map((seatId) => seatId.trim())
+    .filter((seatId) => /^\d+$/.test(seatId))
+    .map((seatId) => Number(seatId))
+    .filter((seatId) => Number.isSafeInteger(seatId))
+
+  const highestSeatId = numericSeatIds.length > 0 ? Math.max(...numericSeatIds) : 0
+  return String(highestSeatId + 1)
+}
+
+function normalizeSeatReferenceValue(value: string | null | undefined) {
+  return value?.trim() || null
 }
 
 function formatDateOnly(value: Date | null | undefined) {
@@ -1370,6 +1393,7 @@ async function deriveTrackerSeatsForYearInternal(year: number) {
         ppid: person.peoplePortalPositionId,
         location: person.location,
         vendor: person.vendor,
+        manager: person.lineManager,
         dailyRate: person.dailyRate,
         status: person.status,
         allocation: normalizeAllocation(person.allocation),
@@ -1398,6 +1422,7 @@ async function deriveTrackerSeatsForYearInternal(year: number) {
         ppid: person.peoplePortalPositionId,
         location: person.location,
         vendor: person.vendor,
+        manager: person.lineManager,
         dailyRate: person.dailyRate,
         status: person.status,
         allocation: normalizeAllocation(person.allocation),
@@ -3723,7 +3748,8 @@ export async function getPeopleRosterPageData(input?: {
     validation: input?.validation?.trim() ?? "",
   }
 
-  const [people, departmentMappings, rosterImports, trackerSeats, budgetAreas] = await Promise.all([
+  const [people, departmentMappings, rosterImports, trackerSeats, budgetAreas, seatReferenceValues] =
+    await Promise.all([
     prisma.rosterPerson.findMany({
       where: {
         trackingYearId: trackingYear.id,
@@ -3736,12 +3762,7 @@ export async function getPeopleRosterPageData(input?: {
       },
       orderBy: [{ import: { importedAt: "desc" } }, { teamName: "asc" }, { seatId: "asc" }],
     }),
-    prisma.departmentMapping.findMany({
-      where: {
-        trackingYearId: trackingYear.id,
-        codeType: "DEPARTMENT_CODE",
-      },
-    }),
+    getDepartmentMappings(activeYear),
     prisma.rosterImport.findMany({
       where: {
         trackingYearId: trackingYear.id,
@@ -3753,7 +3774,7 @@ export async function getPeopleRosterPageData(input?: {
     prisma.trackerSeat.findMany({
       where: {
         trackingYearId: trackingYear.id,
-        sourceType: "ROSTER",
+        isActive: true,
       },
       include: {
         months: true,
@@ -3767,6 +3788,7 @@ export async function getPeopleRosterPageData(input?: {
       },
       orderBy: [{ domain: "asc" }, { subDomain: "asc" }, { projectCode: "asc" }],
     }),
+    getSeatReferenceValues(activeYear),
   ])
 
   const latestPeople = Array.from(
@@ -3780,10 +3802,9 @@ export async function getPeopleRosterPageData(input?: {
       }, new Map())
       .values()
   )
+  const latestRosterSeatIds = new Set(latestPeople.map((person) => person.seatId))
   const mappingLookup = buildDepartmentMappingLookup(departmentMappings)
-  const trackerSeatBySeatId = new Map(
-    trackerSeats.map((seat) => [seat.seatId, seat])
-  )
+  const trackerSeatBySeatId = new Map(trackerSeats.map((seat) => [seat.seatId, seat]))
   const rosterViews: PeopleRosterView[] = latestPeople.map((person) => {
     const trackerSeat = trackerSeatBySeatId.get(person.seatId)
     const effectiveSeat = trackerSeat ? getEffectiveSeat(trackerSeat as SeatWithRelations) : null
@@ -3796,6 +3817,7 @@ export async function getPeopleRosterPageData(input?: {
     return {
       id: person.id,
       trackerSeatId: trackerSeat?.id ?? null,
+      sourceType: trackerSeat?.sourceType ?? "ROSTER",
       importFileName: person.import.fileName,
       seatId: person.seatId,
       budgetAreaId: effectiveSeat?.budgetAreaId ?? trackerSeat?.budgetAreaId ?? null,
@@ -3803,19 +3825,21 @@ export async function getPeopleRosterPageData(input?: {
       departmentCode: person.domain,
       domain: normalizeDomainLabel(effectiveSeat?.domain || mappedHierarchy?.domain || person.domain),
       projectCode: effectiveSeat?.projectCode || mappedHierarchy?.projectCode || null,
-      name: person.resourceName,
+      name: effectiveSeat?.inSeat || person.resourceName,
       email: person.email,
-      team: person.teamName,
-      subDomain: normalizeSubDomainLabel(person.productLine),
-      mappedSubDomain: normalizeSubDomainLabel(mappedHierarchy?.subDomain || null),
-      vendor: person.vendor,
-      dailyRate: person.dailyRate,
-      location: person.location,
-      band: person.band,
-      role: person.title,
+      team: effectiveSeat?.team || person.teamName,
+      subDomain: normalizeSubDomainLabel(effectiveSeat?.subDomain || person.productLine),
+      mappedSubDomain: normalizeSubDomainLabel(
+        effectiveSeat?.subDomain || mappedHierarchy?.subDomain || null
+      ),
+      vendor: effectiveSeat?.vendor || person.vendor,
+      dailyRate: effectiveSeat?.dailyRate ?? person.dailyRate,
+      location: effectiveSeat?.location || person.location,
+      band: effectiveSeat?.band || person.band,
+      role: effectiveSeat?.description || person.title,
       resourceType: effectiveSeat?.resourceType || person.resourceType,
-      status: person.status,
-      manager: person.lineManager,
+      status: effectiveSeat?.status || person.status,
+      manager: effectiveSeat?.manager || person.lineManager,
       fte: effectiveSeat?.allocation ?? person.allocation,
       spendPlanId: effectiveSeat?.spendPlanId || null,
       ritm: effectiveSeat?.ritm || null,
@@ -3830,9 +3854,53 @@ export async function getPeopleRosterPageData(input?: {
       importError: person.importError,
     }
   })
+  const manualSeatViews: PeopleRosterView[] = trackerSeats
+    .filter((seat) => seat.sourceType === "MANUAL")
+    .filter((seat) => !latestRosterSeatIds.has(seat.seatId))
+    .map((seat) => {
+      const effectiveSeat = getEffectiveSeat(seat as SeatWithRelations)
+      return {
+        id: seat.id,
+        trackerSeatId: seat.id,
+        sourceType: "MANUAL",
+        importFileName: "Manual seat",
+        seatId: seat.seatId,
+        budgetAreaId: effectiveSeat.budgetAreaId,
+        overrideBudgetAreaId: seat.override?.budgetAreaId ?? null,
+        departmentCode: effectiveSeat.costCenter ?? null,
+        domain: normalizeDomainLabel(effectiveSeat.domain),
+        projectCode: effectiveSeat.projectCode ?? null,
+        name: effectiveSeat.inSeat ?? null,
+        email: null,
+        team: effectiveSeat.team ?? null,
+        subDomain: normalizeSubDomainLabel(effectiveSeat.subDomain),
+        mappedSubDomain: normalizeSubDomainLabel(effectiveSeat.subDomain),
+        vendor: effectiveSeat.vendor ?? null,
+        dailyRate: effectiveSeat.dailyRate ?? null,
+        location: effectiveSeat.location ?? null,
+        band: effectiveSeat.band ?? null,
+        role: effectiveSeat.description ?? null,
+        resourceType: effectiveSeat.resourceType ?? null,
+        status: effectiveSeat.status ?? null,
+        manager: effectiveSeat.manager ?? null,
+        fte: effectiveSeat.allocation ?? 0,
+        spendPlanId: effectiveSeat.spendPlanId ?? null,
+        ritm: effectiveSeat.ritm ?? null,
+        sow: effectiveSeat.sow ?? null,
+        notes: effectiveSeat.notes ?? null,
+        startDate: effectiveSeat.startDate ?? null,
+        endDate: effectiveSeat.endDate ?? null,
+        effectiveStatus: effectiveSeat.status ?? null,
+        effectiveInSeat: effectiveSeat.inSeat ?? null,
+        effectiveStartDate: effectiveSeat.startDate ?? null,
+        effectiveEndDate: effectiveSeat.endDate ?? null,
+        importError: null,
+      }
+    })
 
+  const allRosterViews = [...rosterViews, ...manualSeatViews]
   const scopedRosterViews = filterScopedItems(
-    rosterViews,
+    allRosterViews,
     viewer,
     (person) => ({
       domain: person.domain,
@@ -4035,7 +4103,37 @@ export async function getPeopleRosterPageData(input?: {
       errorCount: filteredPeople.filter((person) => Boolean(person.importError)).length,
     },
     rosterImports,
+    departmentMappings,
     budgetAreas,
+    seatReferenceValues,
+  }
+}
+
+export async function getPeopleRosterImportsPageData(year?: number) {
+  const trackingYears = await prisma.trackingYear.findMany({
+    orderBy: { year: "asc" },
+  })
+
+  const activeYear =
+    year ??
+    trackingYears.find((trackingYear) => trackingYear.isActive)?.year ??
+    trackingYears.at(-1)?.year ??
+    new Date().getFullYear()
+
+  const trackingYear = await getOrCreateTrackingYear(activeYear)
+  const rosterImports = await prisma.rosterImport.findMany({
+    where: {
+      trackingYearId: trackingYear.id,
+      status: "APPROVED",
+    },
+    orderBy: [{ importedAt: "desc" }],
+    take: 20,
+  })
+
+  return {
+    activeYear,
+    trackingYears,
+    rosterImports,
   }
 }
 
@@ -4108,12 +4206,20 @@ export async function getAdminPageData(year?: number) {
     trackingYears.at(-1)?.year ??
     new Date().getFullYear()
 
-  const [statuses, exchangeRates, departmentMappings, accrualAccountMappings, rosterResourceTypes] = await Promise.all([
+  const [
+    statuses,
+    exchangeRates,
+    departmentMappings,
+    accrualAccountMappings,
+    rosterResourceTypes,
+    seatReferenceValues,
+  ] = await Promise.all([
     ensureStatusDefinitions(activeYear),
     getExchangeRateHistory(activeYear),
     getDepartmentMappings(activeYear),
     getAccrualAccountMappings(activeYear),
     getActiveRosterResourceTypes(activeYear),
+    getSeatReferenceValues(activeYear),
   ])
 
   return {
@@ -4124,6 +4230,7 @@ export async function getAdminPageData(year?: number) {
     departmentMappings,
     accrualAccountMappings,
     rosterResourceTypes,
+    seatReferenceValues,
   }
 }
 
@@ -4195,7 +4302,7 @@ export async function getTrackerOverrideExportRows(year: number) {
     "Tracker Seat ID": override.trackerSeat.id,
     "Source Key": override.trackerSeat.sourceKey,
     "Seat ID": override.trackerSeat.seatId,
-    Name: override.trackerSeat.inSeat ?? "",
+    Name: override.inSeat ?? override.trackerSeat.inSeat ?? "",
     Domain: override.domain,
     "Sub-domain": override.subDomain,
     Funding: override.funding,
@@ -4204,6 +4311,13 @@ export async function getTrackerOverrideExportRows(year: number) {
     "Cost Center": override.costCenter,
     "Project Code": override.projectCode,
     "Resource Type": override.resourceType,
+    Team: override.team,
+    Description: override.description,
+    Band: override.band,
+    Location: override.location,
+    Vendor: override.vendor,
+    Manager: override.manager,
+    "Daily Rate": override.dailyRate,
     RITM: override.ritm,
     SOW: override.sow,
     "Spend Plan ID": override.spendPlanId,
@@ -5431,9 +5545,120 @@ export async function getExchangeRateHistory(year: number): Promise<LatestExchan
   }))
 }
 
+async function syncDepartmentMappingTeamsFromCurrentData(year: number) {
+  const trackingYear = await getOrCreateTrackingYear(year)
+  const [mappings, trackerSeats, people] = await Promise.all([
+    prisma.departmentMapping.findMany({
+      where: {
+        trackingYearId: trackingYear.id,
+        codeType: "DEPARTMENT_CODE",
+      },
+      orderBy: [{ sourceCode: "asc" }],
+    }),
+    prisma.trackerSeat.findMany({
+      where: {
+        trackingYearId: trackingYear.id,
+        isActive: true,
+      },
+      include: {
+        override: true,
+        budgetArea: true,
+      },
+    }),
+    prisma.rosterPerson.findMany({
+      where: {
+        trackingYearId: trackingYear.id,
+        import: {
+          status: "APPROVED",
+        },
+      },
+      include: {
+        import: true,
+      },
+      orderBy: [{ import: { importedAt: "desc" } }, { createdAt: "desc" }],
+    }),
+  ])
+
+  if (mappings.length === 0) {
+    return
+  }
+
+  const latestPeople = Array.from(
+    people
+      .reduce<Map<string, (typeof people)[number]>>((latestBySeat, person) => {
+        if (!latestBySeat.has(person.seatId)) {
+          latestBySeat.set(person.seatId, person)
+        }
+
+        return latestBySeat
+      }, new Map())
+      .values()
+  )
+  const mappingLookup = buildDepartmentMappingLookup(mappings)
+  const trackerSeatBySeatId = new Map(trackerSeats.map((seat) => [seat.seatId, seat]))
+  const teamsByMappingId = new Map<string, string[]>()
+
+  const addTeam = (mappingId: string | undefined, team: string | null | undefined) => {
+    const normalizedTeam = normalizeOptionalString(team)
+    if (!mappingId || !normalizedTeam) {
+      return
+    }
+
+    const current = teamsByMappingId.get(mappingId) ?? []
+    current.push(normalizedTeam)
+    teamsByMappingId.set(mappingId, current)
+  }
+
+  for (const person of latestPeople) {
+    const trackerSeat = trackerSeatBySeatId.get(person.seatId)
+    const effectiveSeat = trackerSeat ? getEffectiveSeat(trackerSeat as SeatWithRelations) : null
+    const mapping = resolveDepartmentMapping(mappingLookup, {
+      sourceCode: person.domain,
+      subDomain: effectiveSeat?.subDomain || person.productLine,
+      projectCode: effectiveSeat?.projectCode,
+    })
+
+    addTeam(mapping?.id, effectiveSeat?.team || person.teamName)
+  }
+
+  for (const trackerSeat of trackerSeats) {
+    const effectiveSeat = getEffectiveSeat(trackerSeat as SeatWithRelations)
+    const mapping = resolveDepartmentMapping(mappingLookup, {
+      sourceCode: effectiveSeat.costCenter,
+      subDomain: effectiveSeat.subDomain,
+      projectCode: effectiveSeat.projectCode,
+    })
+
+    addTeam(mapping?.id, effectiveSeat.team)
+  }
+
+  const updates = mappings.flatMap((mapping) => {
+    const nextTeams = normalizeDepartmentMappingTeams([
+      ...mapping.teams,
+      ...(teamsByMappingId.get(mapping.id) ?? []),
+    ])
+
+    return nextTeams.join("|") === mapping.teams.join("|")
+      ? []
+      : [
+          prisma.departmentMapping.update({
+            where: { id: mapping.id },
+            data: {
+              teams: nextTeams,
+            },
+          }),
+        ]
+  })
+
+  if (updates.length > 0) {
+    await prisma.$transaction(updates)
+  }
+}
+
 export async function getDepartmentMappings(
   year: number
 ): Promise<DepartmentMappingView[]> {
+  await syncDepartmentMappingTeamsFromCurrentData(year)
   const trackingYear = await getOrCreateTrackingYear(year)
   const mappings = await prisma.departmentMapping.findMany({
     where: {
@@ -5449,6 +5674,7 @@ export async function getDepartmentMappings(
     domain: mapping.domain,
     subDomain: mapping.subDomain,
     projectCode: mapping.projectCode,
+    teams: mapping.teams,
     notes: mapping.notes,
   }))
 }
@@ -5475,6 +5701,263 @@ export async function getAccrualAccountMappings(
     accountCode: mapping.accountCode,
     notes: mapping.notes,
   }))
+}
+
+async function syncSeatReferenceValuesFromCurrentData(year: number) {
+  const trackingYear = await getOrCreateTrackingYear(year)
+  const [seats, people] = await Promise.all([
+    prisma.trackerSeat.findMany({
+      where: {
+        trackingYearId: trackingYear.id,
+        isActive: true,
+      },
+      select: {
+        description: true,
+        band: true,
+        resourceType: true,
+        vendor: true,
+        location: true,
+        manager: true,
+      },
+    }),
+    prisma.rosterPerson.findMany({
+      where: {
+        trackingYearId: trackingYear.id,
+        import: {
+          status: "APPROVED",
+        },
+      },
+      include: {
+        import: true,
+      },
+      orderBy: [{ import: { importedAt: "desc" } }, { createdAt: "desc" }],
+    }),
+  ])
+
+  const latestPeople = Array.from(
+    people
+      .reduce<Map<string, (typeof people)[number]>>((latestBySeat, person) => {
+        if (!latestBySeat.has(person.seatId)) {
+          latestBySeat.set(person.seatId, person)
+        }
+
+        return latestBySeat
+      }, new Map())
+      .values()
+  )
+  const valuesByType: Record<SeatReferenceValueType, string[]> = {
+    VENDOR: collectSortedValues([
+      ...seats.map((seat) => seat.vendor),
+      ...latestPeople.map((person) => person.vendor),
+    ]),
+    LOCATION: collectSortedValues([
+      ...seats.map((seat) => seat.location),
+      ...latestPeople.map((person) => person.location),
+    ]),
+    MANAGER: collectSortedValues([
+      ...seats.map((seat) => seat.manager),
+      ...latestPeople.map((person) => person.lineManager),
+    ]),
+    ROLE: collectSortedValues([
+      ...seats.map((seat) => seat.description),
+      ...latestPeople.map((person) => person.title),
+    ]),
+    BAND: collectSortedValues([
+      ...seats.map((seat) => seat.band),
+      ...latestPeople.map((person) => person.band),
+    ]),
+    RESOURCE_TYPE: collectSortedValues([
+      ...seats.map((seat) => seat.resourceType),
+      ...latestPeople.map((person) => person.resourceType),
+    ]),
+  }
+
+  for (const [type, values] of Object.entries(valuesByType) as Array<
+    [SeatReferenceValueType, string[]]
+  >) {
+    if (values.length === 0) {
+      continue
+    }
+
+    await prisma.seatReferenceValue.createMany({
+      data: values.map((value) => ({
+        trackingYearId: trackingYear.id,
+        type,
+        value,
+      })),
+      skipDuplicates: true,
+    })
+  }
+}
+
+export async function getSeatReferenceValues(
+  year: number
+): Promise<SeatReferenceValueView[]> {
+  await syncSeatReferenceValuesFromCurrentData(year)
+
+  const trackingYear = await getOrCreateTrackingYear(year)
+  const values = await prisma.seatReferenceValue.findMany({
+    where: {
+      trackingYearId: trackingYear.id,
+    },
+    orderBy: [{ type: "asc" }, { value: "asc" }],
+  })
+
+  return values.map((value) => ({
+    id: value.id,
+    type: value.type,
+    value: value.value,
+  }))
+}
+
+async function persistSeatReferenceSelections(input: {
+  trackingYearId: string
+  vendor?: string | null
+  location?: string | null
+  manager?: string | null
+  role?: string | null
+  band?: string | null
+  resourceType?: string | null
+}) {
+  const referenceValues = [
+    {
+      type: "VENDOR" as const,
+      value: normalizeSeatReferenceValue(input.vendor),
+    },
+    {
+      type: "LOCATION" as const,
+      value: normalizeSeatReferenceValue(input.location),
+    },
+    {
+      type: "MANAGER" as const,
+      value: normalizeSeatReferenceValue(input.manager),
+    },
+    {
+      type: "ROLE" as const,
+      value: normalizeSeatReferenceValue(input.role),
+    },
+    {
+      type: "BAND" as const,
+      value: normalizeSeatReferenceValue(input.band),
+    },
+    {
+      type: "RESOURCE_TYPE" as const,
+      value: normalizeSeatReferenceValue(input.resourceType),
+    },
+  ].filter((entry): entry is { type: SeatReferenceValueType; value: string } => Boolean(entry.value))
+
+  if (referenceValues.length === 0) {
+    return
+  }
+
+  await prisma.seatReferenceValue.createMany({
+    data: referenceValues.map((entry) => ({
+      trackingYearId: input.trackingYearId,
+      type: entry.type,
+      value: entry.value,
+    })),
+    skipDuplicates: true,
+  })
+}
+
+export async function upsertSeatReferenceValue(input: {
+  id?: string
+  year: number
+  type: SeatReferenceValueType
+  value: string
+}, actor?: AuditActor) {
+  ensureValidYear(input.year)
+  const trackingYear = await getOrCreateTrackingYear(input.year)
+  const value = normalizeSeatReferenceValue(input.value)
+  if (!value) {
+    throw new Error("Value is required.")
+  }
+
+  const before = input.id
+    ? await prisma.seatReferenceValue.findFirst({
+        where: {
+          id: input.id,
+          trackingYearId: trackingYear.id,
+        },
+      })
+    : null
+
+  const referenceValue = input.id
+    ? await prisma.seatReferenceValue.update({
+        where: { id: input.id },
+        data: {
+          type: input.type,
+          value,
+        },
+      })
+    : await prisma.seatReferenceValue.upsert({
+        where: {
+          trackingYearId_type_value: {
+            trackingYearId: trackingYear.id,
+            type: input.type,
+            value,
+          },
+        },
+        update: {},
+        create: {
+          trackingYearId: trackingYear.id,
+          type: input.type,
+          value,
+        },
+      })
+
+  await writeAuditLog({
+    trackingYearId: trackingYear.id,
+    entityType: "SeatReferenceValue",
+    entityId: referenceValue.id,
+    action: before ? "UPDATE" : "CREATE",
+    actor,
+    changes: buildAuditChanges(before, referenceValue, ["type", "value"]),
+  })
+
+  return referenceValue
+}
+
+export async function deleteSeatReferenceValue(input: {
+  year: number
+  id: string
+}, actor?: AuditActor) {
+  ensureValidYear(input.year)
+  const trackingYear = await getOrCreateTrackingYear(input.year)
+  const before = await prisma.seatReferenceValue.findFirstOrThrow({
+    where: {
+      id: input.id,
+      trackingYearId: trackingYear.id,
+    },
+  })
+
+  await prisma.seatReferenceValue.delete({
+    where: { id: input.id },
+  })
+
+  await writeAuditLog({
+    trackingYearId: trackingYear.id,
+    entityType: "SeatReferenceValue",
+    entityId: before.id,
+    action: "DELETE",
+    actor,
+    changes: buildAuditChanges(before, null, ["type", "value"]),
+  })
+
+  return before
+}
+
+export async function getSeatReferenceValueExportRows(
+  year: number,
+  type: SeatReferenceValueType
+) {
+  const values = await getSeatReferenceValues(year)
+  return values
+    .filter((value) => value.type === type)
+    .map((value) => ({
+      Type: value.type,
+      Value: value.value,
+    }))
 }
 
 export async function getActiveRosterResourceTypes(year: number) {
@@ -5642,6 +6125,7 @@ export async function upsertDepartmentMapping(input: {
   domain: string
   subDomain: string
   projectCode: string
+  teams?: string[]
   notes?: string
 }, actor?: AuditActor) {
   const trackingYear = await getOrCreateTrackingYear(input.year)
@@ -5667,6 +6151,7 @@ export async function upsertDepartmentMapping(input: {
     domain: normalizeDomainLabel(input.domain) || input.domain,
     subDomain: input.subDomain,
     projectCode: input.projectCode,
+    teams: normalizeDepartmentMappingTeams(input.teams ?? []),
     notes: input.notes || null,
   }
 
@@ -5749,6 +6234,7 @@ export async function upsertDepartmentMapping(input: {
       "domain",
       "subDomain",
       "projectCode",
+      "teams",
       "notes",
     ]),
   })
@@ -6316,6 +6802,148 @@ export async function deleteTrackerOverridesForYear(
   return { deletedCount: overrides.length }
 }
 
+type TrackerSeatProfilePayload = {
+  domain?: string | null
+  subDomain?: string | null
+  budgetAreaId?: string | null
+  funding?: string | null
+  pillar?: string | null
+  costCenter?: string | null
+  projectCode?: string | null
+  resourceType?: string | null
+  team?: string | null
+  inSeat?: string | null
+  description?: string | null
+  band?: string | null
+  location?: string | null
+  vendor?: string | null
+  manager?: string | null
+  dailyRate?: number | null
+  ritm?: string | null
+  sow?: string | null
+  spendPlanId?: string | null
+  status?: string | null
+  allocation?: number | null
+  startDate?: Date | null
+  endDate?: Date | null
+  notes?: string | null
+}
+
+function buildTrackerSeatProfileAuditShape(
+  seat: TrackerSeatProfilePayload & { budgetAreaId?: string | null }
+) {
+  return {
+    domain: seat.domain ?? null,
+    subDomain: seat.subDomain ?? null,
+    funding: seat.funding ?? null,
+    pillar: seat.pillar ?? null,
+    budgetAreaId: seat.budgetAreaId ?? null,
+    costCenter: seat.costCenter ?? null,
+    projectCode: seat.projectCode ?? null,
+    resourceType: seat.resourceType ?? null,
+    team: seat.team ?? null,
+    inSeat: seat.inSeat ?? null,
+    description: seat.description ?? null,
+    band: seat.band ?? null,
+    location: seat.location ?? null,
+    vendor: seat.vendor ?? null,
+    manager: seat.manager ?? null,
+    dailyRate: seat.dailyRate ?? null,
+    ritm: seat.ritm ?? null,
+    sow: seat.sow ?? null,
+    spendPlanId: seat.spendPlanId ?? null,
+    status: seat.status ?? null,
+    allocation: seat.allocation ?? null,
+    startDate: seat.startDate ?? null,
+    endDate: seat.endDate ?? null,
+    notes: seat.notes ?? null,
+  }
+}
+
+async function resolveBudgetAreaForSeatProfile(input: {
+  trackingYearId: string
+  budgetAreaId?: string | null
+  domain?: string | null
+  subDomain?: string | null
+  projectCode?: string | null
+  pillar?: string | null
+}) {
+  const budgetAreaId = normalizeOptionalString(input.budgetAreaId)
+  if (budgetAreaId) {
+    return prisma.budgetArea.findFirst({
+      where: {
+        id: budgetAreaId,
+        trackingYearId: input.trackingYearId,
+      },
+    })
+  }
+
+  const domain = normalizeDomainLabel(input.domain)
+  const subDomain = normalizeSubDomainLabel(input.subDomain)
+  const projectCode = normalizeOptionalString(input.projectCode)
+
+  if (!domain || !subDomain || !projectCode) {
+    return null
+  }
+
+  const matchingAreas = await prisma.budgetArea.findMany({
+    where: {
+      trackingYearId: input.trackingYearId,
+      domain: { equals: domain, mode: "insensitive" },
+      subDomain: { equals: subDomain, mode: "insensitive" },
+      projectCode: { equals: projectCode, mode: "insensitive" },
+    },
+    orderBy: [{ pillar: "asc" }, { costCenter: "asc" }],
+  })
+
+  if (matchingAreas.length === 0) {
+    return null
+  }
+
+  const pillar = normalizeOptionalString(input.pillar)
+  if (!pillar) {
+    return matchingAreas[0]
+  }
+
+  return (
+    matchingAreas.find(
+      (area) => normalizeValue(area.pillar) === normalizeValue(pillar)
+    ) ?? matchingAreas[0]
+  )
+}
+
+function normalizeTrackerSeatProfilePayload(
+  payload: TrackerSeatProfilePayload,
+  budgetArea: BudgetArea | null
+) {
+  return {
+    budgetAreaId: budgetArea?.id ?? normalizeOptionalString(payload.budgetAreaId),
+    domain: normalizeDomainLabel(payload.domain) ?? budgetArea?.domain ?? null,
+    subDomain: normalizeSubDomainLabel(payload.subDomain) ?? budgetArea?.subDomain ?? null,
+    funding: normalizeOptionalString(payload.funding) ?? budgetArea?.funding ?? null,
+    pillar: normalizeOptionalString(payload.pillar) ?? budgetArea?.pillar ?? null,
+    costCenter: normalizeOptionalString(payload.costCenter) ?? budgetArea?.costCenter ?? null,
+    projectCode: normalizeOptionalString(payload.projectCode) ?? budgetArea?.projectCode ?? null,
+    resourceType: normalizeOptionalString(payload.resourceType),
+    team: normalizeOptionalString(payload.team),
+    inSeat: normalizeOptionalString(payload.inSeat),
+    description: normalizeOptionalString(payload.description),
+    band: normalizeOptionalString(payload.band),
+    location: normalizeSeatReferenceValue(payload.location),
+    vendor: normalizeSeatReferenceValue(payload.vendor),
+    manager: normalizeSeatReferenceValue(payload.manager),
+    dailyRate: normalizeOptionalNumber(payload.dailyRate),
+    ritm: normalizeOptionalString(payload.ritm),
+    sow: normalizeOptionalString(payload.sow),
+    spendPlanId: normalizeOptionalString(payload.spendPlanId),
+    status: normalizeOptionalString(payload.status),
+    allocation: normalizeOptionalNumber(payload.allocation),
+    startDate: payload.startDate ?? null,
+    endDate: payload.endDate ?? null,
+    notes: normalizeOptionalString(payload.notes),
+  }
+}
+
 type TrackerSeatMonthUpdatePayload = {
   monthIndex?: number
   actualAmount?: number
@@ -6466,6 +7094,14 @@ export async function updateTrackerSeat(
       costCenter?: string | null
       projectCode?: string | null
       resourceType?: string | null
+      team?: string | null
+      inSeat?: string | null
+      description?: string | null
+      band?: string | null
+      location?: string | null
+      vendor?: string | null
+      manager?: string | null
+      dailyRate?: number | null
       ritm?: string | null
       sow?: string | null
       spendPlanId?: string | null
@@ -6553,6 +7189,14 @@ export async function updateTrackerSeat(
         "costCenter",
         "projectCode",
         "resourceType",
+        "team",
+        "inSeat",
+        "description",
+        "band",
+        "location",
+        "vendor",
+        "manager",
+        "dailyRate",
         "ritm",
         "sow",
         "spendPlanId",
@@ -6574,6 +7218,374 @@ export async function updateTrackerSeat(
       override: true,
       budgetArea: true,
     },
+  })
+}
+
+export async function updateTrackerSeatProfile(
+  seatId: string,
+  payload: TrackerSeatProfilePayload,
+  actor?: AuditActor
+) {
+  const seat = await prisma.trackerSeat.findUniqueOrThrow({
+    where: { id: seatId },
+    include: {
+      override: true,
+    },
+  })
+  const budgetArea = await resolveBudgetAreaForSeatProfile({
+    trackingYearId: seat.trackingYearId,
+    budgetAreaId: payload.budgetAreaId,
+    domain: payload.domain,
+    subDomain: payload.subDomain,
+    projectCode: payload.projectCode,
+    pillar: payload.pillar,
+  })
+  const normalizedPayload = normalizeTrackerSeatProfilePayload(payload, budgetArea)
+
+  if (!normalizedPayload.domain || !normalizedPayload.subDomain || !normalizedPayload.projectCode) {
+    throw new Error("Domain, sub-domain, and project code are required.")
+  }
+
+  if (seat.sourceType === "MANUAL") {
+    const before = buildTrackerSeatProfileAuditShape(seat)
+    const updatedSeat = await prisma.trackerSeat.update({
+      where: { id: seat.id },
+      data: {
+        ...normalizedPayload,
+        allocation: normalizedPayload.allocation ?? 0,
+      },
+      include: {
+        months: {
+          orderBy: { monthIndex: "asc" },
+        },
+        override: true,
+        budgetArea: true,
+      },
+    })
+
+    await persistSeatReferenceSelections({
+      trackingYearId: seat.trackingYearId,
+      vendor: normalizedPayload.vendor,
+      location: normalizedPayload.location,
+      manager: normalizedPayload.manager,
+      role: normalizedPayload.description,
+      band: normalizedPayload.band,
+      resourceType: normalizedPayload.resourceType,
+    })
+
+    await writeAuditLog({
+      trackingYearId: seat.trackingYearId,
+      entityType: "TrackerSeat",
+      entityId: updatedSeat.id,
+      action: "UPDATE",
+      actor,
+      changes: buildAuditChanges(
+        before,
+        buildTrackerSeatProfileAuditShape(updatedSeat),
+        [
+          "domain",
+          "subDomain",
+          "funding",
+          "pillar",
+          "budgetAreaId",
+          "costCenter",
+          "projectCode",
+          "resourceType",
+          "team",
+          "inSeat",
+          "description",
+          "band",
+          "location",
+          "vendor",
+          "manager",
+          "dailyRate",
+          "ritm",
+          "sow",
+          "spendPlanId",
+          "status",
+          "allocation",
+          "startDate",
+          "endDate",
+          "notes",
+        ]
+      ),
+    })
+
+    return updatedSeat
+  }
+
+  const before = buildTrackerSeatProfileAuditShape(seat.override ?? {})
+  const override = await prisma.trackerOverride.upsert({
+    where: { trackerSeatId: seat.id },
+    update: normalizedPayload,
+    create: {
+      trackerSeatId: seat.id,
+      ...normalizedPayload,
+    },
+  })
+
+  await persistSeatReferenceSelections({
+    trackingYearId: seat.trackingYearId,
+    vendor: normalizedPayload.vendor,
+    location: normalizedPayload.location,
+    manager: normalizedPayload.manager,
+    role: normalizedPayload.description,
+    band: normalizedPayload.band,
+    resourceType: normalizedPayload.resourceType,
+  })
+
+  await writeAuditLog({
+    trackingYearId: seat.trackingYearId,
+    entityType: "TrackerOverride",
+    entityId: override.id,
+    action: seat.override ? "UPDATE" : "CREATE",
+    actor,
+    changes: buildAuditChanges(
+      before,
+      buildTrackerSeatProfileAuditShape(override),
+      [
+        "domain",
+        "subDomain",
+        "funding",
+        "pillar",
+        "budgetAreaId",
+        "costCenter",
+        "projectCode",
+        "resourceType",
+        "team",
+        "inSeat",
+        "description",
+        "band",
+        "location",
+        "vendor",
+        "manager",
+        "dailyRate",
+        "ritm",
+        "sow",
+        "spendPlanId",
+        "status",
+        "allocation",
+        "startDate",
+        "endDate",
+        "notes",
+      ]
+    ),
+  })
+
+  return prisma.trackerSeat.findUnique({
+    where: { id: seat.id },
+    include: {
+      months: {
+        orderBy: { monthIndex: "asc" },
+      },
+      override: true,
+      budgetArea: true,
+    },
+  })
+}
+
+export async function createManualTrackerSeat(
+  input: {
+    year: number
+    profile: TrackerSeatProfilePayload
+  },
+  actor?: AuditActor
+) {
+  ensureValidYear(input.year)
+  const trackingYear = await getOrCreateTrackingYear(input.year)
+  const [existingSeats, latestRosterPeople, budgetArea] = await Promise.all([
+    prisma.trackerSeat.findMany({
+      where: {
+        trackingYearId: trackingYear.id,
+      },
+      select: {
+        seatId: true,
+      },
+    }),
+    prisma.rosterPerson.findMany({
+      where: {
+        trackingYearId: trackingYear.id,
+        import: {
+          status: "APPROVED",
+        },
+      },
+      select: {
+        seatId: true,
+      },
+    }),
+    resolveBudgetAreaForSeatProfile({
+      trackingYearId: trackingYear.id,
+      budgetAreaId: input.profile.budgetAreaId,
+      domain: input.profile.domain,
+      subDomain: input.profile.subDomain,
+      projectCode: input.profile.projectCode,
+      pillar: input.profile.pillar,
+    }),
+  ])
+  const normalizedProfile = normalizeTrackerSeatProfilePayload(input.profile, budgetArea)
+
+  if (!normalizedProfile.domain || !normalizedProfile.subDomain || !normalizedProfile.projectCode) {
+    throw new Error("Domain, sub-domain, and project code are required.")
+  }
+
+  const seatId = parseNextSeatId([
+    ...existingSeats.map((seat) => seat.seatId),
+    ...latestRosterPeople.map((person) => person.seatId),
+  ])
+  const seat = await prisma.trackerSeat.create({
+    data: {
+      trackingYearId: trackingYear.id,
+      sourceType: "MANUAL",
+      seatId,
+      sourceKey: `manual:${seatId}`,
+      isActive: true,
+      ...normalizedProfile,
+      allocation: normalizedProfile.allocation ?? 0,
+    },
+    include: {
+      months: {
+        orderBy: { monthIndex: "asc" },
+      },
+      override: true,
+      budgetArea: true,
+    },
+  })
+
+  await ensureSeatMonthsForSeats([seat.id])
+  await persistSeatReferenceSelections({
+    trackingYearId: trackingYear.id,
+    vendor: normalizedProfile.vendor,
+    location: normalizedProfile.location,
+    manager: normalizedProfile.manager,
+    role: normalizedProfile.description,
+    band: normalizedProfile.band,
+    resourceType: normalizedProfile.resourceType,
+  })
+
+  await writeAuditLog({
+    trackingYearId: trackingYear.id,
+    entityType: "TrackerSeat",
+    entityId: seat.id,
+    action: "CREATE",
+    actor,
+    changes: buildAuditChanges(
+      null,
+      {
+        seatId: seat.seatId,
+        sourceType: seat.sourceType,
+        sourceKey: seat.sourceKey,
+        ...buildTrackerSeatProfileAuditShape(seat),
+      },
+      [
+        "seatId",
+        "sourceType",
+        "sourceKey",
+        "domain",
+        "subDomain",
+        "funding",
+        "pillar",
+        "budgetAreaId",
+        "costCenter",
+        "projectCode",
+        "resourceType",
+        "team",
+        "inSeat",
+        "description",
+        "band",
+        "location",
+        "vendor",
+        "manager",
+        "dailyRate",
+        "ritm",
+        "sow",
+        "spendPlanId",
+        "status",
+        "allocation",
+        "startDate",
+        "endDate",
+        "notes",
+      ]
+    ),
+  })
+
+  return prisma.trackerSeat.findUnique({
+    where: { id: seat.id },
+    include: {
+      months: {
+        orderBy: { monthIndex: "asc" },
+      },
+      override: true,
+      budgetArea: true,
+    },
+  })
+}
+
+export async function deleteManualTrackerSeat(seatId: string, actor?: AuditActor) {
+  const seat = await prisma.trackerSeat.findUniqueOrThrow({
+    where: { id: seatId },
+    include: {
+      override: true,
+      budgetArea: true,
+      months: {
+        orderBy: { monthIndex: "asc" },
+      },
+    },
+  })
+
+  if (seat.sourceType !== "MANUAL") {
+    throw new Error("Only manual seats can be deleted.")
+  }
+
+  const before = {
+    seatId: seat.seatId,
+    sourceType: seat.sourceType,
+    sourceKey: seat.sourceKey,
+    ...buildTrackerSeatProfileAuditShape(seat),
+  }
+
+  await prisma.trackerSeat.delete({
+    where: { id: seat.id },
+  })
+
+  await writeAuditLog({
+    trackingYearId: seat.trackingYearId,
+    entityType: "TrackerSeat",
+    entityId: seat.id,
+    action: "DELETE",
+    actor,
+    changes: buildAuditChanges(
+      before,
+      null,
+      [
+        "seatId",
+        "sourceType",
+        "sourceKey",
+        "domain",
+        "subDomain",
+        "funding",
+        "pillar",
+        "budgetAreaId",
+        "costCenter",
+        "projectCode",
+        "resourceType",
+        "team",
+        "inSeat",
+        "description",
+        "band",
+        "location",
+        "vendor",
+        "manager",
+        "dailyRate",
+        "ritm",
+        "sow",
+        "spendPlanId",
+        "status",
+        "allocation",
+        "startDate",
+        "endDate",
+        "notes",
+      ]
+    ),
   })
 }
 

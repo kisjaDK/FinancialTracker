@@ -4,6 +4,7 @@ import { useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { FinancePageIntro } from "@/components/finance/page-intro"
+import { SeatReferenceValuesCard } from "@/components/finance/seat-reference-values-card"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -23,9 +24,11 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { serializeCsv } from "@/lib/finance/csv"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { formatNumber } from "@/lib/finance/format"
+import type { SeatReferenceValueView } from "@/lib/finance/types"
 
 type TrackingYearOption = {
   id: string
@@ -46,6 +49,7 @@ type DepartmentMapping = {
   domain: string
   subDomain: string
   projectCode: string
+  teams: string[]
   notes: string | null
 }
 
@@ -78,6 +82,7 @@ type AdminBrowserProps = {
   accrualAccountMappings: AccrualAccountMapping[]
   rosterResourceTypes: string[]
   exchangeRates: ExchangeRate[]
+  seatReferenceValues: SeatReferenceValueView[]
 }
 
 async function fetchJson(input: RequestInfo, init?: RequestInit) {
@@ -115,6 +120,7 @@ export function AdminBrowser({
   accrualAccountMappings,
   rosterResourceTypes,
   exchangeRates,
+  seatReferenceValues,
 }: AdminBrowserProps) {
   const router = useRouter()
   const mappingImportRef = useRef<HTMLInputElement | null>(null)
@@ -126,6 +132,7 @@ export function AdminBrowser({
     domain: "",
     subDomain: "",
     projectCode: "",
+    teams: "",
     notes: "",
   })
   const [pendingDelete, setPendingDelete] = useState<DepartmentMapping | null>(null)
@@ -161,6 +168,14 @@ export function AdminBrowser({
     currency,
     rates: exchangeRates.filter((rate) => rate.currency === currency),
   }))
+  const vendorValues = seatReferenceValues.filter((value) => value.type === "VENDOR")
+  const locationValues = seatReferenceValues.filter((value) => value.type === "LOCATION")
+  const managerValues = seatReferenceValues.filter((value) => value.type === "MANAGER")
+  const roleValues = seatReferenceValues.filter((value) => value.type === "ROLE")
+  const bandValues = seatReferenceValues.filter((value) => value.type === "BAND")
+  const resourceTypeValues = seatReferenceValues.filter(
+    (value) => value.type === "RESOURCE_TYPE"
+  )
 
   function resetMappingForm() {
     setEditingMappingId(null)
@@ -169,6 +184,7 @@ export function AdminBrowser({
       domain: "",
       subDomain: "",
       projectCode: "",
+      teams: "",
       notes: "",
     })
   }
@@ -247,6 +263,7 @@ export function AdminBrowser({
               domain: "",
               subDomain: "",
               projectCode: "",
+              teams: "",
               notes: "",
             }
           : current
@@ -582,690 +599,780 @@ export function AdminBrowser({
             </select>
           </CardContent>
         </Card>
+        <Tabs defaultValue="other" className="gap-4">
+          <TabsList variant="line" className="w-full flex-wrap justify-start gap-2">
+            <TabsTrigger value="other">Other</TabsTrigger>
+            <TabsTrigger value="data">Year Data</TabsTrigger>
+            <TabsTrigger value="roster-selects">Roster Selects</TabsTrigger>
+            <TabsTrigger value="fx">Exchange Rates</TabsTrigger>
+          </TabsList>
 
-        <Card className="brand-card">
-          <CardHeader>
-            <CardTitle>Reset Year Data</CardTitle>
-            <CardDescription>
-              Clear one year-scoped dataset at a time without touching service messages.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
-            {[
-              { key: "people-roster", label: "Reset People Roster" },
-              { key: "forecasts", label: "Reset Forecasts" },
-              { key: "actuals", label: "Reset Actuals" },
-              { key: "budget-movements", label: "Reset Budget Movements" },
-              { key: "internal-costs", label: "Reset Internal Costs" },
-            ].map((item) => (
-              <Button
-                key={item.key}
-                variant="outline"
-                className="justify-start"
-                onClick={() => setPendingReset(item.key as ResetDataset)}
-              >
-                {item.label}
-              </Button>
-            ))}
-          </CardContent>
-        </Card>
+          <TabsContent value="other" className="space-y-6">
+            <section className="grid gap-6 xl:grid-cols-2">
+              <Card className="brand-card">
+                <CardHeader>
+                  <CardTitle>Status Definitions</CardTitle>
+                  <CardDescription>
+                    The allowed statuses are fixed. Use the toggle to control which statuses count as active in the tracker.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Status</TableHead>
+                        <TableHead>Counts As Active</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {statuses.map((status) => (
+                        <TableRow key={status.id}>
+                          <TableCell>{status.label}</TableCell>
+                          <TableCell>
+                            <div className="flex items-center gap-3">
+                              <input
+                                type="checkbox"
+                                checked={status.isActiveStatus}
+                                onChange={(event) =>
+                                  void updateStatus(status.label, event.target.checked)
+                                }
+                              />
+                              <span className="text-sm text-muted-foreground">
+                                {status.isActiveStatus ? "Active" : "Not active"}
+                              </span>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
 
-        <Card className="brand-card">
-          <CardHeader>
-            <CardTitle>Override Backups</CardTitle>
-            <CardDescription>
-              Export, import, or clear forecast overrides and tracker overrides independently.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="grid gap-4 xl:grid-cols-2">
-            <div className="rounded-xl border border-dashed border-border p-4">
-              <div className="space-y-1">
-                <p className="text-sm font-medium">Forecast Overrides</p>
-                <p className="text-xs text-muted-foreground">
-                  Month-level forecast override amounts and forecast on/off flags.
-                </p>
-              </div>
-              <div className="mt-4 flex flex-wrap gap-2">
-                <Button
-                  variant="outline"
-                  onClick={() =>
-                    void downloadAdminCsv(
-                      "/api/admin/forecast-overrides",
-                      `forecast-overrides-${activeYear}.csv`
-                    )
-                  }
-                >
-                  Export CSV
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={() => forecastOverrideImportRef.current?.click()}
-                >
-                  Import CSV
-                </Button>
-                <Button
-                  variant="destructive"
-                  onClick={() => setPendingOverrideDelete("forecast-overrides")}
-                >
-                  Delete All
-                </Button>
-              </div>
-              <Input
-                ref={forecastOverrideImportRef}
-                type="file"
-                accept=".csv,text/csv"
-                className="mt-3"
-                onChange={(event) => {
-                  const file = event.target.files?.[0]
-                  if (file) {
-                    void importOverrideFile(
-                      "/api/admin/forecast-overrides",
-                      file,
-                      forecastOverrideImportRef,
-                      "forecast override"
-                    )
-                  }
-                }}
-              />
-            </div>
+                  <div className="rounded-xl border border-dashed border-border px-4 py-3 text-sm text-muted-foreground">
+                    Statuses available: {statuses.map((status) => status.label).join(", ")}
+                  </div>
+                </CardContent>
+              </Card>
 
-            <div className="rounded-xl border border-dashed border-border p-4">
-              <div className="space-y-1">
-                <p className="text-sm font-medium">Tracker Overrides</p>
-                <p className="text-xs text-muted-foreground">
-                  Seat-level tracker field overrides such as domain, status, allocation, and dates.
-                </p>
-              </div>
-              <div className="mt-4 flex flex-wrap gap-2">
-                <Button
-                  variant="outline"
-                  onClick={() =>
-                    void downloadAdminCsv(
-                      "/api/admin/tracker-overrides",
-                      `tracker-overrides-${activeYear}.csv`
-                    )
-                  }
-                >
-                  Export CSV
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={() => trackerOverrideImportRef.current?.click()}
-                >
-                  Import CSV
-                </Button>
-                <Button
-                  variant="destructive"
-                  onClick={() => setPendingOverrideDelete("tracker-overrides")}
-                >
-                  Delete All
-                </Button>
-              </div>
-              <Input
-                ref={trackerOverrideImportRef}
-                type="file"
-                accept=".csv,text/csv"
-                className="mt-3"
-                onChange={(event) => {
-                  const file = event.target.files?.[0]
-                  if (file) {
-                    void importOverrideFile(
-                      "/api/admin/tracker-overrides",
-                      file,
-                      trackerOverrideImportRef,
-                      "tracker override"
-                    )
-                  }
-                }}
-              />
-            </div>
-          </CardContent>
-        </Card>
-
-        <section className="grid gap-6 xl:grid-cols-2">
-          <Card className="brand-card">
-            <CardHeader>
-              <CardTitle>Status Definitions</CardTitle>
-              <CardDescription>
-                The allowed statuses are fixed. Use the toggle to control which statuses count as active in the tracker.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Counts As Active</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {statuses.map((status) => (
-                    <TableRow key={status.id}>
-                      <TableCell>{status.label}</TableCell>
-                      <TableCell>
-                        <div className="flex items-center gap-3">
-                          <input
-                            type="checkbox"
-                            checked={status.isActiveStatus}
-                            onChange={(event) =>
-                              void updateStatus(status.label, event.target.checked)
-                            }
-                          />
-                          <span className="text-sm text-muted-foreground">
-                            {status.isActiveStatus ? "Active" : "Not active"}
-                          </span>
+              <Card className="brand-card xl:col-span-2">
+                <CardHeader>
+                  <CardTitle>Hierarchy Mapping</CardTitle>
+                  <CardDescription>
+                    Map department codes into domain, sub-domain, project code, and one or more allowed teams.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="grid gap-3">
+                    <div className="rounded-xl border border-dashed border-border p-4">
+                      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                        <div>
+                          <p className="text-sm font-medium">CSV Import / Export</p>
+                          <p className="text-xs text-muted-foreground">
+                            Import `Department Code`, `Domain`, `Sub-domain`, `Project Code`, comma-separated `Teams`, and optional `Notes`.
+                          </p>
                         </div>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-
-              <div className="rounded-xl border border-dashed border-border px-4 py-3 text-sm text-muted-foreground">
-                Statuses available: {statuses.map((status) => status.label).join(", ")}
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card className="brand-card">
-            <CardHeader>
-              <CardTitle>Hierarchy Mapping</CardTitle>
-              <CardDescription>
-                Map department codes into domain and sub-domain. Team stays on the seat.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="grid gap-3">
-                <div className="rounded-xl border border-dashed border-border p-4">
-                  <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                    <div>
-                      <p className="text-sm font-medium">CSV Import / Export</p>
-                      <p className="text-xs text-muted-foreground">
-                        Import `Department Code`, `Domain`, `Sub-domain`, `Project Code`, and optional `Notes`.
-                      </p>
+                        <Button
+                          variant="outline"
+                          onClick={() =>
+                            downloadCsv(
+                              `hierarchy-mappings-${activeYear}.csv`,
+                              serializeCsv(
+                                departmentMappings.map((mapping) => ({
+                                  "Department Code": mapping.sourceCode,
+                                  Domain: mapping.domain,
+                                  "Sub-domain": mapping.subDomain,
+                                  "Project Code": mapping.projectCode,
+                                  Teams: mapping.teams.join(", "),
+                                  Notes: mapping.notes ?? "",
+                                })),
+                                ["Department Code", "Domain", "Sub-domain", "Project Code", "Teams", "Notes"]
+                              )
+                            )
+                          }
+                        >
+                          Export CSV
+                        </Button>
+                      </div>
+                      <div className="mt-3 flex flex-col gap-2 md:flex-row">
+                        <Input
+                          ref={mappingImportRef}
+                          type="file"
+                          accept=".csv,text/csv"
+                          onChange={(event) => {
+                            const file = event.target.files?.[0]
+                            if (file) {
+                              void importMappings(file)
+                            }
+                          }}
+                        />
+                      </div>
                     </div>
+
+                    <div className="grid gap-3 md:grid-cols-3">
+                      <Input
+                        placeholder="Department code, e.g. D6861"
+                        value={mappingValues.sourceCode}
+                        onChange={(event) =>
+                          setMappingValues((current) => ({
+                            ...current,
+                            sourceCode: event.target.value,
+                          }))
+                        }
+                      />
+                      <Input
+                        placeholder="Data & Analytics"
+                        value={mappingValues.domain}
+                        onChange={(event) =>
+                          setMappingValues((current) => ({
+                            ...current,
+                            domain: event.target.value,
+                          }))
+                        }
+                      />
+                      <Input
+                        placeholder="Architecture"
+                        value={mappingValues.subDomain}
+                        onChange={(event) =>
+                          setMappingValues((current) => ({
+                            ...current,
+                            subDomain: event.target.value,
+                          }))
+                        }
+                      />
+                      <Input
+                        placeholder="L68610001"
+                        value={mappingValues.projectCode}
+                        onChange={(event) =>
+                          setMappingValues((current) => ({
+                            ...current,
+                            projectCode: event.target.value,
+                          }))
+                        }
+                      />
+                      <Input
+                        placeholder="Teams, comma separated"
+                        value={mappingValues.teams}
+                        onChange={(event) =>
+                          setMappingValues((current) => ({
+                            ...current,
+                            teams: event.target.value,
+                          }))
+                        }
+                      />
+                      <Input
+                        placeholder="Optional notes"
+                        value={mappingValues.notes}
+                        onChange={(event) =>
+                          setMappingValues((current) => ({
+                            ...current,
+                            notes: event.target.value,
+                          }))
+                        }
+                      />
+                    </div>
+                    <div className="flex gap-2">
+                      <Button
+                        variant="outline"
+                        onClick={() => {
+                          void handleJsonSubmit(
+                            {
+                              id: editingMappingId,
+                              year: activeYear,
+                              sourceCode: mappingValues.sourceCode,
+                              domain: mappingValues.domain,
+                              subDomain: mappingValues.subDomain,
+                              projectCode: mappingValues.projectCode,
+                              teams: mappingValues.teams
+                                .split(",")
+                                .map((team) => team.trim())
+                                .filter(Boolean),
+                              notes: mappingValues.notes,
+                            },
+                            "/api/department-mappings",
+                            editingMappingId ? "Hierarchy mapping updated" : "Hierarchy mapping saved"
+                          )
+                        }}
+                      >
+                        {editingMappingId ? "Update Mapping" : "Save Mapping"}
+                      </Button>
+                      <Button variant="ghost" onClick={resetMappingForm}>
+                        {editingMappingId ? "Cancel Edit" : "Clear"}
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="max-h-72 overflow-y-auto rounded-xl border">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Department Code</TableHead>
+                          <TableHead>Domain</TableHead>
+                          <TableHead>Sub-domain</TableHead>
+                          <TableHead>Project Code</TableHead>
+                          <TableHead>Teams</TableHead>
+                          <TableHead />
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {departmentMappings.map((mapping) => (
+                          <TableRow key={mapping.id}>
+                            <TableCell>{mapping.sourceCode}</TableCell>
+                            <TableCell>{mapping.domain}</TableCell>
+                            <TableCell>{mapping.subDomain}</TableCell>
+                            <TableCell>{mapping.projectCode}</TableCell>
+                            <TableCell>
+                              {mapping.teams.length > 0 ? (
+                                <div className="space-y-1">
+                                  {mapping.teams.map((team) => (
+                                    <div key={team} className="break-words">
+                                      {team}
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                "No teams"
+                              )}
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <div className="flex justify-end gap-2">
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => {
+                                    setEditingMappingId(mapping.id)
+                                    setMappingValues({
+                                      sourceCode: mapping.sourceCode,
+                                      domain: mapping.domain,
+                                      subDomain: mapping.subDomain,
+                                      projectCode: mapping.projectCode,
+                                      teams: mapping.teams.join(", "),
+                                      notes: mapping.notes || "",
+                                    })
+                                  }}
+                                >
+                                  Edit
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="text-red-600 hover:text-red-700"
+                                  onClick={() => {
+                                    setPendingDelete(mapping)
+                                  }}
+                                >
+                                  Delete
+                                </Button>
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                        {departmentMappings.length === 0 ? (
+                          <TableRow>
+                            <TableCell colSpan={6} className="py-6 text-center text-muted-foreground">
+                              No hierarchy mappings saved yet.
+                            </TableCell>
+                          </TableRow>
+                        ) : null}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card className="brand-card xl:col-span-2">
+                <CardHeader>
+                  <CardTitle>Accrual Account Mapping</CardTitle>
+                  <CardDescription>
+                    Map current roster resource types to the finance account code used in accrual exports.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="grid gap-3">
+                    <select
+                      className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
+                      value={accrualMappingValues.resourceType}
+                      onChange={(event) =>
+                        setAccrualMappingValues((current) => ({
+                          ...current,
+                          resourceType: event.target.value,
+                        }))
+                      }
+                    >
+                      <option value="">Select resource type</option>
+                      {availableAccrualResourceTypes.map((resourceType) => (
+                        <option key={resourceType} value={resourceType}>
+                          {resourceType}
+                        </option>
+                      ))}
+                    </select>
+                    <Input
+                      placeholder="4800213"
+                      value={accrualMappingValues.accountCode}
+                      onChange={(event) =>
+                        setAccrualMappingValues((current) => ({
+                          ...current,
+                          accountCode: event.target.value,
+                        }))
+                      }
+                    />
+                    <Input
+                      placeholder="Optional notes"
+                      value={accrualMappingValues.notes}
+                      onChange={(event) =>
+                        setAccrualMappingValues((current) => ({
+                          ...current,
+                          notes: event.target.value,
+                        }))
+                      }
+                    />
+                    <div className="flex gap-2">
+                      <Button
+                        variant="outline"
+                        onClick={() => {
+                          void handleJsonSubmit(
+                            {
+                              id: editingAccrualMappingId,
+                              year: activeYear,
+                              resourceType: accrualMappingValues.resourceType,
+                              accountCode: accrualMappingValues.accountCode,
+                              notes: accrualMappingValues.notes,
+                            },
+                            "/api/accrual-account-mappings",
+                            editingAccrualMappingId
+                              ? "Accrual account mapping updated"
+                              : "Accrual account mapping saved"
+                          )
+                        }}
+                      >
+                        {editingAccrualMappingId ? "Update Mapping" : "Save Mapping"}
+                      </Button>
+                      <Button variant="ghost" onClick={resetAccrualMappingForm}>
+                        {editingAccrualMappingId ? "Cancel Edit" : "Clear"}
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="max-h-72 overflow-y-auto rounded-xl border">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Resource Type</TableHead>
+                          <TableHead>Account</TableHead>
+                          <TableHead>Notes</TableHead>
+                          <TableHead />
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {accrualAccountMappings.map((mapping) => (
+                          <TableRow key={mapping.id}>
+                            <TableCell>{mapping.resourceType}</TableCell>
+                            <TableCell>{mapping.accountCode}</TableCell>
+                            <TableCell>{mapping.notes || "No notes"}</TableCell>
+                            <TableCell className="text-right">
+                              <div className="flex justify-end gap-2">
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => {
+                                    setEditingAccrualMappingId(mapping.id)
+                                    setAccrualMappingValues({
+                                      resourceType: mapping.resourceType,
+                                      accountCode: mapping.accountCode,
+                                      notes: mapping.notes || "",
+                                    })
+                                  }}
+                                >
+                                  Edit
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="text-red-600 hover:text-red-700"
+                                  onClick={() => {
+                                    setPendingAccrualMappingDelete(mapping)
+                                  }}
+                                >
+                                  Delete
+                                </Button>
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                        {accrualAccountMappings.length === 0 ? (
+                          <TableRow>
+                            <TableCell colSpan={4} className="py-6 text-center text-muted-foreground">
+                              No accrual account mappings saved yet.
+                            </TableCell>
+                          </TableRow>
+                        ) : null}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </CardContent>
+              </Card>
+            </section>
+          </TabsContent>
+
+          <TabsContent value="data" className="space-y-6">
+            <Card className="brand-card">
+              <CardHeader>
+                <CardTitle>Reset Year Data</CardTitle>
+                <CardDescription>
+                  Clear one year-scoped dataset at a time without touching service messages.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+                {[
+                  { key: "people-roster", label: "Reset People Roster" },
+                  { key: "forecasts", label: "Reset Forecasts" },
+                  { key: "actuals", label: "Reset Actuals" },
+                  { key: "budget-movements", label: "Reset Budget Movements" },
+                  { key: "internal-costs", label: "Reset Internal Costs" },
+                ].map((item) => (
+                  <Button
+                    key={item.key}
+                    variant="outline"
+                    className="justify-start"
+                    onClick={() => setPendingReset(item.key as ResetDataset)}
+                  >
+                    {item.label}
+                  </Button>
+                ))}
+              </CardContent>
+            </Card>
+
+            <Card className="brand-card">
+              <CardHeader>
+                <CardTitle>Override Backups</CardTitle>
+                <CardDescription>
+                  Export, import, or clear forecast overrides and tracker overrides independently.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="grid gap-4 xl:grid-cols-2">
+                <div className="rounded-xl border border-dashed border-border p-4">
+                  <div className="space-y-1">
+                    <p className="text-sm font-medium">Forecast Overrides</p>
+                    <p className="text-xs text-muted-foreground">
+                      Month-level forecast override amounts and forecast on/off flags.
+                    </p>
+                  </div>
+                  <div className="mt-4 flex flex-wrap gap-2">
                     <Button
                       variant="outline"
                       onClick={() =>
-                        downloadCsv(
-                          `hierarchy-mappings-${activeYear}.csv`,
-                          serializeCsv(
-                            departmentMappings.map((mapping) => ({
-                              "Department Code": mapping.sourceCode,
-                              Domain: mapping.domain,
-                              "Sub-domain": mapping.subDomain,
-                              "Project Code": mapping.projectCode,
-                              Notes: mapping.notes ?? "",
-                            })),
-                            ["Department Code", "Domain", "Sub-domain", "Project Code", "Notes"]
-                          )
+                        void downloadAdminCsv(
+                          "/api/admin/forecast-overrides",
+                          `forecast-overrides-${activeYear}.csv`
                         )
                       }
                     >
                       Export CSV
                     </Button>
+                    <Button
+                      variant="outline"
+                      onClick={() => forecastOverrideImportRef.current?.click()}
+                    >
+                      Import CSV
+                    </Button>
+                    <Button
+                      variant="destructive"
+                      onClick={() => setPendingOverrideDelete("forecast-overrides")}
+                    >
+                      Delete All
+                    </Button>
                   </div>
-                  <div className="mt-3 flex flex-col gap-2 md:flex-row">
-                    <Input
-                      ref={mappingImportRef}
-                      type="file"
-                      accept=".csv,text/csv"
-                      onChange={(event) => {
-                        const file = event.target.files?.[0]
-                        if (file) {
-                          void importMappings(file)
-                        }
-                      }}
-                    />
-                  </div>
+                  <Input
+                    ref={forecastOverrideImportRef}
+                    type="file"
+                    accept=".csv,text/csv"
+                    className="mt-3"
+                    onChange={(event) => {
+                      const file = event.target.files?.[0]
+                      if (file) {
+                        void importOverrideFile(
+                          "/api/admin/forecast-overrides",
+                          file,
+                          forecastOverrideImportRef,
+                          "forecast override"
+                        )
+                      }
+                    }}
+                  />
                 </div>
 
-                <Input
-                  placeholder="Department code, e.g. D6861"
-                  value={mappingValues.sourceCode}
-                  onChange={(event) =>
-                    setMappingValues((current) => ({
-                      ...current,
-                      sourceCode: event.target.value,
-                    }))
-                  }
-                />
-                <Input
-                  placeholder="Data & Analytics"
-                  value={mappingValues.domain}
-                  onChange={(event) =>
-                    setMappingValues((current) => ({
-                      ...current,
-                      domain: event.target.value,
-                    }))
-                  }
-                />
-                <Input
-                  placeholder="Architecture"
-                  value={mappingValues.subDomain}
-                  onChange={(event) =>
-                    setMappingValues((current) => ({
-                      ...current,
-                      subDomain: event.target.value,
-                    }))
-                  }
-                />
-                <Input
-                  placeholder="L68610001"
-                  value={mappingValues.projectCode}
-                  onChange={(event) =>
-                    setMappingValues((current) => ({
-                      ...current,
-                      projectCode: event.target.value,
-                    }))
-                  }
-                />
-                <Input
-                  placeholder="Optional notes"
-                  value={mappingValues.notes}
-                  onChange={(event) =>
-                    setMappingValues((current) => ({
-                      ...current,
-                      notes: event.target.value,
-                    }))
-                  }
-                />
-                <div className="flex gap-2">
-                  <Button
-                    variant="outline"
-                    onClick={() => {
-                      void handleJsonSubmit(
-                        {
-                          id: editingMappingId,
-                          year: activeYear,
-                          sourceCode: mappingValues.sourceCode,
-                          domain: mappingValues.domain,
-                          subDomain: mappingValues.subDomain,
-                          projectCode: mappingValues.projectCode,
-                          notes: mappingValues.notes,
-                        },
-                        "/api/department-mappings",
-                        editingMappingId ? "Hierarchy mapping updated" : "Hierarchy mapping saved"
-                      )
+                <div className="rounded-xl border border-dashed border-border p-4">
+                  <div className="space-y-1">
+                    <p className="text-sm font-medium">Tracker Overrides</p>
+                    <p className="text-xs text-muted-foreground">
+                      Seat-level tracker field overrides such as domain, status, allocation, and dates.
+                    </p>
+                  </div>
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <Button
+                      variant="outline"
+                      onClick={() =>
+                        void downloadAdminCsv(
+                          "/api/admin/tracker-overrides",
+                          `tracker-overrides-${activeYear}.csv`
+                        )
+                      }
+                    >
+                      Export CSV
+                    </Button>
+                    <Button
+                      variant="outline"
+                      onClick={() => trackerOverrideImportRef.current?.click()}
+                    >
+                      Import CSV
+                    </Button>
+                    <Button
+                      variant="destructive"
+                      onClick={() => setPendingOverrideDelete("tracker-overrides")}
+                    >
+                      Delete All
+                    </Button>
+                  </div>
+                  <Input
+                    ref={trackerOverrideImportRef}
+                    type="file"
+                    accept=".csv,text/csv"
+                    className="mt-3"
+                    onChange={(event) => {
+                      const file = event.target.files?.[0]
+                      if (file) {
+                        void importOverrideFile(
+                          "/api/admin/tracker-overrides",
+                          file,
+                          trackerOverrideImportRef,
+                          "tracker override"
+                        )
+                      }
                     }}
-                  >
-                    {editingMappingId ? "Update Mapping" : "Save Mapping"}
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    onClick={resetMappingForm}
-                  >
-                    {editingMappingId ? "Cancel Edit" : "Clear"}
-                  </Button>
+                  />
                 </div>
-              </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
 
-              <div className="max-h-72 overflow-y-auto rounded-xl border">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Department Code</TableHead>
-                      <TableHead>Domain</TableHead>
-                      <TableHead>Sub-domain</TableHead>
-                      <TableHead>Project Code</TableHead>
-                      <TableHead />
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {departmentMappings.map((mapping) => (
-                      <TableRow key={mapping.id}>
-                        <TableCell>{mapping.sourceCode}</TableCell>
-                        <TableCell>{mapping.domain}</TableCell>
-                        <TableCell>{mapping.subDomain}</TableCell>
-                        <TableCell>{mapping.projectCode}</TableCell>
-                        <TableCell className="text-right">
-                          <div className="flex justify-end gap-2">
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => {
-                                setEditingMappingId(mapping.id)
-                                setMappingValues({
-                                  sourceCode: mapping.sourceCode,
-                                  domain: mapping.domain,
-                                  subDomain: mapping.subDomain,
-                                  projectCode: mapping.projectCode,
-                                  notes: mapping.notes || "",
-                                })
-                              }}
-                            >
-                              Edit
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="text-red-600 hover:text-red-700"
-                              onClick={() => {
-                                setPendingDelete(mapping)
-                              }}
-                            >
-                              Delete
-                            </Button>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                    {departmentMappings.length === 0 ? (
-                      <TableRow>
-                        <TableCell colSpan={5} className="py-6 text-center text-muted-foreground">
-                          No hierarchy mappings saved yet.
-                        </TableCell>
-                      </TableRow>
-                    ) : null}
-                  </TableBody>
-                </Table>
-              </div>
-            </CardContent>
-          </Card>
+          <TabsContent value="roster-selects">
+            <section className="grid gap-6 xl:grid-cols-3">
+              <SeatReferenceValuesCard
+                activeYear={activeYear}
+                title="Vendors"
+                description="Maintain the allowed vendor dropdown values used by the seat editor."
+                type="VENDOR"
+                values={vendorValues}
+              />
+              <SeatReferenceValuesCard
+                activeYear={activeYear}
+                title="Locations"
+                description="Maintain the allowed location dropdown values used by the seat editor."
+                type="LOCATION"
+                values={locationValues}
+              />
+              <SeatReferenceValuesCard
+                activeYear={activeYear}
+                title="Managers"
+                description="Maintain the allowed manager dropdown values used by the seat editor."
+                type="MANAGER"
+                values={managerValues}
+              />
+              <SeatReferenceValuesCard
+                activeYear={activeYear}
+                title="Roles"
+                description="Maintain the allowed role dropdown values used by the seat editor."
+                type="ROLE"
+                values={roleValues}
+              />
+              <SeatReferenceValuesCard
+                activeYear={activeYear}
+                title="Bands"
+                description="Maintain the allowed band dropdown values used by the seat editor."
+                type="BAND"
+                values={bandValues}
+              />
+              <SeatReferenceValuesCard
+                activeYear={activeYear}
+                title="Resource Types"
+                description="Maintain the allowed resource type dropdown values used by the seat editor."
+                type="RESOURCE_TYPE"
+                values={resourceTypeValues}
+              />
+            </section>
+          </TabsContent>
 
-          <Card className="brand-card">
-            <CardHeader>
-              <CardTitle>Exchange Rates</CardTitle>
-              <CardDescription>
-                Maintain FX rates and review the full effective-date history used for conversions.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="grid gap-3">
-                <select
-                  className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
-                  value={fxValues.currency}
-                  onChange={(event) =>
-                    setFxValues((current) => ({
-                      ...current,
-                      currency: event.target.value as "DKK" | "EUR" | "USD",
-                    }))
-                  }
-                >
-                  {["EUR", "USD"].map((currency) => (
-                    <option key={currency} value={currency}>
-                      {currency}
-                    </option>
-                  ))}
-                </select>
-                <Input
-                  placeholder="7.46"
-                  value={fxValues.rateToDkk}
-                  onChange={(event) =>
-                    setFxValues((current) => ({
-                      ...current,
-                      rateToDkk: event.target.value,
-                    }))
-                  }
-                />
-                <Input
-                  type="date"
-                  value={fxValues.effectiveDate}
-                  onChange={(event) =>
-                    setFxValues((current) => ({
-                      ...current,
-                      effectiveDate: event.target.value,
-                    }))
-                  }
-                />
-                <Input
-                  placeholder="ECB closing rate"
-                  value={fxValues.notes}
-                  onChange={(event) =>
-                    setFxValues((current) => ({
-                      ...current,
-                      notes: event.target.value,
-                    }))
-                  }
-                />
-                <div className="flex gap-2">
-                  <Button
-                    variant="outline"
-                    onClick={() => {
-                      void handleJsonSubmit(
-                        {
-                          year: activeYear,
-                          currency: fxValues.currency,
-                          rateToDkk: Number(fxValues.rateToDkk),
-                          effectiveDate: fxValues.effectiveDate,
-                          notes: fxValues.notes,
-                        },
-                        "/api/exchange-rates",
-                        "Exchange rate saved"
-                      )
-                    }}
-                  >
-                    Save FX Rate
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    onClick={() =>
-                      setFxValues({
-                        currency: "EUR",
-                        rateToDkk: "",
-                        effectiveDate: `${activeYear}-01-01`,
-                        notes: "",
-                      })
+          <TabsContent value="fx">
+            <Card className="brand-card">
+              <CardHeader>
+                <CardTitle>Exchange Rates</CardTitle>
+                <CardDescription>
+                  Maintain FX rates and review the full effective-date history used for conversions.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid gap-3">
+                  <select
+                    className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
+                    value={fxValues.currency}
+                    onChange={(event) =>
+                      setFxValues((current) => ({
+                        ...current,
+                        currency: event.target.value as "DKK" | "EUR" | "USD",
+                      }))
                     }
                   >
-                    Clear
-                  </Button>
-                </div>
-              </div>
-
-              <div className="space-y-4">
-                {exchangeRateHistoryByCurrency.map(({ currency, rates }) => (
-                  <div key={currency} className="space-y-2 rounded-lg border border-border p-3">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <div className="font-medium">{currency}</div>
-                        <div className="text-xs text-muted-foreground">
-                          {rates.length > 0
-                            ? `${rates.length} saved rate${rates.length === 1 ? "" : "s"}`
-                            : "No saved FX history yet"}
-                        </div>
-                      </div>
-                      {rates[0] ? (
-                        <div className="text-right text-sm">
-                          <div>Latest: 1 {currency} = {formatNumber(rates[0].rateToDkk)} DKK</div>
-                          <div className="text-xs text-muted-foreground">
-                            Effective {formatDate(rates[0].effectiveDate)}
-                          </div>
-                        </div>
-                      ) : null}
-                    </div>
-
-                    <div className="overflow-x-auto rounded-md border border-border">
-                      <Table>
-                        <TableHeader>
-                          <TableRow>
-                            <TableHead>Effective Date</TableHead>
-                            <TableHead>Rate</TableHead>
-                            <TableHead>Notes</TableHead>
-                            <TableHead className="w-[88px] text-right">Action</TableHead>
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {rates.map((rate, index) => (
-                            <TableRow key={`${rate.currency}-${rate.effectiveDate.toString()}`}>
-                              <TableCell>{formatDate(rate.effectiveDate)}</TableCell>
-                              <TableCell>1 {rate.currency} = {formatNumber(rate.rateToDkk)} DKK</TableCell>
-                              <TableCell className="text-muted-foreground">
-                                {rate.notes || (index === 0 ? "Latest configured rate" : "No notes")}
-                              </TableCell>
-                              <TableCell className="text-right">
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  onClick={() =>
-                                    setFxValues({
-                                      currency: rate.currency,
-                                      rateToDkk: String(rate.rateToDkk),
-                                      effectiveDate: toDateInputValue(rate.effectiveDate),
-                                      notes: rate.notes || "",
-                                    })
-                                  }
-                                >
-                                  Edit
-                                </Button>
-                              </TableCell>
-                            </TableRow>
-                          ))}
-                          {rates.length === 0 ? (
-                            <TableRow>
-                              <TableCell
-                                colSpan={4}
-                                className="py-6 text-center text-muted-foreground"
-                              >
-                                No FX history saved for {currency}.
-                              </TableCell>
-                            </TableRow>
-                          ) : null}
-                        </TableBody>
-                      </Table>
-                    </div>
-                  </div>
-                ))}
-
-                <div className="text-sm text-muted-foreground">
-                  DKK is treated as 1.00 automatically.
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card className="brand-card">
-            <CardHeader>
-              <CardTitle>Accrual Account Mapping</CardTitle>
-              <CardDescription>
-                Map current roster resource types to the finance account code used in accrual exports.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="grid gap-3">
-                <select
-                  className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
-                  value={accrualMappingValues.resourceType}
-                  onChange={(event) =>
-                    setAccrualMappingValues((current) => ({
-                      ...current,
-                      resourceType: event.target.value,
-                    }))
-                  }
-                >
-                  <option value="">Select resource type</option>
-                  {availableAccrualResourceTypes.map((resourceType) => (
-                    <option key={resourceType} value={resourceType}>
-                      {resourceType}
-                    </option>
-                  ))}
-                </select>
-                <Input
-                  placeholder="4800213"
-                  value={accrualMappingValues.accountCode}
-                  onChange={(event) =>
-                    setAccrualMappingValues((current) => ({
-                      ...current,
-                      accountCode: event.target.value,
-                    }))
-                  }
-                />
-                <Input
-                  placeholder="Optional notes"
-                  value={accrualMappingValues.notes}
-                  onChange={(event) =>
-                    setAccrualMappingValues((current) => ({
-                      ...current,
-                      notes: event.target.value,
-                    }))
-                  }
-                />
-                <div className="flex gap-2">
-                  <Button
-                    variant="outline"
-                    onClick={() => {
-                      void handleJsonSubmit(
-                        {
-                          id: editingAccrualMappingId,
-                          year: activeYear,
-                          resourceType: accrualMappingValues.resourceType,
-                          accountCode: accrualMappingValues.accountCode,
-                          notes: accrualMappingValues.notes,
-                        },
-                        "/api/accrual-account-mappings",
-                        editingAccrualMappingId
-                          ? "Accrual account mapping updated"
-                          : "Accrual account mapping saved"
-                      )
-                    }}
-                  >
-                    {editingAccrualMappingId ? "Update Mapping" : "Save Mapping"}
-                  </Button>
-                  <Button variant="ghost" onClick={resetAccrualMappingForm}>
-                    {editingAccrualMappingId ? "Cancel Edit" : "Clear"}
-                  </Button>
-                </div>
-              </div>
-
-              <div className="max-h-72 overflow-y-auto rounded-xl border">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Resource Type</TableHead>
-                      <TableHead>Account</TableHead>
-                      <TableHead>Notes</TableHead>
-                      <TableHead />
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {accrualAccountMappings.map((mapping) => (
-                      <TableRow key={mapping.id}>
-                        <TableCell>{mapping.resourceType}</TableCell>
-                        <TableCell>{mapping.accountCode}</TableCell>
-                        <TableCell>{mapping.notes || "No notes"}</TableCell>
-                        <TableCell className="text-right">
-                          <div className="flex justify-end gap-2">
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => {
-                                setEditingAccrualMappingId(mapping.id)
-                                setAccrualMappingValues({
-                                  resourceType: mapping.resourceType,
-                                  accountCode: mapping.accountCode,
-                                  notes: mapping.notes || "",
-                                })
-                              }}
-                            >
-                              Edit
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="text-red-600 hover:text-red-700"
-                              onClick={() => {
-                                setPendingAccrualMappingDelete(mapping)
-                              }}
-                            >
-                              Delete
-                            </Button>
-                          </div>
-                        </TableCell>
-                      </TableRow>
+                    {["EUR", "USD"].map((currency) => (
+                      <option key={currency} value={currency}>
+                        {currency}
+                      </option>
                     ))}
-                    {accrualAccountMappings.length === 0 ? (
-                      <TableRow>
-                        <TableCell colSpan={4} className="py-6 text-center text-muted-foreground">
-                          No accrual account mappings saved yet.
-                        </TableCell>
-                      </TableRow>
-                    ) : null}
-                  </TableBody>
-                </Table>
-              </div>
-            </CardContent>
-          </Card>
-        </section>
+                  </select>
+                  <Input
+                    placeholder="7.46"
+                    value={fxValues.rateToDkk}
+                    onChange={(event) =>
+                      setFxValues((current) => ({
+                        ...current,
+                        rateToDkk: event.target.value,
+                      }))
+                    }
+                  />
+                  <Input
+                    type="date"
+                    value={fxValues.effectiveDate}
+                    onChange={(event) =>
+                      setFxValues((current) => ({
+                        ...current,
+                        effectiveDate: event.target.value,
+                      }))
+                    }
+                  />
+                  <Input
+                    placeholder="ECB closing rate"
+                    value={fxValues.notes}
+                    onChange={(event) =>
+                      setFxValues((current) => ({
+                        ...current,
+                        notes: event.target.value,
+                      }))
+                    }
+                  />
+                  <div className="flex gap-2">
+                    <Button
+                      variant="outline"
+                      onClick={() => {
+                        void handleJsonSubmit(
+                          {
+                            year: activeYear,
+                            currency: fxValues.currency,
+                            rateToDkk: Number(fxValues.rateToDkk),
+                            effectiveDate: fxValues.effectiveDate,
+                            notes: fxValues.notes,
+                          },
+                          "/api/exchange-rates",
+                          "Exchange rate saved"
+                        )
+                      }}
+                    >
+                      Save FX Rate
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      onClick={() =>
+                        setFxValues({
+                          currency: "EUR",
+                          rateToDkk: "",
+                          effectiveDate: `${activeYear}-01-01`,
+                          notes: "",
+                        })
+                      }
+                    >
+                      Clear
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  {exchangeRateHistoryByCurrency.map(({ currency, rates }) => (
+                    <div key={currency} className="space-y-2 rounded-lg border border-border p-3">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <div className="font-medium">{currency}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {rates.length > 0
+                              ? `${rates.length} saved rate${rates.length === 1 ? "" : "s"}`
+                              : "No saved FX history yet"}
+                          </div>
+                        </div>
+                        {rates[0] ? (
+                          <div className="text-right text-sm">
+                            <div>Latest: 1 {currency} = {formatNumber(rates[0].rateToDkk)} DKK</div>
+                            <div className="text-xs text-muted-foreground">
+                              Effective {formatDate(rates[0].effectiveDate)}
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+
+                      <div className="overflow-x-auto rounded-md border border-border">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>Effective Date</TableHead>
+                              <TableHead>Rate</TableHead>
+                              <TableHead>Notes</TableHead>
+                              <TableHead className="w-[88px] text-right">Action</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {rates.map((rate, index) => (
+                              <TableRow key={`${rate.currency}-${rate.effectiveDate.toString()}`}>
+                                <TableCell>{formatDate(rate.effectiveDate)}</TableCell>
+                                <TableCell>1 {rate.currency} = {formatNumber(rate.rateToDkk)} DKK</TableCell>
+                                <TableCell className="text-muted-foreground">
+                                  {rate.notes || (index === 0 ? "Latest configured rate" : "No notes")}
+                                </TableCell>
+                                <TableCell className="text-right">
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() =>
+                                      setFxValues({
+                                        currency: rate.currency,
+                                        rateToDkk: String(rate.rateToDkk),
+                                        effectiveDate: toDateInputValue(rate.effectiveDate),
+                                        notes: rate.notes || "",
+                                      })
+                                    }
+                                  >
+                                    Edit
+                                  </Button>
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                            {rates.length === 0 ? (
+                              <TableRow>
+                                <TableCell
+                                  colSpan={4}
+                                  className="py-6 text-center text-muted-foreground"
+                                >
+                                  No FX history saved for {currency}.
+                                </TableCell>
+                              </TableRow>
+                            ) : null}
+                          </TableBody>
+                        </Table>
+                      </div>
+                    </div>
+                  ))}
+
+                  <div className="text-sm text-muted-foreground">
+                    DKK is treated as 1.00 automatically.
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        </Tabs>
       </main>
   )
 }

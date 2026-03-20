@@ -1,6 +1,7 @@
 import {
   ExternalActualSourceKind,
   ImportStatus,
+  SeatReferenceValueType,
   SeatSourceType,
 } from "@prisma/client"
 import { MONTH_NAMES } from "@/lib/finance/constants"
@@ -10,7 +11,11 @@ import { buildCostAssumptionLookup, deriveSeatMetrics } from "@/lib/finance/deri
 import type { SeatWithRelations } from "@/lib/finance/types"
 import { prisma } from "@/lib/prisma"
 import { parseCsv } from "@/lib/finance/csv"
-import { deriveTrackerSeatsForYear, updateTrackerSeat } from "@/lib/finance/queries"
+import {
+  deriveTrackerSeatsForYear,
+  updateTrackerSeat,
+  upsertSeatReferenceValue,
+} from "@/lib/finance/queries"
 
 type NormalizedRosterImportRow = {
   seatId: string
@@ -170,6 +175,17 @@ function hasAnyHeader(
 
 function normalizeValue(value: string | null | undefined) {
   return value?.trim().toLowerCase() ?? ""
+}
+
+function parseTeams(value: string | undefined) {
+  return Array.from(
+    new Set(
+      (value || "")
+        .split(",")
+        .map((team) => team.trim())
+        .filter(Boolean)
+    )
+  ).sort((left, right) => left.localeCompare(right))
 }
 
 function parseBoolean(value: string | undefined) {
@@ -1079,6 +1095,7 @@ export async function importDepartmentMappingsCsv(
       domain: csvHeaderValue(row, "Domain", "domain").trim(),
       subDomain: csvHeaderValue(row, "Sub-domain", "SubDomain", "subDomain").trim(),
       projectCode: csvHeaderValue(row, "Project Code", "Project code", "projectCode").trim(),
+      teams: parseTeams(csvHeaderValue(row, "Teams", "teams")),
       notes: csvHeaderValue(row, "Notes", "notes").trim(),
     }))
     .filter(
@@ -1086,7 +1103,8 @@ export async function importDepartmentMappingsCsv(
         row.sourceCode.length > 0 ||
         row.domain.length > 0 ||
         row.subDomain.length > 0 ||
-        row.projectCode.length > 0
+        row.projectCode.length > 0 ||
+        row.teams.length > 0
     )
 
   if (normalizedRows.length === 0) {
@@ -1102,12 +1120,35 @@ export async function importDepartmentMappingsCsv(
   }
 
   const uniqueRows = Array.from(
-    new Map(
-      normalizedRows.map((row) => [
-        `${normalizeValue(row.sourceCode)}::${normalizeValue(row.subDomain)}::${normalizeValue(row.projectCode)}`,
-        row,
-      ])
-    ).values()
+    normalizedRows.reduce<
+      Map<
+        string,
+        {
+          sourceCode: string
+          domain: string
+          subDomain: string
+          projectCode: string
+          teams: string[]
+          notes: string
+        }
+      >
+    >((map, row) => {
+      const key = `${normalizeValue(row.sourceCode)}::${normalizeValue(row.subDomain)}::${normalizeValue(row.projectCode)}`
+      const current = map.get(key)
+      if (!current) {
+        map.set(key, row)
+        return map
+      }
+
+      map.set(key, {
+        ...current,
+        teams: Array.from(new Set([...current.teams, ...row.teams])).sort((left, right) =>
+          left.localeCompare(right)
+        ),
+        notes: row.notes || current.notes,
+      })
+      return map
+    }, new Map()).values()
   )
   const existingMappings = await prisma.departmentMapping.findMany({
     where: {
@@ -1135,6 +1176,7 @@ export async function importDepartmentMappingsCsv(
           domain: row.domain,
           subDomain: row.subDomain,
           projectCode: row.projectCode,
+          teams: row.teams,
           notes: row.notes || null,
         },
         create: {
@@ -1144,6 +1186,7 @@ export async function importDepartmentMappingsCsv(
           domain: row.domain,
           subDomain: row.subDomain,
           projectCode: row.projectCode,
+          teams: row.teams,
           notes: row.notes || null,
         },
       })
@@ -1199,6 +1242,11 @@ export async function importDepartmentMappingsCsv(
             field: "projectCode",
             oldValue: before?.projectCode ?? null,
             newValue: row.projectCode,
+          },
+          {
+            field: "teams",
+            oldValue: before?.teams ?? [],
+            newValue: row.teams,
           },
           {
             field: "notes",
@@ -1333,6 +1381,14 @@ export async function importTrackerOverridesCsv(
         "Cost Center",
         "Project Code",
         "Resource Type",
+        "Team",
+        "Name",
+        "Description",
+        "Band",
+        "Location",
+        "Vendor",
+        "Manager",
+        "Daily Rate",
         "RITM",
         "SOW",
         "Spend Plan ID",
@@ -1366,6 +1422,14 @@ export async function importTrackerOverridesCsv(
       "Cost Center",
       "Project Code",
       "Resource Type",
+      "Team",
+      "Name",
+      "Description",
+      "Band",
+      "Location",
+      "Vendor",
+      "Manager",
+      "Daily Rate",
       "RITM",
       "SOW",
       "Spend Plan ID",
@@ -1417,6 +1481,16 @@ export async function importTrackerOverridesCsv(
           costCenter: hasField("Cost Center", "costCenter") ? csvHeaderValue(row, "Cost Center", "costCenter").trim() || null : undefined,
           projectCode: hasField("Project Code", "projectCode") ? csvHeaderValue(row, "Project Code", "projectCode").trim() || null : undefined,
           resourceType: hasField("Resource Type", "resourceType") ? csvHeaderValue(row, "Resource Type", "resourceType").trim() || null : undefined,
+          team: hasField("Team", "team") ? csvHeaderValue(row, "Team", "team").trim() || null : undefined,
+          inSeat: hasField("Name", "name", "inSeat") ? csvHeaderValue(row, "Name", "name", "inSeat").trim() || null : undefined,
+          description: hasField("Description", "description") ? csvHeaderValue(row, "Description", "description").trim() || null : undefined,
+          band: hasField("Band", "band") ? csvHeaderValue(row, "Band", "band").trim() || null : undefined,
+          location: hasField("Location", "location") ? csvHeaderValue(row, "Location", "location").trim() || null : undefined,
+          vendor: hasField("Vendor", "vendor") ? csvHeaderValue(row, "Vendor", "vendor").trim() || null : undefined,
+          manager: hasField("Manager", "manager") ? csvHeaderValue(row, "Manager", "manager").trim() || null : undefined,
+          dailyRate: hasField("Daily Rate", "dailyRate")
+            ? parseNumber(csvHeaderValue(row, "Daily Rate", "dailyRate"))
+            : undefined,
           ritm: hasField("RITM", "ritm") ? csvHeaderValue(row, "RITM", "ritm").trim() || null : undefined,
           sow: hasField("SOW", "sow") ? csvHeaderValue(row, "SOW", "sow").trim() || null : undefined,
           spendPlanId: hasField("Spend Plan ID", "spendPlanId") ? csvHeaderValue(row, "Spend Plan ID", "spendPlanId").trim() || null : undefined,
@@ -1432,6 +1506,50 @@ export async function importTrackerOverridesCsv(
   }
 
   return { importedCount: normalizedRows.length }
+}
+
+export async function importSeatReferenceValuesCsv(
+  year: number,
+  type: SeatReferenceValueType,
+  content: string,
+  actor?: AuditActor
+) {
+  const rows = parseCsv(content)
+  if (rows.length === 0) {
+    throw new Error("Reference value file is empty.")
+  }
+
+  requireAnyHeader(rows, [
+    {
+      label: "Value",
+      headers: ["Value", "value"],
+    },
+  ])
+
+  const values = Array.from(
+    new Set(
+      rows
+        .map((row) => csvHeaderValue(row, "Value", "value").trim())
+        .filter((value) => value.length > 0)
+    )
+  )
+
+  if (values.length === 0) {
+    throw new Error("Reference value file does not contain any importable rows.")
+  }
+
+  for (const value of values) {
+    await upsertSeatReferenceValue(
+      {
+        year,
+        type,
+        value,
+      },
+      actor
+    )
+  }
+
+  return { importedCount: values.length }
 }
 
 export async function importCostAssumptionsCsv(

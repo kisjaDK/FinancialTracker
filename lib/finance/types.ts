@@ -2,6 +2,7 @@ import type {
   BudgetArea,
   CostAssumption,
   CurrencyCode,
+  SeatReferenceValueType,
   SeatMonth,
   StaffingTargetScopeLevel,
   StatusDefinition,
@@ -77,6 +78,7 @@ export type DepartmentMappingView = {
   domain: string
   subDomain: string
   projectCode: string
+  teams: string[]
   notes: string | null
 }
 
@@ -153,6 +155,7 @@ export type PeopleRosterFilters = {
 export type PeopleRosterView = {
   id: string
   trackerSeatId: string | null
+  sourceType: "ROSTER" | "MANUAL"
   importFileName: string
   seatId: string
   budgetAreaId: string | null
@@ -185,6 +188,12 @@ export type PeopleRosterView = {
   effectiveStartDate: Date | null
   effectiveEndDate: Date | null
   importError: string | null
+}
+
+export type SeatReferenceValueView = {
+  id: string
+  type: SeatReferenceValueType
+  value: string
 }
 
 export type ExternalActualImportFilters = {

@@ -1,6 +1,6 @@
 import { PrismaClient } from "@prisma/client"
 
-const PRISMA_SCHEMA_VERSION = "2026-03-18-service-users-v1"
+const PRISMA_SCHEMA_VERSION = "2026-03-20-department-mapping-teams-v1"
 
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined
@@ -24,7 +24,8 @@ const supportsFinanceModels =
   "serviceUser" in cachedPrisma &&
   "serviceApiKey" in cachedPrisma &&
   "featureRequest" in cachedPrisma &&
-  "featureRequestVote" in cachedPrisma
+  "featureRequestVote" in cachedPrisma &&
+  "seatReferenceValue" in cachedPrisma
 const isMatchingSchemaVersion =
   globalForPrisma.prismaSchemaVersion === PRISMA_SCHEMA_VERSION
 
@@ -56,7 +57,8 @@ export function getPrismaClient() {
     "serviceUser" in globalPrisma &&
     "serviceApiKey" in globalPrisma &&
     "featureRequest" in globalPrisma &&
-    "featureRequestVote" in globalPrisma
+    "featureRequestVote" in globalPrisma &&
+    "seatReferenceValue" in globalPrisma
   const globalMatchesSchemaVersion =
     globalForPrisma.prismaSchemaVersion === PRISMA_SCHEMA_VERSION
 

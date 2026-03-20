@@ -83,13 +83,14 @@ export default async function PeopleRosterPage({ searchParams }: PageProps) {
         filterOptions={data.filterOptions}
         people={data.people}
         totals={data.totals}
-        rosterImports={data.rosterImports}
         budgetAreas={data.budgetAreas.map((area) => ({
           ...area,
           displayName:
             area.displayName ||
             `${area.subDomain || area.pillar || area.projectCode} · ${area.costCenter}`,
         }))}
+        departmentMappings={data.departmentMappings}
+        seatReferenceValues={data.seatReferenceValues}
       />
     </FinanceAppShell>
   );

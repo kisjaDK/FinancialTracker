@@ -95,12 +95,6 @@ export const FINANCE_NAV_ITEMS: FinanceNavItem[] = [
     icon: Users,
   },
   {
-    href: "/internal-costs",
-    label: "Internal Costs",
-    minimumRole: "ADMIN",
-    icon: Database,
-  },
-  {
     href: "/audit-log",
     label: "Audit Log",
     minimumRole: "MEMBER",
@@ -120,6 +114,12 @@ export const FINANCE_ADMIN_NAV_ITEMS: FinanceNavItem[] = [
     label: "Admin Home",
     minimumRole: "ADMIN",
     icon: Settings2,
+  },
+  {
+    href: "/internal-costs",
+    label: "Internal Costs",
+    minimumRole: "ADMIN",
+    icon: Database,
   },
   {
     href: "/user-admin",
