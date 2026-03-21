@@ -14,6 +14,7 @@ import {
 } from "@/lib/finance/currency"
 import {
   buildStaffingOverviewRows,
+  parsePastedInvoiceAmount,
   resolveActualsScopeSelection,
   resolveRosterSeatAssignment,
   shouldHideForecastSeatForInactiveStatus,
@@ -83,6 +84,16 @@ test("parseDate supports roster timestamps with dot-separated time values", () =
   assert.equal(parsed?.getFullYear(), 2026)
   assert.equal(parsed?.getMonth(), 0)
   assert.equal(parsed?.getDate(), 31)
+})
+
+test("parsePastedInvoiceAmount preserves dot decimals in pasted invoice totals", () => {
+  assert.equal(parsePastedInvoiceAmount("41185.22"), 41185.22)
+  assert.equal(parsePastedInvoiceAmount("51,481.53"), 51481.53)
+})
+
+test("parsePastedInvoiceAmount supports European thousands and decimal separators", () => {
+  assert.equal(parsePastedInvoiceAmount("41.185,22"), 41185.22)
+  assert.equal(parsePastedInvoiceAmount("51 481,53"), 51481.53)
 })
 
 test("normalizeRosterVendor lets internal resource type override conflicting vendor", () => {

@@ -13,7 +13,10 @@ export async function POST(request: Request) {
     const seats = await searchExternalSeatsByName(
       {
         year: Number(body.year),
-        query: String(body.query || ""),
+        query: body.query ? String(body.query) : undefined,
+        seatId: body.seatId ? String(body.seatId) : undefined,
+        name: body.name ? String(body.name) : undefined,
+        spendPlanId: body.spendPlanId ? String(body.spendPlanId) : undefined,
       },
       viewer
     )

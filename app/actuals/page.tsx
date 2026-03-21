@@ -73,6 +73,7 @@ export default async function ActualsPage({ searchParams }: PageProps) {
         selectedAreaId={internalData.selectedAreaId}
         summary={internalData.summary}
         seats={internalData.seats}
+        vendorOptions={internalData.vendorOptions}
         statusDefinitions={internalData.statusDefinitions}
         internalActualsMessage={internalData.internalActualsMessage}
         filters={externalData.filters}

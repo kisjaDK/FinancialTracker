@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState, useTransition } from "react"
 import Link from "next/link"
 import { useRouter, useSearchParams } from "next/navigation"
-import { PenLine } from "lucide-react"
+import { Check, ChevronsUpDown, PenLine } from "lucide-react"
 import { toast } from "sonner"
 import { GuidanceHover } from "@/components/finance/guidance-hover"
 import { FinancePageIntro } from "@/components/finance/page-intro"
@@ -32,8 +32,17 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import {
   Table,
   TableBody,
@@ -50,6 +59,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
+import { cn } from "@/lib/utils"
 
 type TrackingYearOption = {
   id: string
@@ -166,6 +176,8 @@ type ExternalActualNameSearchResult = {
   allocation: number
 }
 
+type ManualSearchField = "spendPlan" | "seatId" | "name"
+
 type ActualsBrowserProps = {
   userEmail: string
   activeYear: number
@@ -173,6 +185,7 @@ type ActualsBrowserProps = {
   selectedAreaId: string | null
   summary: SummaryRow[]
   seats: SeatRow[]
+  vendorOptions: string[]
   statusDefinitions: {
     id: string
     label: string
@@ -225,6 +238,34 @@ function formatDate(value: Date) {
   }).format(new Date(value))
 }
 
+function splitAmountByWeights(amount: number, weights: number[]) {
+  if (weights.length === 0) {
+    return []
+  }
+
+  const totalWeight = weights.reduce((sum, weight) => sum + weight, 0)
+  if (totalWeight <= 0) {
+    return weights.map(() => 0)
+  }
+
+  const rawShares = weights.map((weight) => (amount * weight) / totalWeight)
+  const roundedShares = rawShares.map((share) => Math.round(share * 100) / 100)
+  const roundedTotal = roundedShares.reduce((sum, share) => sum + share, 0)
+  const remainder = Math.round((amount - roundedTotal) * 100) / 100
+
+  if (Math.abs(remainder) >= 0.01) {
+    const targetIndex = weights.reduce(
+      (bestIndex, weight, index, collection) =>
+        weight > collection[bestIndex] ? index : bestIndex,
+      0
+    )
+    roundedShares[targetIndex] =
+      Math.round((roundedShares[targetIndex] + remainder) * 100) / 100
+  }
+
+  return roundedShares
+}
+
 function normalizeValue(value: string | null | undefined) {
   return value?.trim().toLowerCase() ?? ""
 }
@@ -249,6 +290,7 @@ export function ActualsBrowser({
   selectedAreaId,
   summary,
   seats,
+  vendorOptions,
   statusDefinitions,
   internalActualsMessage,
   filters,
@@ -259,6 +301,11 @@ export function ActualsBrowser({
 }: ActualsBrowserProps) {
   const router = useRouter()
   const searchParams = useSearchParams()
+  const requestedExternalEntryMode = searchParams.get("externalMode")
+  const initialExternalEntryMode: "csv" | "manual" | "paste" =
+    requestedExternalEntryMode === "manual" || requestedExternalEntryMode === "paste"
+      ? requestedExternalEntryMode
+      : "csv"
   const [isPending, startTransition] = useTransition()
   const [isImporting, startImportTransition] = useTransition()
   const [isSubmittingExternal, startExternalSubmitTransition] = useTransition()
@@ -278,14 +325,33 @@ export function ActualsBrowser({
   const [selectedYear, setSelectedYear] = useState(String(activeYear))
   const [selectedImportYear, setSelectedImportYear] = useState(String(activeYear))
   const [selectedExternalMonth, setSelectedExternalMonth] = useState(String(new Date().getMonth()))
-  const [externalEntryMode, setExternalEntryMode] = useState<"csv" | "manual" | "paste">("csv")
+  const [externalEntryMode, setExternalEntryMode] = useState<"csv" | "manual" | "paste">(
+    initialExternalEntryMode
+  )
   const [fileInput, setFileInput] = useState<File | null>(null)
   const [manualSpendPlanId, setManualSpendPlanId] = useState("")
+  const [manualSeatIdQuery, setManualSeatIdQuery] = useState("")
+  const [manualNameQuery, setManualNameQuery] = useState("")
+  const [manualSeatSearchResults, setManualSeatSearchResults] = useState<
+    ExternalActualNameSearchResult[]
+  >([])
+  const [manualSeatSearchLoading, setManualSeatSearchLoading] = useState(false)
+  const [activeManualSearchField, setActiveManualSearchField] = useState<ManualSearchField | null>(
+    null
+  )
+  const [manualSelectedSeats, setManualSelectedSeats] = useState<
+    ExternalActualNameSearchResult[]
+  >([])
   const [manualAmount, setManualAmount] = useState("")
   const [manualCurrency, setManualCurrency] = useState<"DKK" | "EUR" | "USD">("DKK")
   const [manualInvoiceNumber, setManualInvoiceNumber] = useState("")
   const [manualSupplierName, setManualSupplierName] = useState("")
+  const [manualSupplierTypeaheadOpen, setManualSupplierTypeaheadOpen] = useState(false)
   const [manualDescription, setManualDescription] = useState("")
+  const [manualDkkPreview, setManualDkkPreview] = useState<{
+    totalDkk: number
+    rateToDkk: number
+  } | null>(null)
   const [cloudActualAmount, setCloudActualAmount] = useState("")
   const [pastedInvoiceContent, setPastedInvoiceContent] = useState("")
   const [pastePreviewDialogOpen, setPastePreviewDialogOpen] = useState(false)
@@ -366,6 +432,15 @@ export function ActualsBrowser({
     : selectedScopeLabel
   const selectedMonthIndex = Number(selectedMonth)
   const selectedCloudForecast = selectedArea?.cloudCostMonthlyForecast?.[selectedMonthIndex] ?? 0
+  const manualAmountValue = manualAmount.trim() ? Number(manualAmount) : 0
+  const manualSelectedSeatIds = manualSelectedSeats.map((seat) => seat.trackerSeatId)
+  const manualSeatAllocationShares = splitAmountByWeights(
+    Number.isFinite(manualAmountValue) ? manualAmountValue : 0,
+    manualSelectedSeats.map((seat) => seat.allocation)
+  )
+  const manualSearchDropdownOpen =
+    activeManualSearchField !== null &&
+    (manualSeatSearchLoading || manualSeatSearchResults.length > 0)
   const enteredCloudActualAmount = cloudActualAmount.trim() ? Number(cloudActualAmount) : null
   const cloudActualMonths =
     selectedArea?.cloudCostMonthlyActuals?.map((actual, monthIndex) => ({
@@ -465,6 +540,87 @@ export function ActualsBrowser({
     setCloudActualAmount(formatCloudActualInputValue(monthlyActuals[resolvedMonthIndex] ?? 0))
   }, [activeView, selectedArea?.id, selectedArea?.cloudCostMonthlyActuals])
 
+  useEffect(() => {
+    if (!activeManualSearchField) {
+      setManualSeatSearchResults([])
+      setManualSeatSearchLoading(false)
+      return
+    }
+
+    if (
+      !manualSpendPlanId.trim() &&
+      !manualSeatIdQuery.trim() &&
+      !manualNameQuery.trim()
+    ) {
+      setManualSeatSearchResults([])
+      setManualSeatSearchLoading(false)
+      return
+    }
+
+    const timeoutId = window.setTimeout(async () => {
+      setManualSeatSearchLoading(true)
+
+      try {
+        const response = (await fetchJson("/api/external-actuals/search-seats", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            year: Number(selectedImportYear),
+            spendPlanId: manualSpendPlanId || undefined,
+            seatId: manualSeatIdQuery || undefined,
+            name: manualNameQuery || undefined,
+          }),
+        })) as { seats: ExternalActualNameSearchResult[] }
+
+        setManualSeatSearchResults(response.seats)
+      } catch {
+        setManualSeatSearchResults([])
+      } finally {
+        setManualSeatSearchLoading(false)
+      }
+    }, 180)
+
+    return () => window.clearTimeout(timeoutId)
+  }, [
+    activeManualSearchField,
+    manualNameQuery,
+    manualSeatIdQuery,
+    manualSpendPlanId,
+    selectedImportYear,
+  ])
+
+  useEffect(() => {
+    if (manualCurrency === "DKK" || !manualAmount.trim() || !Number.isFinite(manualAmountValue)) {
+      setManualDkkPreview(null)
+      return
+    }
+
+    const timeoutId = window.setTimeout(async () => {
+      try {
+        const response = (await fetchJson("/api/external-actuals/manual-preview", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            year: Number(selectedImportYear),
+            monthIndex: Number(selectedExternalMonth),
+            amount: manualAmountValue,
+            currency: manualCurrency,
+          }),
+        })) as { preview: { totalDkk: number; rateToDkk: number } }
+
+        setManualDkkPreview(response.preview)
+      } catch {
+        setManualDkkPreview(null)
+      }
+    }, 180)
+
+    return () => window.clearTimeout(timeoutId)
+  }, [manualAmount, manualAmountValue, manualCurrency, selectedExternalMonth, selectedImportYear])
+
   function updateParams(next: Record<string, string | null>) {
     const params = new URLSearchParams(searchParams.toString())
     Object.entries(next).forEach(([key, value]) => {
@@ -541,10 +697,14 @@ export function ActualsBrowser({
     }
   }
 
-  function buildExternalViewUrl(yearValue: string) {
+  function buildExternalViewUrl(
+    yearValue: string,
+    entryMode: "csv" | "manual" | "paste" = externalEntryMode
+  ) {
     const nextUrl = new URLSearchParams()
     nextUrl.set("year", yearValue)
     nextUrl.set("view", "external")
+    nextUrl.set("externalMode", entryMode)
     if (selectedDomain) {
       nextUrl.set("domain", selectedDomain)
     }
@@ -555,6 +715,14 @@ export function ActualsBrowser({
       nextUrl.set("projectCode", selectedProjectCode)
     }
     return `/actuals?${nextUrl.toString()}`
+  }
+
+  function refreshExternalView(
+    yearValue: string,
+    entryMode: "csv" | "manual" | "paste" = externalEntryMode
+  ) {
+    router.replace(buildExternalViewUrl(yearValue, entryMode), { scroll: false })
+    router.refresh()
   }
 
   async function saveSeatMonth() {
@@ -752,7 +920,7 @@ export function ActualsBrowser({
         }
 
         toast.success(`Imported ${fileInput.name}`)
-        window.location.href = buildExternalViewUrl(selectedImportYear)
+        refreshExternalView(selectedImportYear)
       } catch (error) {
         toast.error(error instanceof Error ? error.message : "Import failed")
       }
@@ -760,6 +928,11 @@ export function ActualsBrowser({
   }
 
   function handleManualExternalActualSubmit() {
+    if (!manualSpendPlanId.trim() && manualSelectedSeatIds.length === 0) {
+      toast.error("Enter a spend plan ID or select at least one matching seat.")
+      return
+    }
+
     startExternalSubmitTransition(async () => {
       try {
         await fetchJson("/api/external-actuals/manual", {
@@ -770,7 +943,8 @@ export function ActualsBrowser({
           body: JSON.stringify({
             year: Number(selectedImportYear),
             monthIndex: Number(selectedExternalMonth),
-            spendPlanId: manualSpendPlanId,
+            spendPlanId: manualSpendPlanId || null,
+            trackerSeatIds: manualSelectedSeatIds,
             amount: Number(manualAmount),
             currency: manualCurrency,
             invoiceNumber: manualInvoiceNumber || null,
@@ -780,11 +954,36 @@ export function ActualsBrowser({
         })
 
         toast.success("Saved manual external actual")
-        window.location.href = buildExternalViewUrl(selectedImportYear)
+        refreshExternalView(selectedImportYear)
       } catch (error) {
         toast.error(error instanceof Error ? error.message : "Manual external actual failed")
       }
     })
+  }
+
+  function toggleManualSelectedSeat(seat: ExternalActualNameSearchResult, checked: CheckedState) {
+    setManualSelectedSeats((current) =>
+      checked === true
+        ? current.some((entry) => entry.trackerSeatId === seat.trackerSeatId)
+          ? current
+          : [...current, seat]
+        : current.filter((entry) => entry.trackerSeatId !== seat.trackerSeatId)
+    )
+  }
+
+  function selectManualSeatSuggestion(
+    seat: ExternalActualNameSearchResult,
+    field: ManualSearchField
+  ) {
+    toggleManualSelectedSeat(seat, true)
+
+    if (field === "seatId") {
+      setManualSpendPlanId("")
+      setManualSeatIdQuery("")
+      setManualNameQuery("")
+      setManualSeatSearchResults([])
+      setActiveManualSearchField(null)
+    }
   }
 
   async function fetchPastedInvoicePreview(monthIndex?: number) {
@@ -937,11 +1136,12 @@ export function ActualsBrowser({
         toast.success("Saved pasted invoice actual")
         setPastePreviewDialogOpen(false)
         setPastedInvoicePreview(null)
+        setPastedInvoiceContent("")
         setSelectedPastedReviewMonth("")
         setNameSearchQuery("")
         setNameSearchResults([])
         setSelectedSeatIdsForSpendPlanMapping([])
-        window.location.href = buildExternalViewUrl(selectedImportYear)
+        refreshExternalView(selectedImportYear, "paste")
       } catch (error) {
         toast.error(error instanceof Error ? error.message : "Pasted external actual failed")
       }
@@ -2416,15 +2616,214 @@ export function ActualsBrowser({
                       ))}
                     </select>
                   </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="manual-spend-plan">Spend Plan ID</Label>
-                    <Input
-                      id="manual-spend-plan"
-                      value={manualSpendPlanId}
-                      onChange={(event) => setManualSpendPlanId(event.target.value)}
-                      placeholder="63072"
-                    />
+                  <div className="space-y-2 md:col-span-2">
+                    <Label>Seat Match Search</Label>
+                    <div className="grid gap-3 md:grid-cols-[1fr_1fr_1fr_auto]">
+                      <div className="relative">
+                        <Input
+                          id="manual-spend-plan"
+                          value={manualSpendPlanId}
+                          onFocus={() => setActiveManualSearchField("spendPlan")}
+                          onBlur={() =>
+                            window.setTimeout(() => {
+                              setActiveManualSearchField((current) =>
+                                current === "spendPlan" ? null : current
+                              )
+                            }, 120)
+                          }
+                          onChange={(event) => setManualSpendPlanId(event.target.value)}
+                          placeholder="Spend Plan ID"
+                        />
+                        {activeManualSearchField === "spendPlan" && manualSearchDropdownOpen ? (
+                          <div className="absolute z-20 mt-2 max-h-72 w-full overflow-y-auto rounded-md border border-border bg-popover shadow-md">
+                            {manualSeatSearchLoading ? (
+                              <div className="px-3 py-2 text-sm text-muted-foreground">
+                                Searching seats...
+                              </div>
+                            ) : (
+                              manualSeatSearchResults.map((seat) => (
+                                <button
+                                  key={seat.trackerSeatId}
+                                  type="button"
+                                  className="flex w-full items-start justify-between gap-3 px-3 py-2 text-left hover:bg-muted"
+                                  onMouseDown={(event) => event.preventDefault()}
+                                  onClick={() => selectManualSeatSuggestion(seat, "spendPlan")}
+                                >
+                                  <div>
+                                    <div className="font-medium">
+                                      {seat.spendPlanId || "No spend plan"}
+                                    </div>
+                                    <div className="text-xs text-muted-foreground">
+                                      {seat.inSeat || "Unassigned"} · {seat.seatId}
+                                    </div>
+                                  </div>
+                                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                    {manualSelectedSeatIds.includes(seat.trackerSeatId) ? (
+                                      <Check className="size-3.5 text-foreground" />
+                                    ) : null}
+                                    {formatFteAsPercent(seat.allocation)}
+                                  </div>
+                                </button>
+                              ))
+                            )}
+                          </div>
+                        ) : null}
+                      </div>
+                      <div className="relative">
+                        <Input
+                          id="manual-seat-id"
+                          value={manualSeatIdQuery}
+                          onFocus={() => setActiveManualSearchField("seatId")}
+                          onBlur={() =>
+                            window.setTimeout(() => {
+                              setActiveManualSearchField((current) =>
+                                current === "seatId" ? null : current
+                              )
+                            }, 120)
+                          }
+                          onChange={(event) => setManualSeatIdQuery(event.target.value)}
+                          placeholder="Seat ID"
+                        />
+                        {activeManualSearchField === "seatId" && manualSearchDropdownOpen ? (
+                          <div className="absolute z-20 mt-2 max-h-72 w-full overflow-y-auto rounded-md border border-border bg-popover shadow-md">
+                            {manualSeatSearchLoading ? (
+                              <div className="px-3 py-2 text-sm text-muted-foreground">
+                                Searching seats...
+                              </div>
+                            ) : (
+                              manualSeatSearchResults.map((seat) => (
+                                <button
+                                  key={seat.trackerSeatId}
+                                  type="button"
+                                  className="flex w-full items-start justify-between gap-3 px-3 py-2 text-left hover:bg-muted"
+                                  onMouseDown={(event) => event.preventDefault()}
+                                  onClick={() => selectManualSeatSuggestion(seat, "seatId")}
+                                >
+                                  <div>
+                                    <div className="font-medium">{seat.seatId}</div>
+                                    <div className="text-xs text-muted-foreground">
+                                      {seat.inSeat || "Unassigned"} · {seat.spendPlanId || "No spend plan"}
+                                    </div>
+                                  </div>
+                                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                    {manualSelectedSeatIds.includes(seat.trackerSeatId) ? (
+                                      <Check className="size-3.5 text-foreground" />
+                                    ) : null}
+                                    {formatFteAsPercent(seat.allocation)}
+                                  </div>
+                                </button>
+                              ))
+                            )}
+                          </div>
+                        ) : null}
+                      </div>
+                      <div className="relative">
+                        <Input
+                          id="manual-seat-name"
+                          value={manualNameQuery}
+                          onFocus={() => setActiveManualSearchField("name")}
+                          onBlur={() =>
+                            window.setTimeout(() => {
+                              setActiveManualSearchField((current) =>
+                                current === "name" ? null : current
+                              )
+                            }, 120)
+                          }
+                          onChange={(event) => setManualNameQuery(event.target.value)}
+                          placeholder="Name"
+                        />
+                        {activeManualSearchField === "name" && manualSearchDropdownOpen ? (
+                          <div className="absolute z-20 mt-2 max-h-72 w-full overflow-y-auto rounded-md border border-border bg-popover shadow-md">
+                            {manualSeatSearchLoading ? (
+                              <div className="px-3 py-2 text-sm text-muted-foreground">
+                                Searching seats...
+                              </div>
+                            ) : (
+                              manualSeatSearchResults.map((seat) => (
+                                <button
+                                  key={seat.trackerSeatId}
+                                  type="button"
+                                  className="flex w-full items-start justify-between gap-3 px-3 py-2 text-left hover:bg-muted"
+                                  onMouseDown={(event) => event.preventDefault()}
+                                  onClick={() => selectManualSeatSuggestion(seat, "name")}
+                                >
+                                  <div>
+                                    <div className="font-medium">
+                                      {seat.inSeat || "Unassigned"}
+                                    </div>
+                                    <div className="text-xs text-muted-foreground">
+                                      {seat.spendPlanId || "No spend plan"} · {seat.seatId}
+                                    </div>
+                                  </div>
+                                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                    {manualSelectedSeatIds.includes(seat.trackerSeatId) ? (
+                                      <Check className="size-3.5 text-foreground" />
+                                    ) : null}
+                                    {formatFteAsPercent(seat.allocation)}
+                                  </div>
+                                </button>
+                              ))
+                            )}
+                          </div>
+                        ) : null}
+                      </div>
+                      <div className="flex items-center text-xs text-muted-foreground">
+                        Select from any field
+                      </div>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Type in any field to search seats. Selecting a suggestion adds that seat to
+                      the invoice split.
+                    </p>
                   </div>
+                  {manualSelectedSeats.length > 0 ? (
+                    <div className="space-y-3 md:col-span-2">
+                      <div className="rounded-lg border border-border/70 p-4">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <div className="font-medium">Chosen Seats</div>
+                            <div className="text-xs text-muted-foreground">
+                              Selected seats will receive allocation-weighted shares of the entered
+                              amount.
+                            </div>
+                          </div>
+                          <Badge variant="secondary">{manualSelectedSeats.length} selected</Badge>
+                        </div>
+                        <div className="mt-3 space-y-2">
+                          {manualSelectedSeats.map((seat, index) => (
+                            <div
+                              key={seat.trackerSeatId}
+                              className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border/60 px-3 py-2"
+                            >
+                              <div>
+                                <div className="font-medium">
+                                  {seat.seatId} · {seat.inSeat || "Unassigned"}
+                                </div>
+                                <div className="text-xs text-muted-foreground">
+                                  {seat.team || "No team"} · {seat.spendPlanId || "No spend plan"} · Alloc {formatFteAsPercent(seat.allocation)}
+                                  {manualAmount.trim() ? (
+                                    <>
+                                      {" "}
+                                      · Share {formatNumber(manualSeatAllocationShares[index] ?? 0)}{" "}
+                                      {manualCurrency}
+                                    </>
+                                  ) : null}
+                                </div>
+                              </div>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => toggleManualSelectedSeat(seat, false)}
+                              >
+                                Remove
+                              </Button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
                   <div className="space-y-2">
                     <Label htmlFor="manual-amount">Amount</Label>
                     <Input
@@ -2435,6 +2834,11 @@ export function ActualsBrowser({
                       onChange={(event) => setManualAmount(event.target.value)}
                       placeholder="128480"
                     />
+                    {manualCurrency !== "DKK" && manualDkkPreview ? (
+                      <div className="text-xs text-muted-foreground">
+                        {formatCurrency(manualDkkPreview.totalDkk)} DKK at {formatNumber(manualDkkPreview.rateToDkk)}
+                      </div>
+                    ) : null}
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="manual-currency">Currency</Label>
@@ -2454,21 +2858,87 @@ export function ActualsBrowser({
                     </select>
                   </div>
                   <div className="space-y-2">
+                    <Label htmlFor="manual-supplier-name">Supplier Name</Label>
+                    <Popover
+                      open={manualSupplierTypeaheadOpen}
+                      onOpenChange={setManualSupplierTypeaheadOpen}
+                    >
+                      <PopoverTrigger asChild>
+                        <Button
+                          id="manual-supplier-name"
+                          variant="outline"
+                          role="combobox"
+                          aria-expanded={manualSupplierTypeaheadOpen}
+                          className="w-full justify-between font-normal"
+                        >
+                          <span
+                            className={cn(
+                              "truncate text-left",
+                              !manualSupplierName && "text-muted-foreground"
+                            )}
+                          >
+                            {manualSupplierName || "Select supplier"}
+                          </span>
+                          <ChevronsUpDown className="ml-2 size-4 shrink-0 opacity-50" />
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent
+                        className="w-(--radix-popover-trigger-width) p-0"
+                        align="start"
+                      >
+                        <Command>
+                          <CommandInput placeholder="Search supplier..." />
+                          <CommandList>
+                            <CommandEmpty>No supplier found.</CommandEmpty>
+                            <CommandGroup>
+                              <CommandItem
+                                value="__empty__"
+                                onSelect={() => {
+                                  setManualSupplierName("")
+                                  setManualSupplierTypeaheadOpen(false)
+                                }}
+                              >
+                                <span className="text-muted-foreground">Select supplier</span>
+                                <Check
+                                  className={cn(
+                                    "ml-auto size-4",
+                                    !manualSupplierName ? "opacity-100" : "opacity-0"
+                                  )}
+                                />
+                              </CommandItem>
+                              {vendorOptions.map((vendor) => (
+                                <CommandItem
+                                  key={vendor}
+                                  value={vendor}
+                                  onSelect={() => {
+                                    setManualSupplierName(vendor)
+                                    setManualSupplierTypeaheadOpen(false)
+                                  }}
+                                >
+                                  <span className="truncate">{vendor}</span>
+                                  <Check
+                                    className={cn(
+                                      "ml-auto size-4",
+                                      manualSupplierName === vendor
+                                        ? "opacity-100"
+                                        : "opacity-0"
+                                    )}
+                                  />
+                                </CommandItem>
+                              ))}
+                            </CommandGroup>
+                          </CommandList>
+                        </Command>
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+                  <div className="space-y-2">
                     <Label htmlFor="manual-invoice-number">Invoice Number</Label>
                     <Input
                       id="manual-invoice-number"
                       value={manualInvoiceNumber}
                       onChange={(event) => setManualInvoiceNumber(event.target.value)}
                       placeholder="DENI226002586"
-                    />
-                  </div>
-                  <div className="space-y-2 md:col-span-2">
-                    <Label htmlFor="manual-supplier-name">Supplier Name</Label>
-                    <Input
-                      id="manual-supplier-name"
-                      value={manualSupplierName}
-                      onChange={(event) => setManualSupplierName(event.target.value)}
-                      placeholder="Tata Consultancy Services Ltd."
                     />
                   </div>
                   <div className="space-y-2 md:col-span-2">

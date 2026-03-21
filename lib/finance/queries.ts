@@ -1460,6 +1460,7 @@ export async function getFinanceWorkspaceData(
   const trackingYear = await getOrCreateTrackingYear(activeYear)
   await ensureFreshTrackerDerivation(activeYear)
   const statusDefinitions = await ensureStatusDefinitions(activeYear)
+  const seatReferenceValues = await getSeatReferenceValues(activeYear)
   const snapshot = await loadTrackerYearSnapshot(trackingYear.id, {
     includeBudgetMovements: true,
     seatOrderBy: [{ team: "asc" }, { inSeat: "asc" }],
@@ -1632,6 +1633,10 @@ export async function getFinanceWorkspaceData(
     summary,
     seats,
     internalActualsMessage: internalActualsMessage?.content ?? null,
+    vendorOptions: seatReferenceValues
+      .filter((value) => value.type === "VENDOR")
+      .map((value) => value.value)
+      .sort((left, right) => left.localeCompare(right)),
     budgetAreas: scopedBudgetAreas,
     selectedAreaId: effectiveAreaId,
     statusDefinitions,
@@ -2558,6 +2563,7 @@ type ExternalActualSpendPlanMatch = {
   team: string | null
   inSeat: string | null
   description: string | null
+  spendPlanId: string | null
   allocation: number
   dailyRate: number | null
   usedForecastAmount: number | null
@@ -2665,6 +2671,7 @@ async function getExternalActualSpendPlanMatches(input: {
         team: effectiveSeat.team,
         inSeat: effectiveSeat.inSeat,
         description: effectiveSeat.description,
+        spendPlanId: effectiveSeat.spendPlanId ?? null,
         allocation: normalizeAllocation(effectiveSeat.allocation),
         dailyRate: effectiveSeat.dailyRate ?? null,
         usedForecastAmount:
@@ -2673,6 +2680,102 @@ async function getExternalActualSpendPlanMatches(input: {
       }
     })
     .filter((seat): seat is ExternalActualSpendPlanMatch => seat !== null)
+
+  return matches
+}
+
+async function getExternalActualMatchesByTrackerSeatIds(input: {
+  year: number
+  trackerSeatIds: string[]
+  monthIndex: number
+}, viewer?: Pick<AppViewer, "role" | "scopes">): Promise<ExternalActualSpendPlanMatch[]> {
+  const trackerSeatIds = Array.from(
+    new Set(input.trackerSeatIds.map((seatId) => seatId.trim()).filter(Boolean))
+  )
+
+  if (trackerSeatIds.length === 0) {
+    throw new Error("Select at least one seat.")
+  }
+
+  const trackingYear = await getOrCreateTrackingYear(input.year)
+  const [seats, assumptions, exchangeRates] = await Promise.all([
+    prisma.trackerSeat.findMany({
+      where: {
+        trackingYearId: trackingYear.id,
+        isActive: true,
+        id: {
+          in: trackerSeatIds,
+        },
+      },
+      include: {
+        months: {
+          orderBy: { monthIndex: "asc" },
+        },
+        override: true,
+        budgetArea: true,
+      },
+    }),
+    prisma.costAssumption.findMany({
+      where: { trackingYearId: trackingYear.id },
+    }),
+    prisma.exchangeRate.findMany({
+      where: { trackingYearId: trackingYear.id },
+      orderBy: { effectiveDate: "desc" },
+    }),
+  ])
+
+  const assumptionLookup = buildCostAssumptionLookup(assumptions)
+  const now = new Date()
+  const scopedSeats = filterScopedItems(
+    seats as SeatWithRelations[],
+    viewer,
+    (seat) => {
+      const effectiveSeat = getEffectiveSeat(seat)
+      return { domain: effectiveSeat.domain, subDomain: effectiveSeat.subDomain }
+    }
+  )
+
+  const matchEntries: Array<readonly [string, ExternalActualSpendPlanMatch]> = []
+
+  for (const seat of scopedSeats) {
+    const effectiveSeat = getEffectiveSeat(seat)
+    if (!isExternalSeat(effectiveSeat)) {
+      continue
+    }
+
+    if (!effectiveSeat.startDate || effectiveSeat.startDate > now) {
+      continue
+    }
+
+    const metrics = deriveSeatMetrics(seat, assumptionLookup, exchangeRates, input.year)
+
+    matchEntries.push([
+      seat.id,
+      {
+        trackerSeatId: seat.id,
+        seatId: seat.seatId,
+        team: effectiveSeat.team,
+        inSeat: effectiveSeat.inSeat,
+        description: effectiveSeat.description,
+        spendPlanId: effectiveSeat.spendPlanId ?? null,
+        allocation: normalizeAllocation(effectiveSeat.allocation),
+        dailyRate: effectiveSeat.dailyRate ?? null,
+        usedForecastAmount:
+          seat.months.find((month) => month.monthIndex === input.monthIndex)
+            ?.usedForecastAmount ?? (metrics.monthlyForecast[input.monthIndex] ?? 0),
+      },
+    ] as const)
+  }
+
+  const matchesBySeatId = new Map(matchEntries)
+
+  const matches = trackerSeatIds
+    .map((trackerSeatId) => matchesBySeatId.get(trackerSeatId) ?? null)
+    .filter((match): match is ExternalActualSpendPlanMatch => match !== null)
+
+  if (matches.length !== trackerSeatIds.length) {
+    throw new Error("Some selected seats could not be matched as active external seats.")
+  }
 
   return matches
 }
@@ -2795,7 +2898,8 @@ async function getExternalActualMonthSelection(input: {
 async function createExternalActualBatchForMatches(input: {
   year: number
   monthIndex: number
-  spendPlanId: string
+  spendPlanId?: string | null
+  trackerSeatIds?: string[]
   amount: number
   currency: CurrencyCode
   conversionDate?: Date
@@ -2807,17 +2911,37 @@ async function createExternalActualBatchForMatches(input: {
   rawContent?: string | null
 }, actor?: AuditActor, viewer?: Pick<AppViewer, "role" | "scopes">) {
   const trackingYear = await getOrCreateTrackingYear(input.year)
-  const matches = await getExternalActualSpendPlanMatches(
-    {
-      year: input.year,
-      spendPlanId: input.spendPlanId,
-      monthIndex: input.monthIndex,
-    },
-    viewer
+  const explicitTrackerSeatIds = Array.from(
+    new Set((input.trackerSeatIds ?? []).map((seatId) => seatId.trim()).filter(Boolean))
   )
+  const normalizedSpendPlanId = input.spendPlanId?.trim() || null
+  const matches =
+    explicitTrackerSeatIds.length > 0
+      ? await getExternalActualMatchesByTrackerSeatIds(
+          {
+            year: input.year,
+            trackerSeatIds: explicitTrackerSeatIds,
+            monthIndex: input.monthIndex,
+          },
+          viewer
+        )
+      : normalizedSpendPlanId
+        ? await getExternalActualSpendPlanMatches(
+            {
+              year: input.year,
+              spendPlanId: normalizedSpendPlanId,
+              monthIndex: input.monthIndex,
+            },
+            viewer
+          )
+        : []
 
   if (matches.length === 0) {
-    throw new Error("No matching external seats were found for that spend plan and month.")
+    throw new Error(
+      explicitTrackerSeatIds.length > 0
+        ? "No matching external seats were found for the selected seats."
+        : "No matching external seats were found for that spend plan and month."
+    )
   }
 
   const rate = await getLatestExchangeRateOnOrBeforeDate(
@@ -2846,11 +2970,12 @@ async function createExternalActualBatchForMatches(input: {
     const matchedEntries = matches.map((match, index) => {
       const originalAmount = originalShares[index]
       const dkkAmount = Math.round(originalAmount * rate.rateToDkk * 100) / 100
+      const entrySpendPlanId = normalizedSpendPlanId ?? match.spendPlanId ?? null
       const noteSegments = [
         input.sourceKind === "PASTE" ? "Pasted external actual" : "Manual external actual",
         input.invoiceNumber ? `invoice ${input.invoiceNumber}` : null,
         input.supplierName ? input.supplierName : null,
-        `spend plan ${input.spendPlanId}`,
+        entrySpendPlanId ? `spend plan ${entrySpendPlanId}` : null,
       ].filter(Boolean)
 
       return {
@@ -2868,7 +2993,7 @@ async function createExternalActualBatchForMatches(input: {
           amount: dkkAmount,
           originalAmount,
           originalCurrency: input.currency,
-          spendPlanId: input.spendPlanId,
+          spendPlanId: entrySpendPlanId,
           invoiceNumber: input.invoiceNumber ?? null,
           supplierName: input.supplierName ?? null,
           rawContent: input.rawContent ?? null,
@@ -2930,7 +3055,8 @@ async function createExternalActualBatchForMatches(input: {
         newValue: JSON.stringify({
           fileName: input.fileName,
           sourceKind: input.sourceKind,
-          spendPlanId: input.spendPlanId,
+          spendPlanId: normalizedSpendPlanId,
+          trackerSeatIds: explicitTrackerSeatIds.length > 0 ? explicitTrackerSeatIds : null,
           entryCount: matches.length,
           originalAmount: input.amount,
           currency: input.currency,
@@ -3026,6 +3152,63 @@ async function previewExternalActualBatchForMatches(input: {
   }
 }
 
+export function parsePastedInvoiceAmount(value: string) {
+  const normalized = value.trim().replace(/\s/g, "")
+
+  if (!normalized) {
+    return null
+  }
+
+  const dotCount = (normalized.match(/\./g) ?? []).length
+  const commaCount = (normalized.match(/,/g) ?? []).length
+  const lastDotIndex = normalized.lastIndexOf(".")
+  const lastCommaIndex = normalized.lastIndexOf(",")
+
+  let decimalSeparator: "." | "," | null = null
+  let thousandsSeparator: "." | "," | null = null
+
+  if (dotCount > 0 && commaCount > 0) {
+    decimalSeparator = lastDotIndex > lastCommaIndex ? "." : ","
+    thousandsSeparator = decimalSeparator === "." ? "," : "."
+  } else if (dotCount > 0 || commaCount > 0) {
+    const separator = dotCount > 0 ? "." : ","
+    const count = separator === "." ? dotCount : commaCount
+    const lastIndex = separator === "." ? lastDotIndex : lastCommaIndex
+    const digitsAfterSeparator = normalized.length - lastIndex - 1
+
+    if (count > 1) {
+      if (digitsAfterSeparator === 1 || digitsAfterSeparator === 2) {
+        decimalSeparator = separator
+      } else {
+        thousandsSeparator = separator
+      }
+    } else if (digitsAfterSeparator === 1 || digitsAfterSeparator === 2) {
+      decimalSeparator = separator
+    } else if (digitsAfterSeparator === 3) {
+      thousandsSeparator = separator
+    } else {
+      decimalSeparator = separator
+    }
+  }
+
+  let canonical = normalized
+
+  if (thousandsSeparator) {
+    canonical = canonical.replaceAll(thousandsSeparator, "")
+  }
+
+  if (decimalSeparator) {
+    canonical = canonical.replace(decimalSeparator, ".")
+  }
+
+  if (!/^-?\d+(\.\d+)?$/.test(canonical)) {
+    return null
+  }
+
+  const amount = Number(canonical)
+  return Number.isFinite(amount) ? amount : null
+}
+
 function parsePastedInvoiceText(content: string) {
   const getValue = (label: string) => {
     const match = content.match(new RegExp(`${label}\\s*:\\s*(.+)`, "i"))
@@ -3051,8 +3234,8 @@ function parsePastedInvoiceText(content: string) {
     throw new Error("Could not find a currency in the pasted content.")
   }
 
-  const amount = Number(netTotal.replace(/\./g, "").replace(",", "."))
-  if (!Number.isFinite(amount)) {
+  const amount = parsePastedInvoiceAmount(netTotal)
+  if (amount === null) {
     throw new Error("Could not parse the net total from the pasted content.")
   }
 
@@ -3069,7 +3252,8 @@ function parsePastedInvoiceText(content: string) {
 export async function createManualExternalActual(input: {
   year: number
   monthIndex: number
-  spendPlanId: string
+  spendPlanId?: string | null
+  trackerSeatIds?: string[]
   amount: number
   currency: CurrencyCode
   invoiceNumber?: string | null
@@ -3085,6 +3269,27 @@ export async function createManualExternalActual(input: {
     actor,
     viewer
   )
+}
+
+export async function previewManualExternalActualConversion(input: {
+  year: number
+  monthIndex: number
+  amount: number
+  currency: CurrencyCode
+}) {
+  const trackingYear = await getOrCreateTrackingYear(input.year)
+  const conversionDate = getMonthEndLookupDate(input.year, input.monthIndex)
+  const rate = await getLatestExchangeRateOnOrBeforeDate(
+    trackingYear.id,
+    input.currency,
+    conversionDate
+  )
+
+  return {
+    totalDkk: Math.round(input.amount * rate.rateToDkk * 100) / 100,
+    rateToDkk: rate.rateToDkk,
+    rateEffectiveDate: rate.effectiveDate,
+  }
 }
 
 export async function createPastedExternalActual(input: {
@@ -3206,7 +3411,10 @@ export async function previewPastedExternalActual(input: {
 
 export async function searchExternalSeatsByName(input: {
   year: number
-  query: string
+  query?: string
+  seatId?: string
+  name?: string
+  spendPlanId?: string
 }, viewer?: Pick<AppViewer, "role" | "scopes">): Promise<ExternalActualNameSearchResult[]> {
   const trackingYear = await getOrCreateTrackingYear(input.year)
   const seats = await prisma.trackerSeat.findMany({
@@ -3222,8 +3430,11 @@ export async function searchExternalSeatsByName(input: {
     orderBy: [{ inSeat: "asc" }, { seatId: "asc" }],
   })
 
-  const normalizedQuery = normalizeValue(input.query)
-  if (!normalizedQuery) {
+  const normalizedSeatId = normalizeValue(input.seatId)
+  const normalizedName = normalizeValue(input.name || input.query)
+  const normalizedSpendPlanId = normalizeValue(input.spendPlanId)
+
+  if (!normalizedSeatId && !normalizedName && !normalizedSpendPlanId) {
     return []
   }
 
@@ -3241,7 +3452,21 @@ export async function searchExternalSeatsByName(input: {
         return null
       }
 
-      if (!normalizeValue(effectiveSeat.inSeat).includes(normalizedQuery)) {
+      if (
+        normalizedSeatId &&
+        !normalizeValue(effectiveSeat.seatId || seat.seatId).includes(normalizedSeatId)
+      ) {
+        return null
+      }
+
+      if (normalizedName && !normalizeValue(effectiveSeat.inSeat).includes(normalizedName)) {
+        return null
+      }
+
+      if (
+        normalizedSpendPlanId &&
+        !normalizeValue(effectiveSeat.spendPlanId).includes(normalizedSpendPlanId)
+      ) {
         return null
       }
 

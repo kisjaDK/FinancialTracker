@@ -14,7 +14,10 @@ export async function POST(request: Request) {
       {
         year: Number(body.year),
         monthIndex: Number(body.monthIndex),
-        spendPlanId: String(body.spendPlanId || "").trim(),
+        spendPlanId: body.spendPlanId ? String(body.spendPlanId).trim() : null,
+        trackerSeatIds: Array.isArray(body.trackerSeatIds)
+          ? body.trackerSeatIds.map((value: unknown) => String(value))
+          : [],
         amount: Number(body.amount),
         currency: String(body.currency || "DKK").trim().toUpperCase() as "DKK" | "EUR" | "USD",
         invoiceNumber: body.invoiceNumber ? String(body.invoiceNumber) : null,
