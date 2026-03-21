@@ -1,11 +1,13 @@
-import { AnalysisBrowser } from "@/components/finance/analysis-browser";
-import { FinanceAppShell } from "@/components/finance/app-shell";
-import { requirePageAccess } from "@/lib/authz";
-import { runAnalysisTest } from "@/lib/ai/tasks/run-analysis-test";
+import { AnalysisBrowser } from "@/components/finance/analysis-browser"
+import { FinanceAppShell } from "@/components/finance/app-shell"
+import { requirePageAccess } from "@/lib/authz"
+import { getAiConfig } from "@/lib/ai/config"
+import { getBudgetOutlookPageData } from "@/lib/finance/analysis"
 
 type PageProps = {
 	searchParams?: Promise<{
 		year?: string;
+		summaryKey?: string;
 	}>;
 };
 
@@ -16,20 +18,29 @@ export default async function AnalysisPage({ searchParams }: PageProps) {
 	const resolvedSearchParams = await searchParams;
 	const selectedYear = resolvedSearchParams?.year
 		? Number(resolvedSearchParams.year)
-		: Number.NaN;
-	const activeYear = Number.isFinite(selectedYear)
-		? selectedYear
-		: new Date().getFullYear();
-	const result = await runAnalysisTest();
+		: undefined;
+	const pageData = await getBudgetOutlookPageData(
+		selectedYear,
+		resolvedSearchParams?.summaryKey,
+		viewer,
+	);
+	const aiConfig = getAiConfig();
 
 	return (
 		<FinanceAppShell
 			userName={viewer.name}
 			userRole={viewer.role}
-			activeYear={activeYear}
+			activeYear={pageData.activeYear}
 			currentPath="/analysis"
 		>
-			<AnalysisBrowser result={result} />
+			<AnalysisBrowser
+				activeYear={pageData.activeYear}
+				trackingYears={pageData.trackingYears}
+				summaryOptions={pageData.summaryOptions}
+				selectedSummaryKey={pageData.selectedSummaryKey}
+				initialFacts={pageData.initialFacts}
+				aiConfig={aiConfig}
+			/>
 		</FinanceAppShell>
 	);
 }

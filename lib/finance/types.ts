@@ -36,8 +36,11 @@ export type BudgetAreaSummary = {
   permTarget: number
   permForecast: number
   extForecast: number
+  cloudCostSpentToDate: number
   cloudCostTarget: number
   cloudCostForecast: number
+  cloudCostMonthlyActuals: number[]
+  cloudCostMonthlyForecast: number[]
   seatCount: number
   activeSeatCount: number
   openSeatCount: number

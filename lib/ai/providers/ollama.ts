@@ -28,6 +28,7 @@ export class OllamaProvider implements LlmProvider {
 
 	async generateText({
 		prompt,
+		system,
 		model,
 	}: GenerateTextInput): Promise<GenerateTextResult> {
 		const config = getAiConfig();
@@ -48,6 +49,7 @@ export class OllamaProvider implements LlmProvider {
 		try {
 			const result = await generateText({
 				model: this.modelFactory(resolvedModel),
+				system,
 				prompt,
 				abortSignal: abortController.signal,
 			});

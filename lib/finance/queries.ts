@@ -1502,6 +1502,14 @@ export async function getFinanceWorkspaceData(
     viewer,
     (area) => ({ domain: area.domain, subDomain: area.subDomain })
   )
+  const scopedSeats = filterScopedItems(
+    snapshot.seats as SeatWithRelations[],
+    viewer,
+    (seat) => {
+      const effectiveSeat = getEffectiveSeat(seat)
+      return { domain: effectiveSeat.domain, subDomain: effectiveSeat.subDomain }
+    }
+  )
   const availableAreaIds = new Set(summary.map((entry) => entry.id))
   const resolvedActualsScope = resolveActualsScopeSelection(summary, {
     budgetAreaId: selectedAreaId,
@@ -1513,9 +1521,102 @@ export async function getFinanceWorkspaceData(
     resolvedActualsScope.selectedAreaId &&
     availableAreaIds.has(resolvedActualsScope.selectedAreaId)
       ? resolvedActualsScope.selectedAreaId
-      : selectedAreaId && availableAreaIds.has(selectedAreaId)
+        : selectedAreaId && availableAreaIds.has(selectedAreaId)
         ? selectedAreaId
         : summary[0]?.id ?? null
+  const assumptionLookup = buildCostAssumptionLookup(snapshot.assumptions)
+  const exchangeRateLookup = buildExchangeRateLookup(snapshot.exchangeRates)
+  const seats =
+    effectiveAreaId === null
+      ? []
+      : scopedSeats
+          .map((seat) => {
+            const effectiveSeat = getEffectiveSeat(seat)
+            const summaryKey = buildSummaryKey({
+              subDomain: effectiveSeat.subDomain,
+              projectCode: effectiveSeat.projectCode,
+            })
+
+            return {
+              seat,
+              effectiveSeat,
+              summaryKey,
+            }
+          })
+          .filter(({ summaryKey, effectiveSeat }) => {
+            if (summaryKey !== effectiveAreaId) {
+              return false
+            }
+
+            return normalizeValue(effectiveSeat.resourceType) !== "cloud"
+          })
+          .map(({ seat, effectiveSeat }) => {
+            const metrics = deriveSeatMetrics(
+              seat,
+              assumptionLookup,
+              snapshot.exchangeRates,
+              activeYear,
+              {
+                exchangeRateLookup,
+              }
+            )
+            const cancelled = isTrackerCancelledSeat(effectiveSeat)
+
+            return {
+              ...effectiveSeat,
+              months: seat.months.map((month) => {
+                const converted =
+                  month.actualAmountRaw !== null && month.actualAmountRaw !== undefined
+                    ? convertAmountToDkk(
+                        month.actualAmountRaw,
+                        month.actualCurrency,
+                        exchangeRateLookup
+                      )
+                    : {
+                        amountDkk: month.actualAmount,
+                        exchangeRateUsed: month.exchangeRateUsed,
+                      }
+
+                return {
+                  monthIndex: month.monthIndex,
+                  actualAmountDkk: cancelled ? 0 : (converted.amountDkk ?? 0),
+                  actualAmountRaw: cancelled ? null : month.actualAmountRaw,
+                  actualCurrency: month.actualCurrency,
+                  exchangeRateUsed: converted.exchangeRateUsed ?? null,
+                  forecastIncluded: month.forecastIncluded,
+                  notes: month.notes,
+                }
+              }),
+              totalSpent: metrics.totalSpent,
+              totalForecast: metrics.totalForecast,
+              permFte: metrics.permFte,
+              extFte: metrics.extFte,
+              yearlyCostInternal: metrics.yearlyCostInternal,
+              yearlyCostExternal: metrics.yearlyCostExternal,
+              monthlyForecast: metrics.monthlyForecast,
+            }
+          })
+          .sort((left, right) => {
+            const teamCompare = (left.team || "").localeCompare(right.team || "", undefined, {
+              sensitivity: "base",
+            })
+
+            if (teamCompare !== 0) {
+              return teamCompare
+            }
+
+            const nameCompare = (left.inSeat || "").localeCompare(right.inSeat || "", undefined, {
+              sensitivity: "base",
+            })
+
+            if (nameCompare !== 0) {
+              return nameCompare
+            }
+
+            return left.seatId.localeCompare(right.seatId, undefined, {
+              sensitivity: "base",
+            })
+          })
   const internalActualsMessage = await prisma.serviceMessage.findUnique({
     where: {
       trackingYearId_key: {
@@ -1529,7 +1630,7 @@ export async function getFinanceWorkspaceData(
     activeYear,
     trackingYears,
     summary,
-    seats: [],
+    seats,
     internalActualsMessage: internalActualsMessage?.content ?? null,
     budgetAreas: scopedBudgetAreas,
     selectedAreaId: effectiveAreaId,
@@ -4795,6 +4896,7 @@ function buildBudgetAreaSummaryFromSnapshot(
   const assumptionLookup = buildCostAssumptionLookup(assumptions)
   const activeStatuses = buildActiveStatusLookup(statusDefinitions)
   const mappingLookup = buildDepartmentMappingLookup(departmentMappings)
+  const exchangeRateLookup = buildExchangeRateLookup(exchangeRates)
   const budgetAreasById = new Map(budgetAreas.map((area) => [area.id, area]))
   const summaryMap = new Map<string, BudgetAreaSummary>()
 
@@ -4831,8 +4933,11 @@ function buildBudgetAreaSummaryFromSnapshot(
       permTarget: existing?.permTarget || 0,
       permForecast: existing?.permForecast || 0,
       extForecast: existing?.extForecast || 0,
+      cloudCostSpentToDate: existing?.cloudCostSpentToDate || 0,
       cloudCostTarget: existing?.cloudCostTarget || 0,
       cloudCostForecast: existing?.cloudCostForecast || 0,
+      cloudCostMonthlyActuals: existing?.cloudCostMonthlyActuals || Array(12).fill(0),
+      cloudCostMonthlyForecast: existing?.cloudCostMonthlyForecast || Array(12).fill(0),
       seatCount: existing?.seatCount || 0,
       activeSeatCount: existing?.activeSeatCount || 0,
       openSeatCount: existing?.openSeatCount || 0,
@@ -4877,8 +4982,11 @@ function buildBudgetAreaSummaryFromSnapshot(
         permTarget: 0,
         permForecast: 0,
         extForecast: 0,
+        cloudCostSpentToDate: 0,
         cloudCostTarget: 0,
         cloudCostForecast: 0,
+        cloudCostMonthlyActuals: Array(12).fill(0),
+        cloudCostMonthlyForecast: Array(12).fill(0),
         seatCount: 0,
         activeSeatCount: 0,
         openSeatCount: 0,
@@ -4903,6 +5011,7 @@ function buildBudgetAreaSummaryFromSnapshot(
       exchangeRates,
       year
     )
+    const isCloudSeat = normalizeValue(effectiveSeat.resourceType) === "cloud"
     const summaryKey = buildSummaryKey({
       subDomain: effectiveSeat.subDomain,
       projectCode: effectiveSeat.projectCode,
@@ -4929,29 +5038,35 @@ function buildBudgetAreaSummaryFromSnapshot(
         permTarget: 0,
         permForecast: 0,
         extForecast: 0,
+        cloudCostSpentToDate: 0,
         cloudCostTarget: 0,
         cloudCostForecast: 0,
+        cloudCostMonthlyActuals: Array(12).fill(0),
+        cloudCostMonthlyForecast: Array(12).fill(0),
         seatCount: 0,
         activeSeatCount: 0,
         openSeatCount: 0,
-      }
+    }
     summaryMap.set(summaryKey, summary)
 
-    summary.seatCount += 1
     const normalizedStatus = normalizeValue(effectiveSeat.status)
     const normalizedInSeat = normalizeValue(effectiveSeat.inSeat)
 
-    if (normalizedStatus === normalizeValue("Open")) {
-      summary.openSeatCount += 1
-    }
+    if (!isCloudSeat) {
+      summary.seatCount += 1
 
-    if (
-      activeStatuses.has(normalizedStatus) ||
-      (normalizedStatus.length === 0 &&
-        normalizedInSeat.length > 0 &&
-        normalizedInSeat !== "vacant")
-    ) {
-      summary.activeSeatCount += 1
+      if (normalizedStatus === normalizeValue("Open")) {
+        summary.openSeatCount += 1
+      }
+
+      if (
+        activeStatuses.has(normalizedStatus) ||
+        (normalizedStatus.length === 0 &&
+          normalizedInSeat.length > 0 &&
+          normalizedInSeat !== "vacant")
+      ) {
+        summary.activeSeatCount += 1
+      }
     }
     summary.domain =
       normalizeDomainLabel(summary.domain) ||
@@ -4967,6 +5082,27 @@ function buildBudgetAreaSummaryFromSnapshot(
     summary.permForecast += metrics.permForecast
     summary.extForecast += metrics.extForecast
     summary.cloudCostForecast += metrics.cloudCostForecast
+    if (isCloudSeat) {
+      summary.cloudCostSpentToDate += metrics.totalSpent
+      summary.cloudCostMonthlyActuals = summary.cloudCostMonthlyActuals.map(
+        (value, monthIndex) => {
+          const month = rawSeat.months.find((entry) => entry.monthIndex === monthIndex)
+          const actualAmount =
+            month?.actualAmountRaw !== null && month?.actualAmountRaw !== undefined
+              ? convertAmountToDkk(
+                  month.actualAmountRaw,
+                  month.actualCurrency,
+                  exchangeRateLookup
+                ).amountDkk
+              : (month?.actualAmount ?? 0)
+
+          return value + actualAmount
+        }
+      )
+      summary.cloudCostMonthlyForecast = summary.cloudCostMonthlyForecast.map(
+        (value, monthIndex) => value + (metrics.monthlyForecast[monthIndex] ?? 0)
+      )
+    }
   }
 
   return filterScopedItems(
@@ -7518,6 +7654,185 @@ export async function createManualTrackerSeat(
       budgetArea: true,
     },
   })
+}
+
+export async function saveCloudActualForBudgetArea(
+  input: {
+    year: number
+    domain: string | null
+    subDomain: string | null
+    projectCode: string | null
+    monthIndex: number
+    actualAmount: number
+  },
+  actor?: AuditActor
+) {
+  ensureValidYear(input.year)
+
+  if (!Number.isInteger(input.monthIndex) || input.monthIndex < 0 || input.monthIndex > 11) {
+    throw new Error("Month must be between 0 and 11.")
+  }
+
+  const trackingYear = await getOrCreateTrackingYear(input.year)
+  const normalizedDomain = normalizeDomainLabel(input.domain)
+  const normalizedSubDomain = normalizeSubDomainLabel(input.subDomain)
+  const normalizedProjectCode = normalizeOptionalString(input.projectCode)
+
+  if (!normalizedSubDomain) {
+    throw new Error("Select a sub-domain scope before saving cloud actuals.")
+  }
+
+  if (!Number.isFinite(input.actualAmount) || input.actualAmount < 0) {
+    throw new Error("Enter a valid cloud actual amount.")
+  }
+
+  const budgetArea = await prisma.budgetArea.findFirst({
+    where: {
+      trackingYearId: trackingYear.id,
+      domain: normalizedDomain
+        ? {
+            equals: normalizedDomain,
+            mode: "insensitive",
+          }
+        : undefined,
+      subDomain: {
+        equals: normalizedSubDomain,
+        mode: "insensitive",
+      },
+      projectCode: normalizedProjectCode
+        ? {
+            equals: normalizedProjectCode,
+            mode: "insensitive",
+          }
+        : undefined,
+    },
+    orderBy: [{ pillar: "asc" }, { costCenter: "asc" }],
+  })
+
+  if (!budgetArea) {
+    throw new Error("Budget area not found for the selected scope and year.")
+  }
+  const actualAmount = Math.round(input.actualAmount * 100) / 100
+  const sourceKey = `manual-cloud:${budgetArea.id}`
+  const seatId = `CLOUD-${budgetArea.projectCode || budgetArea.costCenter || budgetArea.id.slice(0, 6)}`
+  const existingSeat = await prisma.trackerSeat.findUnique({
+    where: {
+      trackingYearId_sourceKey: {
+        trackingYearId: trackingYear.id,
+        sourceKey,
+      },
+    },
+    include: {
+      months: {
+        orderBy: { monthIndex: "asc" },
+      },
+      override: true,
+      budgetArea: true,
+    },
+  })
+
+  const seat =
+    existingSeat ??
+    (await prisma.trackerSeat.create({
+      data: {
+        trackingYearId: trackingYear.id,
+        budgetAreaId: budgetArea.id,
+        sourceType: "MANUAL",
+        seatId,
+        sourceKey,
+        isActive: true,
+        domain: normalizeDomainLabel(budgetArea.domain),
+        subDomain: normalizeSubDomainLabel(budgetArea.subDomain),
+        funding: budgetArea.funding,
+        pillar: budgetArea.pillar,
+        costCenter: budgetArea.costCenter,
+        projectCode: budgetArea.projectCode,
+        resourceType: "cloud",
+        team: "Cloud",
+        description: "Cloud actuals",
+        allocation: 0,
+      },
+      include: {
+        months: {
+          orderBy: { monthIndex: "asc" },
+        },
+        override: true,
+        budgetArea: true,
+      },
+    }))
+
+  if (!existingSeat) {
+    await ensureSeatMonthsForSeats([seat.id])
+    await writeAuditLog({
+      trackingYearId: trackingYear.id,
+      entityType: "TrackerSeat",
+      entityId: seat.id,
+      action: "CREATE",
+      actor,
+      changes: buildAuditChanges(
+        null,
+        {
+          seatId: seat.seatId,
+          sourceType: seat.sourceType,
+          sourceKey: seat.sourceKey,
+          ...buildTrackerSeatProfileAuditShape(seat),
+        },
+        [
+          "seatId",
+          "sourceType",
+          "sourceKey",
+          "domain",
+          "subDomain",
+          "funding",
+          "pillar",
+          "budgetAreaId",
+          "costCenter",
+          "projectCode",
+          "resourceType",
+          "team",
+          "description",
+          "allocation",
+        ]
+      ),
+    })
+  }
+
+  const seatWithRelations = await prisma.trackerSeat.findUniqueOrThrow({
+    where: { id: seat.id },
+    include: {
+      months: {
+        orderBy: { monthIndex: "asc" },
+      },
+      override: true,
+      budgetArea: true,
+    },
+  })
+  const exchangeRates = await prisma.exchangeRate.findMany({
+    where: { trackingYearId: trackingYear.id },
+    orderBy: { effectiveDate: "desc" },
+  })
+
+  await applyTrackerSeatMonthUpdate({
+    seat: seatWithRelations as SeatWithRelations,
+    payload: {
+      monthIndex: input.monthIndex,
+      actualAmount,
+      actualCurrency: "DKK",
+      forecastIncluded: false,
+      notes: `Cloud actual manually entered for ${budgetArea.subDomain ?? "Unmapped"}.`,
+    },
+    actor,
+    exchangeRateRows: exchangeRates,
+    yearRecord: trackingYear,
+    costAssumptionRows: [],
+  })
+
+  return {
+    amount: actualAmount,
+    seatId: seat.seatId,
+    monthLabel: MONTH_NAMES[input.monthIndex],
+    subDomain: budgetArea.subDomain,
+  }
 }
 
 export async function deleteManualTrackerSeat(seatId: string, actor?: AuditActor) {

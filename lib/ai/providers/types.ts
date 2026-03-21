@@ -2,6 +2,7 @@ import "server-only";
 
 export type GenerateTextInput = {
 	prompt: string;
+	system?: string;
 	model?: string;
 };
 

@@ -69,6 +69,9 @@ type SummaryRow = {
   activeSeatCount: number
   spentToDate: number
   totalForecast: number
+  cloudCostSpentToDate: number
+  cloudCostMonthlyActuals: number[]
+  cloudCostMonthlyForecast: number[]
 }
 
 type SeatRow = {
@@ -113,6 +116,8 @@ type BulkForecastPreview = {
     baseAmount: number
   }[]
 }
+
+type ActualsView = "internal" | "external" | "cloud" | "licenses"
 
 type PastedExternalActualPreview = {
   status: "matched" | "needs_mapping"
@@ -224,6 +229,19 @@ function normalizeValue(value: string | null | undefined) {
   return value?.trim().toLowerCase() ?? ""
 }
 
+function firstWord(value: string | null | undefined) {
+  const trimmed = value?.trim()
+  if (!trimmed) {
+    return ""
+  }
+
+  return trimmed.split(/\s+/)[0] ?? ""
+}
+
+function formatCloudActualInputValue(value: number | null | undefined) {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? String(value) : ""
+}
+
 export function ActualsBrowser({
   userEmail,
   activeYear,
@@ -244,6 +262,7 @@ export function ActualsBrowser({
   const [isPending, startTransition] = useTransition()
   const [isImporting, startImportTransition] = useTransition()
   const [isSubmittingExternal, startExternalSubmitTransition] = useTransition()
+  const [isSubmittingCloud, startCloudSubmitTransition] = useTransition()
   const [isRollingBack, startRollbackTransition] = useTransition()
   const [selectedSeatId, setSelectedSeatId] = useState(seats[0]?.id ?? "")
   const [selectedMonth, setSelectedMonth] = useState("0")
@@ -251,6 +270,7 @@ export function ActualsBrowser({
   const [actualCurrency, setActualCurrency] = useState<"DKK" | "EUR" | "USD">("DKK")
   const [forecastIncluded, setForecastIncluded] = useState(true)
   const [bulkCopyDialogOpen, setBulkCopyDialogOpen] = useState(false)
+  const [bulkCopyMonth, setBulkCopyMonth] = useState(String(new Date().getMonth()))
   const [bulkCopyPreview, setBulkCopyPreview] = useState<BulkForecastPreview | null>(null)
   const [bulkCopyOverrides, setBulkCopyOverrides] = useState<Record<string, string>>({})
   const [bulkCopyConfirmations, setBulkCopyConfirmations] = useState<Record<string, boolean>>({})
@@ -266,6 +286,7 @@ export function ActualsBrowser({
   const [manualInvoiceNumber, setManualInvoiceNumber] = useState("")
   const [manualSupplierName, setManualSupplierName] = useState("")
   const [manualDescription, setManualDescription] = useState("")
+  const [cloudActualAmount, setCloudActualAmount] = useState("")
   const [pastedInvoiceContent, setPastedInvoiceContent] = useState("")
   const [pastePreviewDialogOpen, setPastePreviewDialogOpen] = useState(false)
   const [pastedInvoicePreview, setPastedInvoicePreview] =
@@ -284,8 +305,13 @@ export function ActualsBrowser({
   const [editExternalSupplierName, setEditExternalSupplierName] = useState("")
   const [deletingExternalEntry, setDeletingExternalEntry] =
     useState<ExternalActualImportView | null>(null)
-  const activeView =
-    searchParams.get("view") === "external" ? "external" : "internal"
+  const requestedView = searchParams.get("view")
+  const activeView: ActualsView =
+    requestedView === "external" ||
+    requestedView === "cloud" ||
+    requestedView === "licenses"
+      ? requestedView
+      : "internal"
 
   const selectedArea = summary.find((row) => row.id === selectedAreaId) ?? summary[0]
   const effectiveSelectedAreaId = selectedAreaId ?? selectedArea?.id ?? null
@@ -338,6 +364,31 @@ export function ActualsBrowser({
   const selectedScopeDetail = selectedArea?.projectCode
     ? `${selectedScopeLabel} · ${selectedArea.projectCode}`
     : selectedScopeLabel
+  const selectedMonthIndex = Number(selectedMonth)
+  const selectedCloudForecast = selectedArea?.cloudCostMonthlyForecast?.[selectedMonthIndex] ?? 0
+  const enteredCloudActualAmount = cloudActualAmount.trim() ? Number(cloudActualAmount) : null
+  const cloudActualMonths =
+    selectedArea?.cloudCostMonthlyActuals?.map((actual, monthIndex) => ({
+      monthIndex,
+      monthLabel: MONTH_NAMES[monthIndex],
+      actual,
+      forecast: selectedArea.cloudCostMonthlyForecast?.[monthIndex] ?? 0,
+      deviation:
+        (selectedArea.cloudCostMonthlyForecast?.[monthIndex] ?? 0) - actual,
+    })) ?? []
+  const cloudActualMonthsWithValues = cloudActualMonths.filter((month) => month.actual > 0)
+  const cloudSpentToDateForecastComparable = cloudActualMonthsWithValues.reduce(
+    (sum, month) => sum + month.forecast,
+    0
+  )
+  const cloudSpentToDateDeviation =
+    cloudActualMonthsWithValues.length > 0
+      ? cloudSpentToDateForecastComparable - (selectedArea?.cloudCostSpentToDate ?? 0)
+      : null
+  const cloudDeviation =
+    enteredCloudActualAmount !== null && Number.isFinite(enteredCloudActualAmount)
+      ? selectedCloudForecast - enteredCloudActualAmount
+      : null
   const activeStatusSet = useMemo(
     () =>
       new Set(
@@ -397,6 +448,23 @@ export function ActualsBrowser({
     setSelectedImportYear(String(activeYear))
   }, [activeYear])
 
+  useEffect(() => {
+    if (activeView !== "cloud") {
+      return
+    }
+
+    const monthlyActuals = selectedArea?.cloudCostMonthlyActuals ?? []
+    const firstMissingMonthIndex = monthlyActuals.findIndex((amount) => amount <= 0)
+    const nextMonthIndex =
+      firstMissingMonthIndex >= 0
+        ? firstMissingMonthIndex
+        : monthlyActuals.findIndex((amount) => amount > 0)
+    const resolvedMonthIndex = nextMonthIndex >= 0 ? nextMonthIndex : 0
+
+    setSelectedMonth(String(resolvedMonthIndex))
+    setCloudActualAmount(formatCloudActualInputValue(monthlyActuals[resolvedMonthIndex] ?? 0))
+  }, [activeView, selectedArea?.id, selectedArea?.cloudCostMonthlyActuals])
+
   function updateParams(next: Record<string, string | null>) {
     const params = new URLSearchParams(searchParams.toString())
     Object.entries(next).forEach(([key, value]) => {
@@ -410,6 +478,22 @@ export function ActualsBrowser({
     startTransition(() => {
       router.push(`/actuals?${params.toString()}`)
     })
+  }
+
+  function mapActualsViewToParam(value: string): ActualsView {
+    if (value === "external" || value === "cloud" || value === "licenses") {
+      return value
+    }
+
+    return "internal"
+  }
+
+  function handleCloudMonthChange(nextMonthValue: string) {
+    const nextMonthIndex = Number(nextMonthValue)
+    const monthlyActual = selectedArea?.cloudCostMonthlyActuals?.[nextMonthIndex] ?? 0
+
+    setSelectedMonth(nextMonthValue)
+    setCloudActualAmount(formatCloudActualInputValue(monthlyActual))
   }
 
   function getFirstScopeForDomain(domain: string) {
@@ -498,7 +582,7 @@ export function ActualsBrowser({
     }
   }
 
-  async function copyForecastToInternalActuals() {
+  async function copyForecastToInternalActuals(monthIndex: number) {
     if (!effectiveSelectedAreaId || !selectedArea?.subDomain) {
       return
     }
@@ -514,7 +598,7 @@ export function ActualsBrowser({
           mode: "preview",
           year: activeYear,
           budgetAreaId: effectiveSelectedAreaId,
-          monthIndex: Number(selectedMonth),
+          monthIndex,
         }),
       })) as BulkForecastPreview
       setBulkCopyPreview(response)
@@ -536,6 +620,58 @@ export function ActualsBrowser({
     } finally {
       setBulkCopyLoading(false)
     }
+  }
+
+  function openBulkCopyDialog() {
+    setBulkCopyDialogOpen(true)
+    void copyForecastToInternalActuals(Number(bulkCopyMonth))
+  }
+
+  function handleBulkCopyMonthChange(nextMonthValue: string) {
+    setBulkCopyMonth(nextMonthValue)
+    if (bulkCopyDialogOpen) {
+      void copyForecastToInternalActuals(Number(nextMonthValue))
+    }
+  }
+
+  function saveCloudActual() {
+    if (!effectiveSelectedAreaId) {
+      toast.error("Choose a scope before saving cloud actuals.")
+      return
+    }
+
+    if (!cloudActualAmount.trim()) {
+      toast.error("Enter the cloud actual amount first.")
+      return
+    }
+
+    startCloudSubmitTransition(async () => {
+      try {
+        const response = await fetchJson("/api/actuals/cloud", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            year: activeYear,
+            domain: selectedArea?.domain ?? null,
+            subDomain: selectedArea?.subDomain ?? null,
+            projectCode: selectedArea?.projectCode ?? null,
+            monthIndex: Number(selectedMonth),
+            actualAmount: Number(cloudActualAmount),
+          }),
+        })
+
+        toast.success(
+          `Saved ${formatCurrency(response.amount)} cloud actual for ${
+            response.subDomain || "selected scope"
+          } in ${response.monthLabel}.`
+        )
+        router.refresh()
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Cloud actual save failed")
+      }
+    })
   }
 
   async function completeBulkForecastCopy() {
@@ -566,7 +702,7 @@ export function ActualsBrowser({
       })
 
       toast.success(
-        `Copied forecast to actuals for ${response.updatedCount} internal seat${
+        `Converted forecast to actual for ${response.updatedCount} internal seat${
           response.updatedCount === 1 ? "" : "s"
         }.`
       )
@@ -909,6 +1045,7 @@ export function ActualsBrowser({
             if (!open) {
               setBulkCopyPreview(null)
               setBulkCopyConfirmations({})
+              setBulkCopyOverrides({})
             }
           }}
         >
@@ -916,7 +1053,7 @@ export function ActualsBrowser({
             <DialogHeader>
               <div className="flex items-start justify-between gap-3">
                 <div className="flex items-center gap-2">
-                  <DialogTitle>Review forecast copy to actuals</DialogTitle>
+                  <DialogTitle>Review forecast conversion to actual</DialogTitle>
                   <GuidanceHover
                     content={internalActualsMessage}
                     label="Internal actuals service message"
@@ -932,10 +1069,31 @@ export function ActualsBrowser({
                 {bulkCopyPreview
                   ? `Review the internal seats in ${
                       bulkCopyPreview.subDomain || "the selected sub-domain"
-                    } before completing the copy.`
-                  : "Review the affected seats before completing the copy."}
+                    } before converting forecast to actual.`
+                  : "Review the affected seats before converting forecast to actual."}
               </DialogDescription>
             </DialogHeader>
+            <div className="space-y-4">
+              <div className="grid gap-3 rounded-lg border border-border p-4 md:grid-cols-[220px_1fr] md:items-end">
+                <div className="space-y-2">
+                  <Label htmlFor="bulk-copy-month">Month</Label>
+                  <select
+                    id="bulk-copy-month"
+                    value={bulkCopyMonth}
+                    onChange={(event) => handleBulkCopyMonthChange(event.target.value)}
+                    className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
+                  >
+                    {MONTH_NAMES.map((month, index) => (
+                      <option key={month} value={index}>
+                        {month}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="text-sm text-muted-foreground">
+                  Choose the month to preview and convert. This selector is separate from the manual monthly actuals form.
+                </div>
+              </div>
             <div className="max-h-[55vh] overflow-y-auto pr-2">
               {bulkCopyPreview?.seats.length ? (
                 <div className="space-y-3">
@@ -963,7 +1121,7 @@ export function ActualsBrowser({
                               className="mt-0.5"
                             />
                             <span>
-                              Confirm this seat is on leave and should still receive copied
+                              Confirm this seat is on leave and should still receive converted
                               internal actuals.
                             </span>
                           </label>
@@ -1029,9 +1187,10 @@ export function ActualsBrowser({
               ) : (
                 <p className="py-4 text-sm text-muted-foreground">
                   No active internal seats with forecast for{" "}
-                  {bulkCopyPreview?.monthLabel || "the selected month"}.
+                  {bulkCopyPreview?.monthLabel || MONTH_NAMES[Number(bulkCopyMonth)] || "the selected month"}.
                 </p>
               )}
+            </div>
             </div>
             <DialogFooter>
               {pendingOnLeaveConfirmations.length > 0 ? (
@@ -1641,7 +1800,7 @@ export function ActualsBrowser({
         <Tabs
           value={activeView}
           onValueChange={(value) =>
-            updateParams({ view: value === "external" ? "external" : "internal" })
+            updateParams({ view: mapActualsViewToParam(value) })
           }
           className="gap-4"
         >
@@ -1652,9 +1811,14 @@ export function ActualsBrowser({
                 Switch between internal and external actuals without leaving the page.
               </p>
             </div>
-            <TabsList className="bg-white/80">
+            <TabsList
+              variant="line"
+              className="w-full max-w-max flex-wrap justify-start gap-2 bg-white/80"
+            >
               <TabsTrigger value="internal">Internals</TabsTrigger>
               <TabsTrigger value="external">Externals</TabsTrigger>
+              <TabsTrigger value="cloud">Cloud</TabsTrigger>
+              <TabsTrigger value="licenses">Licenses</TabsTrigger>
             </TabsList>
           </div>
 
@@ -1681,14 +1845,29 @@ export function ActualsBrowser({
                   </CardDescription>
                 </div>
               </CardHeader>
-              <CardContent>
-                <div className="rounded-xl bg-muted/40 p-3 text-sm text-muted-foreground">
-                  Working in {selectedScopeDetail}.
+              <CardContent className="space-y-3">
+                <div className="text-sm">
+                  <div className="font-medium">Convert Forecast to Actual</div>
+                  <div className="mt-1 text-muted-foreground">
+                    Convert the selected month&apos;s forecast into actuals for all internal seats in{" "}
+                    {selectedScopeDetail}.
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="mt-3"
+                    disabled={
+                      !effectiveSelectedAreaId || !selectedArea?.subDomain || bulkCopyLoading
+                    }
+                    onClick={openBulkCopyDialog}
+                  >
+                    Convert Forecast to Actual
+                  </Button>
                 </div>
               </CardContent>
             </Card>
 
-            <section className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
+            <section className="grid gap-6 xl:grid-cols-[3fr_2fr]">
             <Card className="brand-card">
               <CardHeader>
                 <CardTitle>Internal Seats</CardTitle>
@@ -1715,14 +1894,16 @@ export function ActualsBrowser({
                       >
                         <TableCell>
                           <div className="font-medium">{seat.seatId}</div>
-                          <div className="text-xs text-muted-foreground">
-                            {seat.team || "No team"} · {seat.subDomain || "Unmapped"}
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            <div>{seat.team || "No team"}</div>
+                            <div>{seat.subDomain || "Unmapped"}</div>
                           </div>
                         </TableCell>
                         <TableCell>
                           <div>{seat.inSeat || "Unassigned"}</div>
-                          <div className="text-xs text-muted-foreground">
-                            {seat.band || "No band"} · {seat.status || "No status"}
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            <div>{seat.band || "No band"}</div>
+                            <div>{firstWord(seat.status) || "No status"}</div>
                           </div>
                         </TableCell>
                         <TableCell>{formatCurrency(seat.totalSpent)}</TableCell>
@@ -1804,122 +1985,303 @@ export function ActualsBrowser({
                 <CardHeader>
                   <CardTitle>Monthly Actuals</CardTitle>
                   <CardDescription>
-                    Enter manual internal actual spend or bulk copy forecast for the selected month.
+                    Enter manual internal actual spend for the selected month.
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-3">
-                  <div className="space-y-2">
-                    <Label htmlFor="seat-select">Seat</Label>
-                    <select
-                      id="seat-select"
-                      className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
-                      value={selectedSeatId}
-                      onChange={(event) => setSelectedSeatId(event.target.value)}
-                    >
-                      {seats.map((seat) => (
-                        <option key={seat.id} value={seat.id}>
-                          {seat.seatId} · {seat.inSeat || "Unassigned"}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  {internalActualsMessage ? (
-                    <div className="rounded-xl brand-note">
-                      <div className="flex items-center gap-2 font-medium">
-                        <span>Internal actuals service message</span>
-                        <GuidanceHover
-                          content={internalActualsMessage}
-                          label="Internal actuals service message"
-                        />
-                      </div>
-                      <div className="mt-1 text-rose-900/80 dark:text-rose-100/80">
-                        Hover the info icon to review the instructions before entering or copying
-                        actuals.
-                      </div>
-                    </div>
-                  ) : null}
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="space-y-2">
-                      <Label htmlFor="month-select">Month</Label>
-                      <select
-                        id="month-select"
-                        className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
-                        value={selectedMonth}
-                        onChange={(event) => setSelectedMonth(event.target.value)}
-                      >
-                        {MONTH_NAMES.map((month, index) => (
-                          <option key={month} value={index}>
-                            {month}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="actual-amount">Actual Spend</Label>
-                      <Input
-                        id="actual-amount"
-                        type="number"
-                        inputMode="decimal"
-                        value={actualAmount}
-                        onChange={(event) => setActualAmount(event.target.value)}
-                        placeholder="25000"
+                <div className="space-y-2">
+                  <Label htmlFor="seat-select">Seat</Label>
+                  <select
+                    id="seat-select"
+                    className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
+                    value={selectedSeatId}
+                    onChange={(event) => setSelectedSeatId(event.target.value)}
+                  >
+                    {seats.map((seat) => (
+                      <option key={seat.id} value={seat.id}>
+                        {seat.seatId} · {seat.inSeat || "Unassigned"}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                {internalActualsMessage ? (
+                  <div className="rounded-xl brand-note">
+                    <div className="flex items-center gap-2 font-medium">
+                      <span>Internal actuals service message</span>
+                      <GuidanceHover
+                        content={internalActualsMessage}
+                        label="Internal actuals service message"
                       />
                     </div>
+                    <div className="mt-1 text-rose-900/80 dark:text-rose-100/80">
+                      Hover the info icon to review the instructions before entering or copying
+                      actuals.
+                    </div>
                   </div>
+                ) : null}
+                <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-2">
-                    <Label htmlFor="actual-currency">Input Currency</Label>
+                    <Label htmlFor="month-select">Month</Label>
                     <select
-                      id="actual-currency"
+                      id="month-select"
                       className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
-                      value={actualCurrency}
-                      onChange={(event) =>
-                        setActualCurrency(event.target.value as "DKK" | "EUR" | "USD")
-                      }
+                      value={selectedMonth}
+                      onChange={(event) => setSelectedMonth(event.target.value)}
                     >
-                      {SUPPORTED_CURRENCIES.map((currency) => (
-                        <option key={currency} value={currency}>
-                          {currency}
+                      {MONTH_NAMES.map((month, index) => (
+                        <option key={month} value={index}>
+                          {month}
                         </option>
                       ))}
                     </select>
                   </div>
-                  <label className="flex items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={forecastIncluded}
-                      onChange={(event) => setForecastIncluded(event.target.checked)}
+                  <div className="space-y-2">
+                    <Label htmlFor="actual-amount">Actual Spend</Label>
+                    <Input
+                      id="actual-amount"
+                      type="number"
+                      inputMode="decimal"
+                      value={actualAmount}
+                      onChange={(event) => setActualAmount(event.target.value)}
+                      placeholder="25000"
                     />
-                    Keep forecast for this month
-                  </label>
-                  <Button
-                    type="button"
-                    disabled={!selectedSeatId}
-                    onClick={() => void saveSeatMonth()}
-                  >
-                    Save Month
-                  </Button>
-                  <div className="rounded-xl border border-dashed border-border px-4 py-3 text-sm">
-                    <div className="font-medium">Bulk copy forecast to actuals</div>
-                    <div className="mt-1 text-muted-foreground">
-                      Copy the selected month&apos;s forecast into actuals for all internal seats in{" "}
-                      {selectedScopeDetail}.
-                    </div>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      className="mt-3"
-                      disabled={
-                        !effectiveSelectedAreaId || !selectedArea?.subDomain || bulkCopyLoading
-                      }
-                      onClick={() => void copyForecastToInternalActuals()}
-                    >
-                      Copy {MONTH_NAMES[Number(selectedMonth)]} Forecast For Internal Seats
-                    </Button>
                   </div>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="actual-currency">Input Currency</Label>
+                  <select
+                    id="actual-currency"
+                    className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
+                    value={actualCurrency}
+                    onChange={(event) =>
+                      setActualCurrency(event.target.value as "DKK" | "EUR" | "USD")
+                    }
+                  >
+                    {SUPPORTED_CURRENCIES.map((currency) => (
+                      <option key={currency} value={currency}>
+                        {currency}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={forecastIncluded}
+                    onChange={(event) => setForecastIncluded(event.target.checked)}
+                  />
+                  Keep forecast for this month
+                </label>
+                <Button
+                  type="button"
+                  disabled={!selectedSeatId}
+                  onClick={() => void saveSeatMonth()}
+                >
+                  Save Month
+                </Button>
                 </CardContent>
               </Card>
             </div>
             </section>
+          </TabsContent>
+
+          <TabsContent value="cloud" className="space-y-4">
+            <div>
+              <p className="text-xs uppercase tracking-[0.22em] text-muted-foreground">
+                Cloud Actuals
+              </p>
+              <h3 className="mt-1 text-2xl font-semibold tracking-tight">
+                Enter monthly cloud actual
+              </h3>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Enter the cloud actual amount directly for the selected sub-domain and month.
+              </p>
+            </div>
+
+            <section className="grid gap-4 md:grid-cols-3">
+              <Card className="brand-card">
+                <CardHeader className="gap-1">
+                  <CardDescription>Forecasted Value</CardDescription>
+                  <CardTitle>{formatCurrency(selectedCloudForecast)}</CardTitle>
+                  {cloudDeviation !== null ? (
+                    <div
+                      className={`text-sm ${
+                        cloudDeviation > 0
+                          ? "text-emerald-700"
+                          : cloudDeviation < 0
+                            ? "text-rose-700"
+                            : "text-muted-foreground"
+                      }`}
+                    >
+                      Deviation: {cloudDeviation > 0 ? "+" : ""}
+                      {formatCurrency(cloudDeviation)}
+                    </div>
+                  ) : (
+                    <div className="text-sm text-muted-foreground">
+                      Forecast for {MONTH_NAMES[selectedMonthIndex]}.
+                    </div>
+                  )}
+                </CardHeader>
+              </Card>
+              <Card className="brand-card">
+                <CardHeader className="gap-1">
+                  <CardDescription>Target Month</CardDescription>
+                  <CardTitle>{MONTH_NAMES[selectedMonthIndex]}</CardTitle>
+                </CardHeader>
+              </Card>
+              <Card className="brand-card">
+                <CardHeader className="gap-1">
+                  <CardDescription>Cloud Spent To Date</CardDescription>
+                  <CardTitle>{formatCurrency(selectedArea?.cloudCostSpentToDate ?? 0)}</CardTitle>
+                  {cloudSpentToDateDeviation !== null ? (
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <button
+                            type="button"
+                            className={`w-fit text-left text-sm ${
+                              cloudSpentToDateDeviation > 0
+                                ? "text-emerald-700"
+                                : cloudSpentToDateDeviation < 0
+                                  ? "text-rose-700"
+                                  : "text-muted-foreground"
+                            }`}
+                          >
+                            Deviation: {cloudSpentToDateDeviation > 0 ? "+" : ""}
+                            {formatCurrency(cloudSpentToDateDeviation)}
+                          </button>
+                        </TooltipTrigger>
+                        <TooltipContent side="bottom" align="end" className="w-[420px] p-0">
+                          <div className="border-b border-border px-4 py-3">
+                            <div className="font-medium">Months Included In Spent To Date Deviation</div>
+                            <div className="text-xs text-muted-foreground">
+                              Forecast minus actual for months with cloud actuals.
+                            </div>
+                          </div>
+                          <div className="max-h-72 overflow-auto">
+                            <Table>
+                              <TableHeader>
+                                <TableRow>
+                                  <TableHead>Month</TableHead>
+                                  <TableHead className="text-right">Actual</TableHead>
+                                  <TableHead className="text-right">Forecast</TableHead>
+                                  <TableHead className="text-right">Deviation</TableHead>
+                                </TableRow>
+                              </TableHeader>
+                              <TableBody>
+                                {cloudActualMonthsWithValues.map((month) => (
+                                  <TableRow key={month.monthIndex}>
+                                    <TableCell>{month.monthLabel}</TableCell>
+                                    <TableCell className="text-right">
+                                      {formatCurrency(month.actual)}
+                                    </TableCell>
+                                    <TableCell className="text-right">
+                                      {formatCurrency(month.forecast)}
+                                    </TableCell>
+                                    <TableCell
+                                      className={`text-right ${
+                                        month.deviation > 0
+                                          ? "text-emerald-700"
+                                          : month.deviation < 0
+                                            ? "text-rose-700"
+                                            : "text-muted-foreground"
+                                      }`}
+                                    >
+                                      {month.deviation > 0 ? "+" : ""}
+                                      {formatCurrency(month.deviation)}
+                                    </TableCell>
+                                  </TableRow>
+                                ))}
+                              </TableBody>
+                            </Table>
+                          </div>
+                        </TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  ) : (
+                    <div className="text-sm text-muted-foreground">
+                      Deviation appears once cloud actuals exist.
+                    </div>
+                  )}
+                </CardHeader>
+              </Card>
+            </section>
+
+            <Card className="brand-card">
+              <CardHeader>
+                <CardTitle>Cloud Actual Entry</CardTitle>
+                <CardDescription>
+                  Save a single DKK amount into the selected scope and month.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label htmlFor="cloud-month">Month</Label>
+                    <select
+                      id="cloud-month"
+                      className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
+                      value={selectedMonth}
+                      onChange={(event) => handleCloudMonthChange(event.target.value)}
+                    >
+                      {MONTH_NAMES.map((month, index) => (
+                        <option key={month} value={index}>
+                          {month}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="cloud-actual-amount">Cloud Actual Amount</Label>
+                    <Input
+                      id="cloud-actual-amount"
+                      type="number"
+                      inputMode="decimal"
+                      value={cloudActualAmount}
+                      onChange={(event) => setCloudActualAmount(event.target.value)}
+                      placeholder="512340.50"
+                    />
+                  </div>
+                </div>
+                <div className="flex justify-end">
+                  <Button
+                    type="button"
+                    disabled={!effectiveSelectedAreaId || isSubmittingCloud}
+                    onClick={saveCloudActual}
+                  >
+                    {isSubmittingCloud ? "Saving..." : "Save Cloud Actual"}
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="licenses" className="space-y-4">
+            <div>
+              <p className="text-xs uppercase tracking-[0.22em] text-muted-foreground">
+                License Actuals
+              </p>
+              <h3 className="mt-1 text-2xl font-semibold tracking-tight">
+                License workflow placeholder
+              </h3>
+              <p className="mt-1 text-sm text-muted-foreground">
+                This tab is ready for the later license ingestion flow.
+              </p>
+            </div>
+
+            <Card className="brand-card">
+              <CardHeader>
+                <CardTitle>Licenses</CardTitle>
+                <CardDescription>
+                  License support is not wired yet; this tab is only reserving the page structure.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="rounded-xl border border-dashed border-border px-4 py-6 text-sm text-muted-foreground">
+                  No license import workflow has been implemented yet.
+                </div>
+              </CardContent>
+            </Card>
           </TabsContent>
 
           <TabsContent value="external" className="space-y-4">
