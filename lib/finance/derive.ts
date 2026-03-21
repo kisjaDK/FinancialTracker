@@ -71,7 +71,12 @@ export function getEffectiveSeat(
   }
 }
 
-export function isExternalSeat(seat: SeatWithRelations | ReturnType<typeof getEffectiveSeat>) {
+export function isExternalSeat(
+  seat:
+    | SeatWithRelations
+    | ReturnType<typeof getEffectiveSeat>
+    | Pick<ReturnType<typeof getEffectiveSeat>, "band" | "resourceType" | "vendor">
+) {
   const band = normalizeValue(seat.band)
   const resourceType = normalizeValue(seat.resourceType)
   const vendor = normalizeValue(seat.vendor)
@@ -87,6 +92,30 @@ export function isExternalSeat(seat: SeatWithRelations | ReturnType<typeof getEf
     resourceType.includes("managed services") ||
     hasExternalVendor
   )
+}
+
+export function isAmsSeat(
+  seat:
+    | SeatWithRelations
+    | ReturnType<typeof getEffectiveSeat>
+    | Pick<ReturnType<typeof getEffectiveSeat>, "resourceType">
+) {
+  const resourceType = normalizeValue(seat.resourceType)
+
+  return (
+    resourceType.includes("managed service") ||
+    resourceType.includes("managed services") ||
+    resourceType.includes("ams")
+  )
+}
+
+export function isCloudSeat(
+  seat:
+    | SeatWithRelations
+    | ReturnType<typeof getEffectiveSeat>
+    | Pick<ReturnType<typeof getEffectiveSeat>, "resourceType">
+) {
+  return normalizeValue(seat.resourceType) === "cloud"
 }
 
 export function monthLabel(year: number, monthIndex: number) {
@@ -159,13 +188,15 @@ export function deriveSeatMetrics(
 ): SeatDerivedMetrics {
   const effectiveSeat = getEffectiveSeat(seat)
   const cancelled = isTrackerCancelledSeat(effectiveSeat)
-  const external = isExternalSeat(effectiveSeat)
+  const cloud = isCloudSeat(effectiveSeat)
+  const ams = !cloud && isAmsSeat(effectiveSeat)
+  const external = !cloud && isExternalSeat(effectiveSeat)
   const assumption = lookupAssumption(assumptions, effectiveSeat.band, effectiveSeat.location)
   const allocation = effectiveSeat.allocation ?? 0
   const dailyRate = effectiveSeat.dailyRate ?? 0
   const exchangeRateLookup =
     options?.exchangeRateLookup ?? buildExchangeRateLookup(exchangeRates)
-  const yearlyCostInternal = external ? 0 : (assumption?.yearlyCost ?? 0)
+  const yearlyCostInternal = external || cloud ? 0 : (assumption?.yearlyCost ?? 0)
   const internalDailyRate = yearlyCostInternal / WORK_DAYS_PER_YEAR
   const yearlyCostExternal = external ? dailyRate * WORK_DAYS_PER_MONTH * 12 : 0
   const monthsByIndex = new Map(seat.months.map((month) => [month.monthIndex, month]))
@@ -219,13 +250,14 @@ export function deriveSeatMetrics(
   const internalPeriodForecast =
     allocation * activeMonthCount * WORK_DAYS_PER_MONTH * internalDailyRate
   const totalForecast = totalSpent + forecastWithoutActuals
-  const permFte = external ? 0 : allocation
-  const extFte = external ? allocation : 0
-  const permForecast = external ? 0 : Math.min(forecastWithoutActuals, internalPeriodForecast)
-  const extForecast = external ? forecastWithoutActuals : 0
-  const cloudCostForecast = normalizeValue(effectiveSeat.resourceType) === "cloud"
-    ? totalForecast
-    : 0
+  const permFte = external || cloud ? 0 : allocation
+  const extFte = external && !ams ? allocation : 0
+  const amsFte = ams ? allocation : 0
+  const permForecast =
+    external || cloud ? 0 : Math.min(forecastWithoutActuals, internalPeriodForecast)
+  const extForecast = external && !ams ? forecastWithoutActuals : 0
+  const amsForecast = ams ? forecastWithoutActuals : 0
+  const cloudCostForecast = cloud ? forecastWithoutActuals : 0
 
   return {
     totalSpent,
@@ -234,8 +266,10 @@ export function deriveSeatMetrics(
     yearlyCostExternal,
     permFte,
     extFte,
+    amsFte,
     permForecast,
     extForecast,
+    amsForecast,
     cloudCostForecast,
     quarterlyForecast: [
       monthlyForecast[0] + monthlyForecast[1] + monthlyForecast[2],

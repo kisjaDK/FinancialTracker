@@ -1,6 +1,6 @@
 import { PrismaClient } from "@prisma/client"
 
-const PRISMA_SCHEMA_VERSION = "2026-03-20-department-mapping-teams-v1"
+const PRISMA_SCHEMA_VERSION = "2026-03-21-budget-movement-category-mappings-v1"
 
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined
@@ -21,6 +21,7 @@ const supportsFinanceModels =
   "externalActualImport" in cachedPrisma &&
   "externalActualEntry" in cachedPrisma &&
   "accrualAccountMapping" in cachedPrisma &&
+  "budgetMovementCategoryMapping" in cachedPrisma &&
   "serviceUser" in cachedPrisma &&
   "serviceApiKey" in cachedPrisma &&
   "featureRequest" in cachedPrisma &&
@@ -54,6 +55,7 @@ export function getPrismaClient() {
     "externalActualImport" in globalPrisma &&
     "externalActualEntry" in globalPrisma &&
     "accrualAccountMapping" in globalPrisma &&
+    "budgetMovementCategoryMapping" in globalPrisma &&
     "serviceUser" in globalPrisma &&
     "serviceApiKey" in globalPrisma &&
     "featureRequest" in globalPrisma &&

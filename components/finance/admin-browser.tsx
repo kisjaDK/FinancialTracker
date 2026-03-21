@@ -1,8 +1,9 @@
 "use client"
 
-import { useRef, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
+import type { BudgetMovementBucket } from "@prisma/client"
 import { FinancePageIntro } from "@/components/finance/page-intro"
 import { SeatReferenceValuesCard } from "@/components/finance/seat-reference-values-card"
 import {
@@ -67,6 +68,13 @@ type AccrualAccountMapping = {
   notes: string | null
 }
 
+type BudgetMovementCategoryMapping = {
+  id: string
+  category: string
+  bucket: BudgetMovementBucket
+  notes: string | null
+}
+
 type ResetDataset =
   | "people-roster"
   | "forecasts"
@@ -83,6 +91,38 @@ type AdminBrowserProps = {
   rosterResourceTypes: string[]
   exchangeRates: ExchangeRate[]
   seatReferenceValues: SeatReferenceValueView[]
+  budgetMovementCategoryMappings: BudgetMovementCategoryMapping[]
+  budgetMovementCategories: string[]
+}
+
+const BUDGET_MOVEMENT_BUCKET_OPTIONS: BudgetMovementBucket[] = [
+  "PERM",
+  "EXT",
+  "CLOUD",
+  "AMS",
+  "LICENSES",
+]
+
+function inferBudgetMovementBucket(category: string): BudgetMovementBucket {
+  const normalizedCategory = category.trim().toLowerCase()
+
+  if (normalizedCategory.includes("cloud")) {
+    return "CLOUD"
+  }
+
+  if (normalizedCategory.includes("license") || normalizedCategory.includes("licence")) {
+    return "LICENSES"
+  }
+
+  if (normalizedCategory.includes("ams")) {
+    return "AMS"
+  }
+
+  if (/\bext\b/.test(normalizedCategory) || normalizedCategory.includes("external")) {
+    return "EXT"
+  }
+
+  return "PERM"
 }
 
 async function fetchJson(input: RequestInfo, init?: RequestInit) {
@@ -121,6 +161,8 @@ export function AdminBrowser({
   rosterResourceTypes,
   exchangeRates,
   seatReferenceValues,
+  budgetMovementCategoryMappings,
+  budgetMovementCategories,
 }: AdminBrowserProps) {
   const router = useRouter()
   const mappingImportRef = useRef<HTMLInputElement | null>(null)
@@ -146,6 +188,28 @@ export function AdminBrowser({
     useState<AccrualAccountMapping | null>(null)
   const [isDeletingMapping, setIsDeletingMapping] = useState(false)
   const [isDeletingAccrualMapping, setIsDeletingAccrualMapping] = useState(false)
+  const [categoryBucketDrafts, setCategoryBucketDrafts] = useState<Record<string, BudgetMovementBucket>>(
+    () =>
+      Object.fromEntries(
+        Array.from(
+          new Set([
+            ...budgetMovementCategories,
+            ...budgetMovementCategoryMappings.map((mapping) => mapping.category),
+          ])
+        ).map((category) => {
+          const explicitMapping = budgetMovementCategoryMappings.find(
+            (mapping) => mapping.category === category
+          )
+
+          return [
+            category,
+            explicitMapping?.bucket ?? inferBudgetMovementBucket(category),
+          ]
+        })
+      )
+  )
+  const [savingCategory, setSavingCategory] = useState<string | null>(null)
+  const [deletingCategoryMappingId, setDeletingCategoryMappingId] = useState<string | null>(null)
   const [pendingReset, setPendingReset] = useState<ResetDataset | null>(null)
   const [isResetting, setIsResetting] = useState(false)
   const [pendingOverrideDelete, setPendingOverrideDelete] = useState<
@@ -176,6 +240,49 @@ export function AdminBrowser({
   const resourceTypeValues = seatReferenceValues.filter(
     (value) => value.type === "RESOURCE_TYPE"
   )
+  const budgetMovementCategoryRows = Array.from(
+    new Set([
+      ...budgetMovementCategories,
+      ...budgetMovementCategoryMappings.map((mapping) => mapping.category),
+    ])
+  )
+    .sort((left, right) => left.localeCompare(right))
+    .map((category) => {
+    const explicitMapping =
+      budgetMovementCategoryMappings.find((mapping) => mapping.category === category) ?? null
+
+    return {
+      category,
+      explicitMapping,
+      effectiveBucket:
+        categoryBucketDrafts[category] ??
+        explicitMapping?.bucket ??
+        inferBudgetMovementBucket(category),
+    }
+  })
+
+  useEffect(() => {
+    setCategoryBucketDrafts(
+      Object.fromEntries(
+        Array.from(
+          new Set([
+            ...budgetMovementCategories,
+            ...budgetMovementCategoryMappings.map((mapping) => mapping.category),
+          ])
+        ).map((category) => {
+          const explicitMapping = budgetMovementCategoryMappings.find(
+            (mapping) => mapping.category === category
+          )
+
+          return [
+            category,
+            explicitMapping?.bucket ?? inferBudgetMovementBucket(category),
+          ]
+        })
+      )
+    )
+  }, [budgetMovementCategories, budgetMovementCategoryMappings])
+
 
   function resetMappingForm() {
     setEditingMappingId(null)
@@ -307,6 +414,61 @@ export function AdminBrowser({
       toast.error(error instanceof Error ? error.message : "Delete failed")
     } finally {
       setIsDeletingAccrualMapping(false)
+    }
+  }
+
+  async function saveBudgetMovementCategory(category: string) {
+    const bucket = categoryBucketDrafts[category]
+    if (!bucket) {
+      toast.error("Select a bucket first")
+      return
+    }
+
+    const existing = budgetMovementCategoryMappings.find((mapping) => mapping.category === category)
+    setSavingCategory(category)
+
+    try {
+      await fetchJson("/api/admin/budget-movement-category-mappings", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          id: existing?.id,
+          year: activeYear,
+          category,
+          bucket,
+        }),
+      })
+      toast.success("Budget movement category mapping saved")
+      router.refresh()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Save failed")
+    } finally {
+      setSavingCategory(null)
+    }
+  }
+
+  async function resetBudgetMovementCategoryMapping(mappingId: string) {
+    setDeletingCategoryMappingId(mappingId)
+
+    try {
+      await fetchJson("/api/admin/budget-movement-category-mappings", {
+        method: "DELETE",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          year: activeYear,
+          id: mappingId,
+        }),
+      })
+      toast.success("Budget movement category mapping reset")
+      router.refresh()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Reset failed")
+    } finally {
+      setDeletingCategoryMappingId(null)
     }
   }
 
@@ -650,6 +812,91 @@ export function AdminBrowser({
                   <div className="rounded-xl border border-dashed border-border px-4 py-3 text-sm text-muted-foreground">
                     Statuses available: {statuses.map((status) => status.label).join(", ")}
                   </div>
+                </CardContent>
+              </Card>
+
+              <Card className="brand-card">
+                <CardHeader>
+                  <CardTitle>Budget Movement Category Mapping</CardTitle>
+                  <CardDescription>
+                    Map imported budget movement categories into the app buckets used for budget reporting.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="rounded-xl border border-dashed border-border px-4 py-3 text-sm text-muted-foreground">
+                    Categories default to an inferred bucket until you save an explicit mapping. Buckets available: PERM, EXT, Cloud, AMS, Licenses.
+                  </div>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Category</TableHead>
+                        <TableHead>Bucket</TableHead>
+                        <TableHead>Status</TableHead>
+                        <TableHead className="text-right">Actions</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {budgetMovementCategoryRows.map((row) => (
+                        <TableRow key={row.category}>
+                          <TableCell className="font-medium">{row.category}</TableCell>
+                          <TableCell>
+                            <select
+                              className="h-9 min-w-36 rounded-md border border-border bg-background px-3 text-sm"
+                              value={row.effectiveBucket}
+                              onChange={(event) =>
+                                setCategoryBucketDrafts((current) => ({
+                                  ...current,
+                                  [row.category]: event.target.value as BudgetMovementBucket,
+                                }))
+                              }
+                            >
+                              {BUDGET_MOVEMENT_BUCKET_OPTIONS.map((bucket) => (
+                                <option key={bucket} value={bucket}>
+                                  {bucket}
+                                </option>
+                              ))}
+                            </select>
+                          </TableCell>
+                          <TableCell className="text-sm text-muted-foreground">
+                            {row.explicitMapping ? "Explicit mapping" : "Default inference"}
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <div className="flex justify-end gap-2">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                disabled={savingCategory === row.category}
+                                onClick={() => void saveBudgetMovementCategory(row.category)}
+                              >
+                                {savingCategory === row.category ? "Saving..." : "Save"}
+                              </Button>
+                              {row.explicitMapping ? (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  disabled={deletingCategoryMappingId === row.explicitMapping.id}
+                                  onClick={() =>
+                                    void resetBudgetMovementCategoryMapping(row.explicitMapping!.id)
+                                  }
+                                >
+                                  {deletingCategoryMappingId === row.explicitMapping.id
+                                    ? "Resetting..."
+                                    : "Reset"}
+                                </Button>
+                              ) : null}
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                      {budgetMovementCategoryRows.length === 0 ? (
+                        <TableRow>
+                          <TableCell colSpan={4} className="text-center text-muted-foreground">
+                            No budget movement categories found for this year.
+                          </TableCell>
+                        </TableRow>
+                      ) : null}
+                    </TableBody>
+                  </Table>
                 </CardContent>
               </Card>
 

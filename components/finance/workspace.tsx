@@ -65,15 +65,21 @@ type SummaryRow = {
 	remainingBudget: number;
 	totalForecast: number;
 	forecastRemaining: number;
+	permBudget: number;
+	extBudget: number;
+	amsBudget: number;
 	permTarget: number;
 	permForecast: number;
 	extForecast: number;
+	amsForecast: number;
 	cloudCostTarget: number;
 	cloudCostForecast: number;
 	seatCount: number;
 	activeSeatCount: number;
 	openSeatCount: number;
 };
+
+type ForecastBucket = "perm" | "ext" | "ams" | "cloud";
 
 type SeatRow = {
 	id: string;
@@ -92,6 +98,9 @@ type SeatRow = {
 	allocation: number;
 	totalSpent: number;
 	totalForecast: number;
+	permFte?: number;
+	extFte?: number;
+	amsFte?: number;
 	hasForecastAdjustments?: boolean;
 	yearlyCostInternal: number;
 	yearlyCostExternal: number;
@@ -108,6 +117,7 @@ type SeatRow = {
 		actualAmountRaw: number | null;
 		actualCurrency: "DKK" | "EUR" | "USD";
 		exchangeRateUsed: number | null;
+		comparisonForecastAmount?: number;
 		forecastIncluded: boolean;
 		notes: string | null;
 	}[];
@@ -130,6 +140,7 @@ type WorkspaceProps = {
 	missingActualMonthFilters: string[];
 	missingActualMonthOptions: readonly string[];
 	openSeatsOnly: boolean;
+	showCancelledSeats: boolean;
 	hasUnrestrictedDomainExportAccess: boolean;
 	exportableDomains: string[];
 	seatSortField?: string;
@@ -215,6 +226,15 @@ function isOpenSeatStatus(
 	return normalizedStatus === "open";
 }
 
+function isCancelledSeatStatus(status: string | null | undefined) {
+	const normalizedStatus = (status || "").trim().toLowerCase();
+
+	return (
+		normalizedStatus === "cancelled" ||
+		normalizedStatus === "cancelled- account still active in ad"
+	);
+}
+
 function sumQuarter(values: number[], quarterIndex: number) {
 	const start = quarterIndex * 3;
 	return values.slice(start, start + 3).reduce((sum, value) => sum + value, 0);
@@ -252,6 +272,58 @@ function getSeatStartMonthIndex(seat: SeatRow, activeYear: number) {
 	return startDate.getMonth();
 }
 
+function normalizeForecastBucket(value: string | null): ForecastBucket | null {
+	return value === "perm" ||
+		value === "ext" ||
+		value === "ams" ||
+		value === "cloud"
+		? value
+		: null;
+}
+
+function getForecastBucketLabel(bucket: ForecastBucket | null) {
+	if (bucket === "perm") {
+		return "PERM forecast seats";
+	}
+
+	if (bucket === "ext") {
+		return "EXT forecast seats";
+	}
+
+	if (bucket === "cloud") {
+		return "Cloud forecast seats";
+	}
+
+	if (bucket === "ams") {
+		return "AMS forecast seats";
+	}
+
+	return null;
+}
+
+function isCloudSeatType(resourceType: string | null | undefined) {
+	return (resourceType || "").trim().toLowerCase() === "cloud";
+}
+
+function isAmsSeatType(resourceType: string | null | undefined) {
+	const normalizedResourceType = (resourceType || "").trim().toLowerCase();
+
+	return (
+		normalizedResourceType.includes("managed service") ||
+		normalizedResourceType.includes("managed services") ||
+		normalizedResourceType.includes("ams")
+	);
+}
+
+function isLicenseSeatType(resourceType: string | null | undefined) {
+	const normalizedResourceType = (resourceType || "").trim().toLowerCase();
+
+	return (
+		normalizedResourceType.includes("license") ||
+		normalizedResourceType.includes("licence")
+	);
+}
+
 export function FinanceWorkspace({
 	activeYear,
 	trackingYears,
@@ -264,6 +336,7 @@ export function FinanceWorkspace({
 	missingActualMonthFilters,
 	missingActualMonthOptions,
 	openSeatsOnly,
+	showCancelledSeats,
 	hasUnrestrictedDomainExportAccess,
 	exportableDomains,
 	seatSortField,
@@ -286,6 +359,8 @@ export function FinanceWorkspace({
 	const [showForecastQuarterly, setShowForecastQuarterly] = useState(false);
 	const [isExportingDomainCsv, setIsExportingDomainCsv] = useState(false);
 	const [openSeatsOnlyDraft, setOpenSeatsOnlyDraft] = useState(openSeatsOnly);
+	const [showCancelledSeatsDraft, setShowCancelledSeatsDraft] =
+		useState(showCancelledSeats);
 	const [detailDialogSeatId, setDetailDialogSeatId] = useState<string | null>(
 		null,
 	);
@@ -312,7 +387,20 @@ export function FinanceWorkspace({
 			),
 		[summary],
 	);
+	const formatBudgetSummaryAmount = (value: number) => {
+		const normalized = Number.isFinite(value) ? value : 0;
+		const absoluteFormatted = formatCurrency(Math.abs(normalized)).replace(
+			/^DKK\s*/,
+			"",
+		);
+
+		return normalized < 0 ? `(${absoluteFormatted})` : absoluteFormatted;
+	};
 	const activeDomainFilter = searchParams.get("domain")?.trim() ?? "";
+	const activeForecastBucket = normalizeForecastBucket(
+		searchParams.get("forecastBucket"),
+	);
+	const activeForecastBucketLabel = getForecastBucketLabel(activeForecastBucket);
 	const domainOptions = useMemo(
 		() =>
 			Array.from(
@@ -391,6 +479,10 @@ export function FinanceWorkspace({
 	}, [openSeatsOnly]);
 
 	useEffect(() => {
+		setShowCancelledSeatsDraft(showCancelledSeats);
+	}, [showCancelledSeats]);
+
+	useEffect(() => {
 		if (!initialSelectedAreaId || seats.length > 0) {
 			return;
 		}
@@ -434,8 +526,92 @@ export function FinanceWorkspace({
 		summary.find((row) => row.id === activeSummaryAreaId) ??
 		filteredSummary[0] ??
 		summary[0];
+	const selectedAreaBucketBudgetDelta = useMemo(() => {
+		return areaSeats.reduce(
+			(totals, seat) => {
+				if (isCloudSeatType(seat.resourceType)) {
+					totals.cloudSpent += seat.totalSpent;
+					return totals;
+				}
+
+				if ((seat.amsFte ?? 0) > 0 || isAmsSeatType(seat.resourceType)) {
+					totals.amsSpent += seat.totalSpent;
+					return totals;
+				}
+
+				if ((seat.extFte ?? 0) > 0) {
+					totals.extSpent += seat.totalSpent;
+					return totals;
+				}
+
+				if ((seat.permFte ?? 0) > 0) {
+					totals.permSpent += seat.totalSpent;
+				}
+
+				return totals;
+			},
+			{
+				permSpent: 0,
+				extSpent: 0,
+				amsSpent: 0,
+				cloudSpent: 0,
+			},
+		);
+	}, [areaSeats]);
 	const effectiveSelectedAreaId =
 		activeSummaryAreaId ?? selectedArea?.id ?? null;
+	useEffect(() => {
+		if (
+			activeForecastBucket !== "cloud" ||
+			!effectiveSelectedAreaId ||
+			isAreaLoading ||
+			areaSeats.some(
+				(seat) => (seat.resourceType || "").trim().toLowerCase() === "cloud",
+			)
+		) {
+			return;
+		}
+
+		let cancelled = false;
+		setIsAreaLoading(true);
+
+		void fetchJson(
+			`/api/tracker/detail?year=${activeYear}&budgetAreaId=${encodeURIComponent(effectiveSelectedAreaId)}`,
+		)
+			.then((response) => {
+				if (cancelled) {
+					return;
+				}
+
+				setAreaSeats(response.seats);
+			})
+			.catch((error) => {
+				if (cancelled) {
+					return;
+				}
+
+				toast.error(
+					error instanceof Error
+						? error.message
+						: "Failed to load cloud forecast seats",
+				);
+			})
+			.finally(() => {
+				if (!cancelled) {
+					setIsAreaLoading(false);
+				}
+			});
+
+		return () => {
+			cancelled = true;
+		};
+	}, [
+		activeForecastBucket,
+		activeYear,
+		areaSeats,
+		effectiveSelectedAreaId,
+		isAreaLoading,
+	]);
 	const filteredSeats = useMemo(() => {
 		const teamFilter = new Set(
 			trackerTeamFilters
@@ -449,6 +625,33 @@ export function FinanceWorkspace({
 		);
 
 		return areaSeats.filter((seat) => {
+			if (!showCancelledSeats && isCancelledSeatStatus(seat.status)) {
+				return false;
+			}
+
+			if (
+				activeForecastBucket === "cloud" &&
+				(seat.resourceType || "").trim().toLowerCase() !== "cloud"
+			) {
+				return false;
+			}
+
+			if (activeForecastBucket === "ext" && (seat.extFte ?? 0) <= 0) {
+				return false;
+			}
+
+			if (
+				activeForecastBucket === "ams" &&
+				(seat.amsFte ?? 0) <= 0 &&
+				!isAmsSeatType(seat.resourceType)
+			) {
+				return false;
+			}
+
+			if (activeForecastBucket === "perm" && (seat.permFte ?? 0) <= 0) {
+				return false;
+			}
+
 			if (openSeatsOnly && !isOpenSeatStatus(seat.status, openSeatStatuses)) {
 				return false;
 			}
@@ -496,6 +699,7 @@ export function FinanceWorkspace({
 		});
 	}, [
 		activeYear,
+		activeForecastBucket,
 		areaSeats,
 		missingActualMonthFilters,
 		openSeatsOnly,
@@ -562,15 +766,36 @@ export function FinanceWorkspace({
 			sortedSeats.reduce(
 				(totals, seat) => ({
 					spent: totals.spent + seat.totalSpent,
-					forecast: totals.forecast + seat.totalForecast,
+					remainingForecast:
+						totals.remainingForecast +
+						Math.max(0, seat.totalForecast - seat.totalSpent),
+					yearEndSpent: totals.yearEndSpent + seat.totalForecast,
 				}),
 				{
 					spent: 0,
-					forecast: 0,
+					remainingForecast: 0,
+					yearEndSpent: 0,
 				},
 			),
 		[sortedSeats],
 	);
+	const listedSeatFteTotals = useMemo(() => {
+		const getSeatFte = (seat: SeatRow) => {
+			if (
+				isCloudSeatType(seat.resourceType) ||
+				isLicenseSeatType(seat.resourceType)
+			) {
+				return 0;
+			}
+
+			return Number.isFinite(seat.allocation) ? seat.allocation : 0;
+		};
+
+		return {
+			listed: sortedSeats.reduce((sum, seat) => sum + getSeatFte(seat), 0),
+			total: areaSeats.reduce((sum, seat) => sum + getSeatFte(seat), 0),
+		};
+	}, [areaSeats, sortedSeats]);
 	const effectiveTrackerTeamOptions = useMemo(
 		() =>
 			trackerTeamOptions.length > 0
@@ -616,6 +841,9 @@ export function FinanceWorkspace({
 		return activeSeatSortDirection === "asc" ? "↑" : "↓";
 	}
 
+	const trackerTableHeadClassName =
+		"sticky top-0 z-20 border-b border-border/70 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85";
+
 	function updateParams(next: Record<string, string | null>) {
 		const params = new URLSearchParams(searchParams.toString());
 		Object.entries(next).forEach(([key, value]) => {
@@ -628,6 +856,12 @@ export function FinanceWorkspace({
 
 		startTransition(() => {
 			router.replace(`/tracker?${params.toString()}`, { scroll: false });
+		});
+	}
+
+	function toggleForecastBucket(bucket: ForecastBucket) {
+		updateParams({
+			forecastBucket: activeForecastBucket === bucket ? null : bucket,
 		});
 	}
 
@@ -675,10 +909,17 @@ export function FinanceWorkspace({
 			params.set("seatSortDirection", seatSortDirection);
 		}
 
+		if (activeForecastBucket) {
+			params.set("forecastBucket", activeForecastBucket);
+		}
+
 		appendValues("team", formData.getAll("team"));
 		appendValues("missingActualMonth", formData.getAll("missingActualMonth"));
 		if (formData.get("openSeatsOnly") === "true") {
 			params.set("openSeatsOnly", "true");
+		}
+		if (formData.get("showCancelledSeats") === "true") {
+			params.set("showCancelledSeats", "true");
 		}
 
 		startTransition(() => {
@@ -688,6 +929,19 @@ export function FinanceWorkspace({
 
 	function handleOpenSeatsOnlyChange(checked: boolean) {
 		setOpenSeatsOnlyDraft(checked);
+
+		const form = seatFilterFormRef.current;
+		if (!form) {
+			return;
+		}
+
+		requestAnimationFrame(() => {
+			form.requestSubmit();
+		});
+	}
+
+	function handleShowCancelledSeatsChange(checked: boolean) {
+		setShowCancelledSeatsDraft(checked);
 
 		const form = seatFilterFormRef.current;
 		if (!form) {
@@ -882,6 +1136,9 @@ export function FinanceWorkspace({
 								Imported budget movements plus derived spend and forecast by
 								pillar.
 							</CardDescription>
+							<div className="mt-2 text-xs uppercase tracking-[0.18em] text-muted-foreground">
+								All values in DKK
+							</div>
 						</div>
 
 						<div className="flex w-full flex-col gap-3 lg:max-w-4xl lg:self-end">
@@ -965,29 +1222,30 @@ export function FinanceWorkspace({
 					</CardHeader>
 					<CardContent className="pt-5">
 						<div className="brand-table-shell">
-							<Table>
+							<Table className="min-w-[1080px]">
 								<TableHeader>
 									<TableRow>
-										<TableHead className="h-14 bg-muted/30 text-sm font-medium">
+										<TableHead className="h-14 w-[31rem] bg-muted/30 text-sm font-medium">
 											Pillar
 										</TableHead>
-										<TableHead className="h-14 bg-muted/30 text-sm font-medium">
-											Project
-										</TableHead>
-										<TableHead className="h-14 bg-muted/30 text-right text-sm font-medium">
+										<TableHead className="h-14 w-[12rem] bg-muted/30 text-right text-sm font-medium">
 											Budget
 										</TableHead>
-										<TableHead className="whitespace-normal leading-tight">
-											Spent To Date
+										<TableHead className="h-14 w-[10rem] bg-muted/30 text-right text-sm font-medium whitespace-normal leading-tight">
+											<span className="block">Spent To</span>
+											<span className="block">Date</span>
 										</TableHead>
-										<TableHead className="whitespace-normal leading-tight">
-											Remaining Budget
+										<TableHead className="h-14 w-[11rem] bg-muted/30 text-right text-sm font-medium whitespace-normal leading-tight">
+											<span className="block">Remaining</span>
+											<span className="block">Budget</span>
 										</TableHead>
-										<TableHead className="whitespace-normal leading-tight">
-											Forecast Spent To End Of Year
+										<TableHead className="h-14 w-[12rem] bg-muted/30 text-right text-sm font-medium whitespace-normal leading-tight">
+											<span className="block">Forecast Spent</span>
+											<span className="block">To End Of Year</span>
 										</TableHead>
-										<TableHead className="whitespace-normal leading-tight text-right">
-											End Of Year Balance
+										<TableHead className="h-14 w-[11rem] bg-muted/30 text-right text-sm font-medium whitespace-normal leading-tight">
+											<span className="block">End Of Year</span>
+											<span className="block">Balance</span>
 										</TableHead>
 									</TableRow>
 								</TableHeader>
@@ -1017,33 +1275,55 @@ export function FinanceWorkspace({
 													}
 												}}
 											>
-												<TableCell>
+												<TableCell className="align-top whitespace-normal">
 													<div className="font-medium">{row.displayName}</div>
 													<div className="text-xs text-muted-foreground">
 														{row.domain || "Unmapped domain"} ·{" "}
 														{row.subDomain || "Unmapped sub-domain"}
 													</div>
-												</TableCell>
-												<TableCell>
-													<div className="font-medium">
-														{row.projectCode || "Unassigned"}
+													<div className="mt-1 text-xs text-muted-foreground/80">
+														Project {row.projectCode || "Unassigned"}
 													</div>
 												</TableCell>
-												<TableCell className="text-right">
+												<TableCell className="align-top text-right whitespace-nowrap">
 													<div className="font-medium">
-														{formatCurrency(row.amountGivenBudget)}
+														{formatBudgetSummaryAmount(row.amountGivenBudget)}
 													</div>
 													<div className="text-xs text-muted-foreground">
-														Finance view {formatCurrency(row.financeViewBudget)}
+														Finance view {formatBudgetSummaryAmount(row.financeViewBudget)}
 													</div>
 												</TableCell>
-												<TableCell>{formatCurrency(row.spentToDate)}</TableCell>
-												<TableCell>{formatCurrency(remainingBudget)}</TableCell>
-												<TableCell>
-													{formatCurrency(forecastSpentToEndOfYear)}
+												<TableCell
+													className={cn(
+														"align-top text-right whitespace-nowrap",
+														row.spentToDate < 0 && "text-rose-600",
+													)}
+												>
+													{formatBudgetSummaryAmount(row.spentToDate)}
 												</TableCell>
-												<TableCell className="text-right">
-													{formatCurrency(endOfYearBalance)}
+												<TableCell
+													className={cn(
+														"align-top text-right whitespace-nowrap",
+														remainingBudget < 0 && "text-rose-600",
+													)}
+												>
+													{formatBudgetSummaryAmount(remainingBudget)}
+												</TableCell>
+												<TableCell
+													className={cn(
+														"align-top text-right whitespace-nowrap",
+														forecastSpentToEndOfYear < 0 && "text-rose-600",
+													)}
+												>
+													{formatBudgetSummaryAmount(forecastSpentToEndOfYear)}
+												</TableCell>
+												<TableCell
+													className={cn(
+														"align-top text-right whitespace-nowrap",
+														endOfYearBalance < 0 && "text-rose-600",
+													)}
+												>
+													{formatBudgetSummaryAmount(endOfYearBalance)}
 												</TableCell>
 											</TableRow>
 										);
@@ -1051,7 +1331,7 @@ export function FinanceWorkspace({
 									{filteredSummary.length === 0 ? (
 										<TableRow>
 											<TableCell
-												colSpan={7}
+												colSpan={6}
 												className="py-8 text-center text-muted-foreground"
 											>
 												{activeDomainFilter
@@ -1107,10 +1387,10 @@ export function FinanceWorkspace({
 									</div>
 									<div className="rounded-2xl bg-muted/45 p-4">
 										<div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
-											PERM Target
+											PERM Target (FTE)
 										</div>
 										<div className="mt-2 text-base font-semibold">
-											{formatPercent(selectedArea.permTarget)}
+											{formatNumber(selectedArea.permTarget)}
 										</div>
 									</div>
 									<div className="rounded-2xl bg-muted/45 p-4">
@@ -1122,29 +1402,135 @@ export function FinanceWorkspace({
 										</div>
 									</div>
 								</div>
-								<div className="grid gap-3 border-t border-border/60 pt-5 md:grid-cols-3">
-									<div className="rounded-2xl border border-dashed border-border px-4 py-4">
+								<div className="grid gap-3 border-t border-border/60 pt-5 md:grid-cols-4">
+									<button
+										type="button"
+										onClick={() => toggleForecastBucket("perm")}
+										className={cn(
+											"rounded-2xl border border-dashed border-border px-4 py-4 text-left transition-colors hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-300 focus-visible:ring-offset-2",
+											activeForecastBucket === "perm" &&
+												"border-rose-300 bg-rose-50/60",
+										)}
+									>
 										<div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
 											PERM Forecast
 										</div>
 										<div className="mt-2 font-medium">
 											{formatCurrency(selectedArea.permForecast)}
 										</div>
-									</div>
-									<div className="rounded-2xl border border-dashed border-border px-4 py-4">
+										<div className="mt-2 text-xs text-muted-foreground">
+											{activeForecastBucket === "perm"
+												? "Showing below. Click again to clear."
+												: "Click to filter the seat tracker below."}
+										</div>
+									</button>
+									<button
+										type="button"
+										onClick={() => toggleForecastBucket("ext")}
+										className={cn(
+											"rounded-2xl border border-dashed border-border px-4 py-4 text-left transition-colors hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-300 focus-visible:ring-offset-2",
+											activeForecastBucket === "ext" &&
+												"border-rose-300 bg-rose-50/60",
+										)}
+									>
 										<div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
 											EXT Forecast
 										</div>
 										<div className="mt-2 font-medium">
 											{formatCurrency(selectedArea.extForecast)}
 										</div>
-									</div>
-									<div className="rounded-2xl border border-dashed border-border px-4 py-4">
+										<div className="mt-2 text-xs text-muted-foreground">
+											{activeForecastBucket === "ext"
+												? "Showing below. Click again to clear."
+												: "Click to filter the seat tracker below."}
+										</div>
+									</button>
+									<button
+										type="button"
+										onClick={() => toggleForecastBucket("ams")}
+										className={cn(
+											"rounded-2xl border border-dashed border-border px-4 py-4 text-left transition-colors hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-300 focus-visible:ring-offset-2",
+											activeForecastBucket === "ams" &&
+												"border-rose-300 bg-rose-50/60",
+										)}
+									>
+										<div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+											AMS Forecast
+										</div>
+										<div className="mt-2 font-medium">
+											{formatCurrency(selectedArea.amsForecast)}
+										</div>
+										<div className="mt-2 text-xs text-muted-foreground">
+											{activeForecastBucket === "ams"
+												? "Showing below. Click again to clear."
+												: "Click to filter the seat tracker below."}
+										</div>
+									</button>
+									<button
+										type="button"
+										onClick={() => toggleForecastBucket("cloud")}
+										className={cn(
+											"rounded-2xl border border-dashed border-border px-4 py-4 text-left transition-colors hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-300 focus-visible:ring-offset-2",
+											activeForecastBucket === "cloud" &&
+												"border-rose-300 bg-rose-50/60",
+										)}
+									>
 										<div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
 											Cloud Forecast
 										</div>
 										<div className="mt-2 font-medium">
 											{formatCurrency(selectedArea.cloudCostForecast)}
+										</div>
+										<div className="mt-2 text-xs text-muted-foreground">
+											{activeForecastBucket === "cloud"
+												? "Showing below. Click again to clear."
+												: "Click to filter the seat tracker below."}
+										</div>
+									</button>
+								</div>
+								<div className="grid gap-3 md:grid-cols-4">
+									<div className="rounded-2xl bg-muted/35 px-4 py-4">
+										<div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+											PERM Budget - Spent
+										</div>
+										<div className="mt-2 font-medium">
+											{formatCurrency(
+												selectedArea.permBudget -
+													selectedAreaBucketBudgetDelta.permSpent,
+											)}
+										</div>
+									</div>
+									<div className="rounded-2xl bg-muted/35 px-4 py-4">
+										<div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+											EXT Budget - Spent
+										</div>
+										<div className="mt-2 font-medium">
+											{formatCurrency(
+												selectedArea.extBudget -
+													selectedAreaBucketBudgetDelta.extSpent,
+											)}
+										</div>
+									</div>
+									<div className="rounded-2xl bg-muted/35 px-4 py-4">
+										<div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+											AMS Budget - Spent
+										</div>
+										<div className="mt-2 font-medium">
+											{formatCurrency(
+												selectedArea.amsBudget -
+													selectedAreaBucketBudgetDelta.amsSpent,
+											)}
+										</div>
+									</div>
+									<div className="rounded-2xl bg-muted/35 px-4 py-4">
+										<div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+											Cloud Budget - Spent
+										</div>
+										<div className="mt-2 font-medium">
+											{formatCurrency(
+												selectedArea.cloudCostTarget -
+													selectedAreaBucketBudgetDelta.cloudSpent,
+											)}
 										</div>
 									</div>
 								</div>
@@ -1188,7 +1574,9 @@ export function FinanceWorkspace({
 						<CardDescription>
 							{isAreaLoading
 								? "Loading pillar details..."
-								: "Detail rows derived from the latest approved roster import."}
+								: activeForecastBucketLabel
+									? `Filtered to ${activeForecastBucketLabel.toLowerCase()} for the selected pillar.`
+									: "Detail rows derived from the latest approved roster import."}
 						</CardDescription>
 					</CardHeader>
 					<CardContent>
@@ -1221,6 +1609,13 @@ export function FinanceWorkspace({
 								name="seatSortDirection"
 								value={activeSeatSortDirection}
 							/>
+							{activeForecastBucket ? (
+								<input
+									type="hidden"
+									name="forecastBucket"
+									value={activeForecastBucket}
+								/>
+							) : null}
 							<MultiSelectFilter
 								label="Team"
 								name="team"
@@ -1252,6 +1647,31 @@ export function FinanceWorkspace({
 									</div>
 								</div>
 							</div>
+							<div className="flex items-end">
+								<div className="flex w-full items-center justify-between rounded-2xl border border-border/70 bg-background/75 px-4 py-3">
+									<div className="pr-4">
+										<div className="text-sm font-medium">
+											Show cancelled seats
+										</div>
+										<div className="text-xs text-muted-foreground">
+											Hidden by default to keep the tracker focused on active work.
+										</div>
+									</div>
+									<div className="flex items-center gap-3">
+										{showCancelledSeatsDraft ? (
+											<input
+												type="hidden"
+												name="showCancelledSeats"
+												value="true"
+											/>
+										) : null}
+										<Switch
+											checked={showCancelledSeatsDraft}
+											onCheckedChange={handleShowCancelledSeatsChange}
+										/>
+									</div>
+								</div>
+							</div>
 							<div className="flex items-end gap-2">
 								<Button type="submit">Apply</Button>
 								<Button asChild variant="outline">
@@ -1267,6 +1687,11 @@ export function FinanceWorkspace({
 								</Button>
 							</div>
 						</form>
+						{activeForecastBucketLabel ? (
+							<div className="mb-4 rounded-2xl bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
+								Showing {activeForecastBucketLabel.toLowerCase()} in the seat tracker.
+							</div>
+						) : null}
 						<div className="mb-5 flex flex-wrap items-center gap-x-6 gap-y-2 rounded-2xl bg-muted/30 px-4 py-3 text-sm">
 							<div className="flex items-center gap-2">
 								<span className="text-muted-foreground">Listed spent</span>
@@ -1275,9 +1700,15 @@ export function FinanceWorkspace({
 								</span>
 							</div>
 							<div className="flex items-center gap-2">
-								<span className="text-muted-foreground">Listed forecast</span>
+								<span className="text-muted-foreground">Listed remaining forecast</span>
 								<span className="font-medium">
-									{formatCurrency(listedSeatTotals.forecast)}
+									{formatCurrency(listedSeatTotals.remainingForecast)}
+								</span>
+							</div>
+							<div className="flex items-center gap-2">
+								<span className="text-muted-foreground">Listed year end spent</span>
+								<span className="font-medium">
+									{formatCurrency(listedSeatTotals.yearEndSpent)}
 								</span>
 							</div>
 							<div className="flex items-center gap-2">
@@ -1287,12 +1718,23 @@ export function FinanceWorkspace({
 									{formatNumber(areaSeats.length)} seats
 								</span>
 							</div>
+							<div className="flex items-center gap-2">
+								<span className="text-muted-foreground">Showing</span>
+								<span className="font-medium">
+									{formatNumber(listedSeatFteTotals.listed)} of{" "}
+									{formatNumber(listedSeatFteTotals.total)} FTE
+								</span>
+							</div>
 						</div>
 						<div className="brand-table-shell">
-							<Table>
+							<div
+								className="overflow-auto"
+								style={{ height: "max(20rem, calc(100dvh - 24rem))" }}
+							>
+							<Table containerClassName="overflow-visible">
 								<TableHeader>
 									<TableRow>
-										<TableHead>
+										<TableHead className={trackerTableHeadClassName}>
 											<button
 												type="button"
 												className="text-left hover:text-foreground"
@@ -1301,7 +1743,7 @@ export function FinanceWorkspace({
 												Seat {sortIndicator("seat")}
 											</button>
 										</TableHead>
-										<TableHead>
+										<TableHead className={trackerTableHeadClassName}>
 											<button
 												type="button"
 												className="text-left hover:text-foreground"
@@ -1310,7 +1752,7 @@ export function FinanceWorkspace({
 												Resource {sortIndicator("resource")}
 											</button>
 										</TableHead>
-										<TableHead>
+										<TableHead className={trackerTableHeadClassName}>
 											<button
 												type="button"
 												className="text-left hover:text-foreground"
@@ -1319,7 +1761,7 @@ export function FinanceWorkspace({
 												Type {sortIndicator("type")}
 											</button>
 										</TableHead>
-										<TableHead>
+										<TableHead className={trackerTableHeadClassName}>
 											<button
 												type="button"
 												className="text-left hover:text-foreground"
@@ -1328,7 +1770,7 @@ export function FinanceWorkspace({
 												Alloc {sortIndicator("alloc")}
 											</button>
 										</TableHead>
-										<TableHead>
+										<TableHead className={trackerTableHeadClassName}>
 											<button
 												type="button"
 												className="text-left hover:text-foreground"
@@ -1341,13 +1783,13 @@ export function FinanceWorkspace({
 										</TableHead>
 										{showSpentQuarterly ? (
 											<>
-												<TableHead>S Q1</TableHead>
-												<TableHead>S Q2</TableHead>
-												<TableHead>S Q3</TableHead>
-												<TableHead>S Q4</TableHead>
+												<TableHead className={trackerTableHeadClassName}>S Q1</TableHead>
+												<TableHead className={trackerTableHeadClassName}>S Q2</TableHead>
+												<TableHead className={trackerTableHeadClassName}>S Q3</TableHead>
+												<TableHead className={trackerTableHeadClassName}>S Q4</TableHead>
 											</>
 										) : null}
-										<TableHead>
+										<TableHead className={trackerTableHeadClassName}>
 											<button
 												type="button"
 												className="text-left hover:text-foreground"
@@ -1355,18 +1797,26 @@ export function FinanceWorkspace({
 													setShowForecastQuarterly((current) => !current)
 												}
 											>
-												Forecast {showForecastQuarterly ? "−" : "+"}
+												Remaining Forecast {showForecastQuarterly ? "−" : "+"}
 											</button>
 										</TableHead>
 										{showForecastQuarterly ? (
 											<>
-												<TableHead>F Q1</TableHead>
-												<TableHead>F Q2</TableHead>
-												<TableHead>F Q3</TableHead>
-												<TableHead>F Q4</TableHead>
+												<TableHead className={trackerTableHeadClassName}>F Q1</TableHead>
+												<TableHead className={trackerTableHeadClassName}>F Q2</TableHead>
+												<TableHead className={trackerTableHeadClassName}>F Q3</TableHead>
+												<TableHead className={trackerTableHeadClassName}>F Q4</TableHead>
 											</>
 										) : null}
-										<TableHead className="w-28 text-right align-top">
+										<TableHead className={trackerTableHeadClassName}>
+											Year End Spent
+										</TableHead>
+										<TableHead
+											className={cn(
+												trackerTableHeadClassName,
+												"w-28 text-right align-top",
+											)}
+										>
 											Actions
 										</TableHead>
 									</TableRow>
@@ -1375,6 +1825,17 @@ export function FinanceWorkspace({
 									{sortedSeats.map((seat) =>
 										(() => {
 											const quarterlySpent = getQuarterlySpent(seat);
+											const remainingForecast = Math.max(
+												0,
+												seat.totalForecast - seat.totalSpent,
+											);
+											const fullYearForecast = seat.months.reduce(
+												(sum, month) =>
+													sum + (month.comparisonForecastAmount ?? 0),
+												0,
+											);
+											const yearEndSpentDeviation =
+												seat.totalForecast - fullYearForecast;
 											const quarterlyForecast = Array.from(
 												{ length: 4 },
 												(_, quarterIndex) =>
@@ -1391,7 +1852,7 @@ export function FinanceWorkspace({
 													}
 													onClick={() => selectSeat(seat.id)}
 												>
-													<TableCell>
+													<TableCell className="align-top whitespace-normal break-words">
 														<div className="flex items-center justify-between gap-3">
 															<Link
 																href={`/people-roster?year=${activeYear}&seatId=${encodeURIComponent(seat.seatId)}`}
@@ -1408,15 +1869,16 @@ export function FinanceWorkspace({
 															{seat.team}
 														</div>
 														<div className="text-xs text-muted-foreground">
-															{seat.domain || "Unmapped"} ·{" "}
-															{seat.subDomain || "Unmapped"}
+															{seat.team || "No team"}
 														</div>
 														<div className="text-xs text-muted-foreground">
 															{seat.projectCode || "No project code"}
 														</div>
 													</TableCell>
-													<TableCell>
-														<div>{seat.inSeat || "Unassigned"}</div>
+													<TableCell className="align-top whitespace-normal break-words">
+														<div className="break-words whitespace-normal">
+															{seat.inSeat || "Unassigned"}
+														</div>
 														<div className="text-xs text-muted-foreground">
 															{seat.band}
 														</div>
@@ -1424,12 +1886,14 @@ export function FinanceWorkspace({
 															{seat.location || "No location"}
 														</div>
 													</TableCell>
-													<TableCell>
-														<div>{seat.resourceType || "n/a"}</div>
-														<div className="text-xs text-muted-foreground">
+													<TableCell className="align-top whitespace-normal break-words">
+														<div className="break-words whitespace-normal">
+															{seat.resourceType || "n/a"}
+														</div>
+														<div className="text-xs text-muted-foreground whitespace-normal break-words">
 															{seat.description || "No role"}
 														</div>
-														<div className="text-xs text-muted-foreground">
+														<div className="text-xs text-muted-foreground whitespace-normal break-words">
 															{formatOptionalDate(seat.startDate)} to{" "}
 															{formatOptionalDate(seat.endDate)}
 														</div>
@@ -1458,7 +1922,7 @@ export function FinanceWorkspace({
 													) : null}
 													<TableCell className="align-top">
 														<div className="flex items-center gap-1">
-															<span>{formatCurrency(seat.totalForecast)}</span>
+															<span>{formatCurrency(remainingForecast)}</span>
 															{seat.hasForecastAdjustments ? (
 																<PenLine
 																	className="size-3.5 text-rose-700 dark:text-rose-300"
@@ -1486,6 +1950,22 @@ export function FinanceWorkspace({
 															</TableCell>
 														</>
 													) : null}
+													<TableCell>
+														<div>{formatCurrency(seat.totalForecast)}</div>
+														<div
+															className={cn(
+																"text-xs",
+																yearEndSpentDeviation < 0
+																	? "text-emerald-700/80"
+																	: yearEndSpentDeviation > 0
+																		? "text-rose-700/80"
+																		: "text-muted-foreground",
+															)}
+														>
+															vs full year {yearEndSpentDeviation > 0 ? "+" : ""}
+															{formatCurrency(yearEndSpentDeviation)}
+														</div>
+													</TableCell>
 													<TableCell className="align-top text-right">
 														<div className="flex flex-col items-end gap-2">
 															<Button
@@ -1510,7 +1990,7 @@ export function FinanceWorkspace({
 										<TableRow>
 											<TableCell
 												colSpan={
-													7 +
+													8 +
 													(showSpentQuarterly ? 4 : 0) +
 													(showForecastQuarterly ? 4 : 0)
 												}
@@ -1522,6 +2002,7 @@ export function FinanceWorkspace({
 									) : null}
 								</TableBody>
 							</Table>
+							</div>
 						</div>
 					</CardContent>
 				</Card>

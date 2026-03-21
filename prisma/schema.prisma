@@ -67,6 +67,14 @@ enum SeatReferenceValueType {
   RESOURCE_TYPE
 }
 
+enum BudgetMovementBucket {
+  PERM
+  EXT
+  CLOUD
+  AMS
+  LICENSES
+}
+
 model AppUser {
   id        String            @id @default(cuid())
   email     String            @unique
@@ -188,6 +196,7 @@ model TrackingYear {
   rosterPeople        RosterPerson[]
   trackerSeats        TrackerSeat[]
   seatReferenceValues SeatReferenceValue[]
+  budgetMovementCategoryMappings BudgetMovementCategoryMapping[]
   staffingTargets     StaffingTarget[]
   auditLogs           AuditLog[]
 }
@@ -203,6 +212,20 @@ model SeatReferenceValue {
 
   @@unique([trackingYearId, type, value])
   @@index([trackingYearId, type, value])
+}
+
+model BudgetMovementCategoryMapping {
+  id             String               @id @default(cuid())
+  trackingYearId String
+  category       String
+  bucket         BudgetMovementBucket
+  notes          String?
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+  trackingYear   TrackingYear         @relation(fields: [trackingYearId], references: [id], onDelete: Cascade)
+
+  @@unique([trackingYearId, category])
+  @@index([trackingYearId, category])
 }
 
 model ServiceMessage {

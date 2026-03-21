@@ -33,6 +33,8 @@ export default async function AdminPage({ searchParams }: PageProps) {
         rosterResourceTypes={data.rosterResourceTypes}
         exchangeRates={data.exchangeRates}
         seatReferenceValues={data.seatReferenceValues}
+        budgetMovementCategoryMappings={data.budgetMovementCategoryMappings}
+        budgetMovementCategories={data.budgetMovementCategories}
       />
     </FinanceAppShell>
   );

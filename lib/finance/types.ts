@@ -1,5 +1,6 @@
 import type {
   BudgetArea,
+  BudgetMovementBucket,
   CostAssumption,
   CurrencyCode,
   SeatReferenceValueType,
@@ -33,14 +34,24 @@ export type BudgetAreaSummary = {
   remainingBudget: number
   totalForecast: number
   forecastRemaining: number
+  permBudget: number
+  extBudget: number
+  amsBudget: number
   permTarget: number
   permForecast: number
   extForecast: number
+  amsForecast: number
   cloudCostSpentToDate: number
   cloudCostTarget: number
   cloudCostForecast: number
+  cloudSeatId: string | null
+  cloudSeatLabel: string | null
+  cloudSeatDescription: string | null
+  cloudSeatStatus: string | null
+  cloudSeatTeam: string | null
   cloudCostMonthlyActuals: number[]
   cloudCostMonthlyForecast: number[]
+  cloudCostMonthlyComparisonForecast: number[]
   seatCount: number
   activeSeatCount: number
   openSeatCount: number
@@ -53,8 +64,10 @@ export type SeatDerivedMetrics = {
   yearlyCostExternal: number
   permFte: number
   extFte: number
+  amsFte: number
   permForecast: number
   extForecast: number
+  amsForecast: number
   cloudCostForecast: number
   quarterlyForecast: [number, number, number, number]
   monthlyForecast: number[]
@@ -128,6 +141,13 @@ export type BudgetMovementView = {
   areaDisplayName: string | null
   areaDomain: string | null
   areaSubDomain: string | null
+}
+
+export type BudgetMovementCategoryMappingView = {
+  id: string
+  category: string
+  bucket: BudgetMovementBucket
+  notes: string | null
 }
 
 export type BudgetMovementImportBatchView = {

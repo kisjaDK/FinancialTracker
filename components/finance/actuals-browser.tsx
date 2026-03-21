@@ -80,8 +80,14 @@ type SummaryRow = {
   spentToDate: number
   totalForecast: number
   cloudCostSpentToDate: number
+  cloudSeatId: string | null
+  cloudSeatLabel: string | null
+  cloudSeatDescription: string | null
+  cloudSeatStatus: string | null
+  cloudSeatTeam: string | null
   cloudCostMonthlyActuals: number[]
   cloudCostMonthlyForecast: number[]
+  cloudCostMonthlyComparisonForecast: number[]
 }
 
 type SeatRow = {
@@ -124,6 +130,22 @@ type BulkForecastPreview = {
     requiresConfirmation: boolean
     amount: number
     baseAmount: number
+  }[]
+}
+
+type BulkForecastUndoPreview = {
+  monthIndex: number
+  monthLabel: string
+  subDomain: string | null
+  seats: {
+    trackerSeatId: string
+    seatId: string
+    inSeat: string | null
+    team: string | null
+    status: string | null
+    allocationPercent: number
+    actualAmount: number
+    forecastAmount: number
   }[]
 }
 
@@ -322,6 +344,10 @@ export function ActualsBrowser({
   const [bulkCopyOverrides, setBulkCopyOverrides] = useState<Record<string, string>>({})
   const [bulkCopyConfirmations, setBulkCopyConfirmations] = useState<Record<string, boolean>>({})
   const [bulkCopyLoading, setBulkCopyLoading] = useState(false)
+  const [bulkUndoDialogOpen, setBulkUndoDialogOpen] = useState(false)
+  const [bulkUndoMonth, setBulkUndoMonth] = useState(String(new Date().getMonth()))
+  const [bulkUndoPreview, setBulkUndoPreview] = useState<BulkForecastUndoPreview | null>(null)
+  const [bulkUndoLoading, setBulkUndoLoading] = useState(false)
   const [selectedYear, setSelectedYear] = useState(String(activeYear))
   const [selectedImportYear, setSelectedImportYear] = useState(String(activeYear))
   const [selectedExternalMonth, setSelectedExternalMonth] = useState(String(new Date().getMonth()))
@@ -367,10 +393,12 @@ export function ActualsBrowser({
     null
   )
   const [editExternalAmount, setEditExternalAmount] = useState("")
+  const [editExternalMonth, setEditExternalMonth] = useState("")
   const [editExternalInvoiceNumber, setEditExternalInvoiceNumber] = useState("")
   const [editExternalSupplierName, setEditExternalSupplierName] = useState("")
   const [deletingExternalEntry, setDeletingExternalEntry] =
     useState<ExternalActualImportView | null>(null)
+  const [importedEntries, setImportedEntries] = useState(entries)
   const requestedView = searchParams.get("view")
   const activeView: ActualsView =
     requestedView === "external" ||
@@ -381,7 +409,17 @@ export function ActualsBrowser({
 
   const selectedArea = summary.find((row) => row.id === selectedAreaId) ?? summary[0]
   const effectiveSelectedAreaId = selectedAreaId ?? selectedArea?.id ?? null
-  const selectedSeat = seats.find((seat) => seat.id === selectedSeatId) ?? seats[0]
+  const internalSeats = useMemo(
+    () =>
+      seats.filter((seat) => {
+        const permFte = seat.permFte ?? 0
+        const extFte = seat.extFte ?? 0
+        return permFte > 0 && extFte <= 0
+      }),
+    [seats]
+  )
+  const selectedSeat =
+    internalSeats.find((seat) => seat.id === selectedSeatId) ?? internalSeats[0]
   const domainOptions = useMemo(
     () =>
       Array.from(
@@ -431,7 +469,14 @@ export function ActualsBrowser({
     ? `${selectedScopeLabel} · ${selectedArea.projectCode}`
     : selectedScopeLabel
   const selectedMonthIndex = Number(selectedMonth)
-  const selectedCloudForecast = selectedArea?.cloudCostMonthlyForecast?.[selectedMonthIndex] ?? 0
+  const selectedCloudForecast =
+    selectedArea?.cloudCostMonthlyComparisonForecast?.[selectedMonthIndex] ??
+    selectedArea?.cloudCostMonthlyForecast?.[selectedMonthIndex] ??
+    0
+  const selectedCloudSeatLabel = selectedArea?.cloudSeatLabel?.trim() || null
+  const selectedCloudSeatDescription = selectedArea?.cloudSeatDescription?.trim() || null
+  const selectedCloudSeatTeam = selectedArea?.cloudSeatTeam?.trim() || null
+  const selectedCloudSeatStatus = selectedArea?.cloudSeatStatus?.trim() || null
   const manualAmountValue = manualAmount.trim() ? Number(manualAmount) : 0
   const manualSelectedSeatIds = manualSelectedSeats.map((seat) => seat.trackerSeatId)
   const manualSeatAllocationShares = splitAmountByWeights(
@@ -442,14 +487,27 @@ export function ActualsBrowser({
     activeManualSearchField !== null &&
     (manualSeatSearchLoading || manualSeatSearchResults.length > 0)
   const enteredCloudActualAmount = cloudActualAmount.trim() ? Number(cloudActualAmount) : null
+  const importedEntryTotals = useMemo(
+    () => ({
+      entryCount: importedEntries.length,
+      amount: importedEntries.reduce((sum, entry) => sum + entry.amount, 0),
+      matchedCount: importedEntries.filter((entry) => Boolean(entry.matchedTrackerSeatId)).length,
+    }),
+    [importedEntries]
+  )
   const cloudActualMonths =
     selectedArea?.cloudCostMonthlyActuals?.map((actual, monthIndex) => ({
       monthIndex,
       monthLabel: MONTH_NAMES[monthIndex],
       actual,
-      forecast: selectedArea.cloudCostMonthlyForecast?.[monthIndex] ?? 0,
+      forecast:
+        selectedArea.cloudCostMonthlyComparisonForecast?.[monthIndex] ??
+        selectedArea.cloudCostMonthlyForecast?.[monthIndex] ??
+        0,
       deviation:
-        (selectedArea.cloudCostMonthlyForecast?.[monthIndex] ?? 0) - actual,
+        ((selectedArea.cloudCostMonthlyComparisonForecast?.[monthIndex] ??
+          selectedArea.cloudCostMonthlyForecast?.[monthIndex] ??
+          0) - actual),
     })) ?? []
   const cloudActualMonthsWithValues = cloudActualMonths.filter((month) => month.actual > 0)
   const cloudSpentToDateForecastComparable = cloudActualMonthsWithValues.reduce(
@@ -464,6 +522,24 @@ export function ActualsBrowser({
     enteredCloudActualAmount !== null && Number.isFinite(enteredCloudActualAmount)
       ? selectedCloudForecast - enteredCloudActualAmount
       : null
+
+  useEffect(() => {
+    setImportedEntries(entries)
+  }, [entries])
+
+  useEffect(() => {
+    if (!internalSeats.length) {
+      if (selectedSeatId) {
+        setSelectedSeatId("")
+      }
+      return
+    }
+
+    if (!internalSeats.some((seat) => seat.id === selectedSeatId)) {
+      setSelectedSeatId(internalSeats[0]?.id ?? "")
+    }
+  }, [internalSeats, selectedSeatId])
+
   const activeStatusSet = useMemo(
     () =>
       new Set(
@@ -802,6 +878,46 @@ export function ActualsBrowser({
     }
   }
 
+  async function previewUndoForecastToInternalActuals(monthIndex: number) {
+    if (!effectiveSelectedAreaId || !selectedArea?.subDomain) {
+      return
+    }
+
+    try {
+      setBulkUndoLoading(true)
+      const response = (await fetchJson("/api/tracker/bulk-forecast-actuals", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          mode: "undo-preview",
+          year: activeYear,
+          budgetAreaId: effectiveSelectedAreaId,
+          monthIndex,
+        }),
+      })) as BulkForecastUndoPreview
+      setBulkUndoPreview(response)
+      setBulkUndoDialogOpen(true)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Undo preview failed")
+    } finally {
+      setBulkUndoLoading(false)
+    }
+  }
+
+  function openBulkUndoDialog() {
+    setBulkUndoDialogOpen(true)
+    void previewUndoForecastToInternalActuals(Number(bulkUndoMonth))
+  }
+
+  function handleBulkUndoMonthChange(nextMonthValue: string) {
+    setBulkUndoMonth(nextMonthValue)
+    if (bulkUndoDialogOpen) {
+      void previewUndoForecastToInternalActuals(Number(nextMonthValue))
+    }
+  }
+
   function saveCloudActual() {
     if (!effectiveSelectedAreaId) {
       toast.error("Choose a scope before saving cloud actuals.")
@@ -882,6 +998,41 @@ export function ActualsBrowser({
       toast.error(error instanceof Error ? error.message : "Bulk update failed")
     } finally {
       setBulkCopyLoading(false)
+    }
+  }
+
+  async function completeBulkForecastUndo() {
+    if (!bulkUndoPreview || !effectiveSelectedAreaId) {
+      return
+    }
+
+    try {
+      setBulkUndoLoading(true)
+      const response = await fetchJson("/api/tracker/bulk-forecast-actuals", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          mode: "undo-apply",
+          year: activeYear,
+          budgetAreaId: effectiveSelectedAreaId,
+          monthIndex: bulkUndoPreview.monthIndex,
+        }),
+      })
+
+      toast.success(
+        `Undid forecast conversion for ${response.updatedCount} internal seat${
+          response.updatedCount === 1 ? "" : "s"
+        }.`
+      )
+      setBulkUndoDialogOpen(false)
+      setBulkUndoPreview(null)
+      router.refresh()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Undo failed")
+    } finally {
+      setBulkUndoLoading(false)
     }
   }
 
@@ -1180,6 +1331,7 @@ export function ActualsBrowser({
     setEditExternalAmount(
       String(entry.originalAmount ?? entry.amount)
     )
+    setEditExternalMonth(String(entry.monthIndex))
     setEditExternalInvoiceNumber(entry.invoiceNumber ?? "")
     setEditExternalSupplierName(entry.supplierName ?? "")
   }
@@ -1191,17 +1343,36 @@ export function ActualsBrowser({
 
     startExternalSubmitTransition(async () => {
       try {
-        await fetchJson(`/api/external-actual-entries/${editingExternalEntry.id}`, {
+        const body = await fetchJson(`/api/external-actual-entries/${editingExternalEntry.id}`, {
           method: "PATCH",
           headers: {
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
             amount: Number(editExternalAmount),
+            monthIndex: Number(editExternalMonth),
             invoiceNumber: editExternalInvoiceNumber || null,
             supplierName: editExternalSupplierName || null,
           }),
         })
+
+        setImportedEntries((currentEntries) =>
+          currentEntries.map((entry) =>
+            entry.id === editingExternalEntry.id
+              ? {
+                  ...entry,
+                  monthIndex: body.entry.monthIndex,
+                  monthLabel: body.entry.monthLabel,
+                  amount: body.entry.amount,
+                  originalAmount: body.entry.originalAmount,
+                  originalCurrency: body.entry.originalCurrency,
+                  invoiceNumber: body.entry.invoiceNumber,
+                  supplierName: body.entry.supplierName,
+                  matchedTrackerSeatId: body.entry.trackerSeatId,
+                }
+              : entry
+          )
+        )
 
         toast.success("External actual updated")
         setEditingExternalEntry(null)
@@ -1222,6 +1393,10 @@ export function ActualsBrowser({
         await fetchJson(`/api/external-actual-entries/${deletingExternalEntry.id}`, {
           method: "DELETE",
         })
+
+        setImportedEntries((currentEntries) =>
+          currentEntries.filter((entry) => entry.id !== deletingExternalEntry.id)
+        )
 
         toast.success("External actual deleted")
         setDeletingExternalEntry(null)
@@ -1420,6 +1595,120 @@ export function ActualsBrowser({
                 onClick={() => void completeBulkForecastCopy()}
               >
                 Complete
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
+          open={bulkUndoDialogOpen}
+          onOpenChange={(open) => {
+            setBulkUndoDialogOpen(open)
+            if (!open) {
+              setBulkUndoPreview(null)
+            }
+          }}
+        >
+          <DialogContent className="max-h-[85vh] max-w-5xl overflow-hidden">
+            <DialogHeader>
+              <div className="flex items-start justify-between gap-3">
+                <DialogTitle>Undo forecast conversion</DialogTitle>
+                {bulkUndoPreview ? (
+                  <div className="mr-10 rounded-full border border-border bg-muted px-3 py-1 text-sm font-semibold tracking-[0.02em] text-foreground">
+                    {bulkUndoPreview.monthLabel}
+                  </div>
+                ) : null}
+              </div>
+              <DialogDescription>
+                {bulkUndoPreview
+                  ? `Review the internal seats in ${
+                      bulkUndoPreview.subDomain || "the selected sub-domain"
+                    } that will be restored from actual back to forecast.`
+                  : "Choose a month to preview the internal seats that can be restored back to forecast."}
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4">
+              <div className="grid gap-3 rounded-lg border border-border p-4 md:grid-cols-[220px_1fr] md:items-end">
+                <div className="space-y-2">
+                  <Label htmlFor="bulk-undo-month">Month</Label>
+                  <select
+                    id="bulk-undo-month"
+                    value={bulkUndoMonth}
+                    onChange={(event) => handleBulkUndoMonthChange(event.target.value)}
+                    className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
+                  >
+                    {MONTH_NAMES.map((month, index) => (
+                      <option key={month} value={index}>
+                        {month}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="text-sm text-muted-foreground">
+                  Undo only applies inside the currently selected sub-domain and month, and only for rows that still match the original bulk forecast copy.
+                </div>
+              </div>
+              <div className="max-h-[55vh] overflow-y-auto pr-2">
+                {bulkUndoPreview?.seats.length ? (
+                  <div className="space-y-3">
+                    {bulkUndoPreview.seats.map((seat) => (
+                      <div
+                        key={seat.trackerSeatId}
+                        className="grid gap-3 rounded-lg border border-border p-3 md:grid-cols-[1.5fr_0.8fr_0.8fr]"
+                      >
+                        <div>
+                          <div className="font-medium">
+                            {seat.seatId} · {seat.inSeat || "Unassigned"} · {formatFteAsPercent(seat.allocationPercent)}
+                          </div>
+                          <div className="text-xs text-muted-foreground">
+                            {seat.team || "No team"} · {bulkUndoPreview.monthLabel}
+                          </div>
+                        </div>
+                        <div className="text-sm">
+                          <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                            Current actual
+                          </div>
+                          <div className="mt-1 font-medium">{formatCurrency(seat.actualAmount)}</div>
+                          <Badge variant="secondary" className="mt-2 inline-flex max-w-full truncate">
+                            <span className="block max-w-24 truncate">
+                              {seat.status || "No status"}
+                            </span>
+                          </Badge>
+                        </div>
+                        <div className="text-sm">
+                          <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                            Restore forecast
+                          </div>
+                          <div className="mt-1 font-medium">{formatCurrency(seat.forecastAmount)}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="py-4 text-sm text-muted-foreground">
+                    No converted internal actuals can be undone for{" "}
+                    {bulkUndoPreview?.monthLabel || MONTH_NAMES[Number(bulkUndoMonth)] || "the selected month"}.
+                  </p>
+                )}
+              </div>
+            </div>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  setBulkUndoDialogOpen(false)
+                  setBulkUndoPreview(null)
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                disabled={!bulkUndoPreview?.seats.length || bulkUndoLoading}
+                onClick={() => void completeBulkForecastUndo()}
+              >
+                Undo Conversion
               </Button>
             </DialogFooter>
           </DialogContent>
@@ -1749,6 +2038,21 @@ export function ActualsBrowser({
                   </div>
                 </div>
                 <div className="space-y-2">
+                  <Label htmlFor="edit-external-month">Month</Label>
+                  <select
+                    id="edit-external-month"
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                    value={editExternalMonth}
+                    onChange={(event) => setEditExternalMonth(event.target.value)}
+                  >
+                    {MONTH_NAMES.map((month, index) => (
+                      <option key={month} value={index}>
+                        {month}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="space-y-2">
                   <Label htmlFor="edit-external-amount">
                     Amount ({editingExternalEntry.originalCurrency || "DKK"})
                   </Label>
@@ -2046,23 +2350,43 @@ export function ActualsBrowser({
                 </div>
               </CardHeader>
               <CardContent className="space-y-3">
-                <div className="text-sm">
-                  <div className="font-medium">Convert Forecast to Actual</div>
-                  <div className="mt-1 text-muted-foreground">
-                    Convert the selected month&apos;s forecast into actuals for all internal seats in{" "}
-                    {selectedScopeDetail}.
+                <div className="grid gap-4 lg:grid-cols-2">
+                  <div className="text-sm">
+                    <div className="font-medium">Convert Forecast to Actual</div>
+                    <div className="mt-1 text-muted-foreground">
+                      Convert the selected month&apos;s forecast into actuals for all internal seats in{" "}
+                      {selectedScopeDetail}.
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="mt-3"
+                      disabled={
+                        !effectiveSelectedAreaId || !selectedArea?.subDomain || bulkCopyLoading
+                      }
+                      onClick={openBulkCopyDialog}
+                    >
+                      Convert Forecast to Actual
+                    </Button>
                   </div>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="mt-3"
-                    disabled={
-                      !effectiveSelectedAreaId || !selectedArea?.subDomain || bulkCopyLoading
-                    }
-                    onClick={openBulkCopyDialog}
-                  >
-                    Convert Forecast to Actual
-                  </Button>
+                  <div className="text-sm">
+                    <div className="font-medium">Undo Forecast Conversion</div>
+                    <div className="mt-1 text-muted-foreground">
+                      Pick a month and restore converted internal actuals back to forecast within{" "}
+                      {selectedScopeDetail}.
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="mt-3"
+                      disabled={
+                        !effectiveSelectedAreaId || !selectedArea?.subDomain || bulkUndoLoading
+                      }
+                      onClick={openBulkUndoDialog}
+                    >
+                      Undo Forecast Conversion
+                    </Button>
+                  </div>
                 </div>
               </CardContent>
             </Card>
@@ -2085,8 +2409,8 @@ export function ActualsBrowser({
                       <TableHead>Forecast</TableHead>
                     </TableRow>
                   </TableHeader>
-                  <TableBody>
-                    {seats.map((seat) => (
+                <TableBody>
+                    {internalSeats.map((seat) => (
                       <TableRow
                         key={seat.id}
                         className={seat.id === selectedSeatId ? "brand-selected-row" : "cursor-pointer"}
@@ -2110,7 +2434,7 @@ export function ActualsBrowser({
                         <TableCell>{formatCurrency(seat.totalForecast)}</TableCell>
                       </TableRow>
                     ))}
-                    {seats.length === 0 ? (
+                    {internalSeats.length === 0 ? (
                       <TableRow>
                         <TableCell colSpan={4} className="py-8 text-center text-muted-foreground">
                           No internal seats are available for the selected scope and year.
@@ -2134,11 +2458,27 @@ export function ActualsBrowser({
                   {selectedSeat ? (
                     <div className="space-y-4">
                       <div className="rounded-xl bg-muted/40 p-3 text-sm">
-                        <div className="font-medium">
-                          {selectedSeat.seatId} · {selectedSeat.inSeat || "Unassigned"}
-                        </div>
-                        <div className="mt-1 text-muted-foreground">
-                          {selectedSeat.team || "No team"} · {selectedSeat.band || "No band"}
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <div className="font-medium">
+                              <Link
+                                href={`/people-roster?year=${activeYear}&seatId=${encodeURIComponent(selectedSeat.seatId)}`}
+                                className="transition-colors hover:text-primary"
+                              >
+                                {selectedSeat.seatId} · {selectedSeat.inSeat || "Unassigned"}
+                              </Link>
+                            </div>
+                            <div className="mt-1 text-muted-foreground">
+                              {selectedSeat.team || "No team"} · {selectedSeat.band || "No band"}
+                            </div>
+                          </div>
+                          <Button type="button" variant="outline" size="sm" asChild>
+                            <Link
+                              href={`/forecasts?year=${activeYear}&seatId=${encodeURIComponent(selectedSeat.seatId)}&selectedSeatId=${encodeURIComponent(selectedSeat.id)}`}
+                            >
+                              Open Forecast
+                            </Link>
+                          </Button>
                         </div>
                       </div>
                       <Table>
@@ -2197,7 +2537,7 @@ export function ActualsBrowser({
                     value={selectedSeatId}
                     onChange={(event) => setSelectedSeatId(event.target.value)}
                   >
-                    {seats.map((seat) => (
+                    {internalSeats.map((seat) => (
                       <option key={seat.id} value={seat.id}>
                         {seat.seatId} · {seat.inSeat || "Unassigned"}
                       </option>
@@ -2303,6 +2643,24 @@ export function ActualsBrowser({
                 <CardHeader className="gap-1">
                   <CardDescription>Forecasted Value</CardDescription>
                   <CardTitle>{formatCurrency(selectedCloudForecast)}</CardTitle>
+                  {selectedCloudSeatLabel ? (
+                    <div className="pt-1 text-sm text-muted-foreground">
+                      Posting to {selectedCloudSeatLabel}
+                    </div>
+                  ) : (
+                    <div className="pt-1 text-sm text-muted-foreground">
+                      No cloud seat found for this scope yet.
+                    </div>
+                  )}
+                  {selectedCloudSeatDescription || selectedCloudSeatStatus || selectedCloudSeatTeam ? (
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                      {selectedCloudSeatDescription ? (
+                        <span>{selectedCloudSeatDescription}</span>
+                      ) : null}
+                      {selectedCloudSeatTeam ? <span>{selectedCloudSeatTeam}</span> : null}
+                      {selectedCloudSeatStatus ? <span>Status: {selectedCloudSeatStatus}</span> : null}
+                    </div>
+                  ) : null}
                   {cloudDeviation !== null ? (
                     <div
                       className={`text-sm ${
@@ -2362,10 +2720,10 @@ export function ActualsBrowser({
                             <Table>
                               <TableHeader>
                                 <TableRow>
-                                  <TableHead>Month</TableHead>
-                                  <TableHead className="text-right">Actual</TableHead>
-                                  <TableHead className="text-right">Forecast</TableHead>
-                                  <TableHead className="text-right">Deviation</TableHead>
+                                  <TableHead className="text-zinc-300">Month</TableHead>
+                                  <TableHead className="text-right text-zinc-300">Actual</TableHead>
+                                  <TableHead className="text-right text-zinc-300">Forecast</TableHead>
+                                  <TableHead className="text-right text-zinc-300">Deviation</TableHead>
                                 </TableRow>
                               </TableHeader>
                               <TableBody>
@@ -2382,8 +2740,8 @@ export function ActualsBrowser({
                                       className={`text-right ${
                                         month.deviation > 0
                                           ? "text-emerald-700"
-                                          : month.deviation < 0
-                                            ? "text-rose-700"
+                                        : month.deviation < 0
+                                            ? "text-rose-400"
                                             : "text-muted-foreground"
                                       }`}
                                     >
@@ -2501,19 +2859,19 @@ export function ActualsBrowser({
             <Card className="brand-card">
               <CardHeader className="gap-1">
                 <CardDescription>Imported Entries</CardDescription>
-                <CardTitle>{formatNumber(totals.entryCount)}</CardTitle>
+                <CardTitle>{formatNumber(importedEntryTotals.entryCount)}</CardTitle>
               </CardHeader>
             </Card>
             <Card className="brand-card">
               <CardHeader className="gap-1">
                 <CardDescription>Imported Amount</CardDescription>
-                <CardTitle>{formatCurrency(totals.amount)}</CardTitle>
+                <CardTitle>{formatCurrency(importedEntryTotals.amount)}</CardTitle>
               </CardHeader>
             </Card>
             <Card className="brand-card">
               <CardHeader className="gap-1">
                 <CardDescription>Matched Seats</CardDescription>
-                <CardTitle>{formatNumber(totals.matchedCount)}</CardTitle>
+                <CardTitle>{formatNumber(importedEntryTotals.matchedCount)}</CardTitle>
               </CardHeader>
             </Card>
             </section>
@@ -3204,7 +3562,7 @@ export function ActualsBrowser({
             <CardHeader>
               <CardTitle>Imported External Actuals</CardTitle>
               <CardDescription>
-                Showing {formatNumber(totals.entryCount)} imported seat-month actual rows.
+                Showing {formatNumber(importedEntryTotals.entryCount)} imported seat-month actual rows.
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -3221,7 +3579,7 @@ export function ActualsBrowser({
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {entries.map((entry) => (
+                  {importedEntries.map((entry) => (
                     <TableRow key={entry.id}>
                       <TableCell>{formatDateTime(entry.importedAt)}</TableCell>
                       <TableCell>
@@ -3267,7 +3625,7 @@ export function ActualsBrowser({
                       </TableCell>
                     </TableRow>
                   ))}
-                  {entries.length === 0 ? (
+                  {importedEntries.length === 0 ? (
                     <TableRow>
                       <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">
                         No external actual imports match the current filters.

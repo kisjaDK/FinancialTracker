@@ -60,6 +60,7 @@ type ForecastSeatRow = {
   seatId: string
   domain: string | null
   subDomain: string | null
+  projectCode?: string | null
   team: string | null
   inSeat: string | null
   description: string | null
@@ -87,10 +88,12 @@ type ForecastsBrowserProps = {
   filters: {
     domains: string[]
     subDomains: string[]
+    projectCodes: string[]
     teams: string[]
     seatIds: string[]
     names: string[]
     statuses: string[]
+    forecastBucket: "perm" | "ext" | "cloud" | null
     hideInactiveStatuses: boolean
     nonMonthStart: boolean
     nonMonthEnd: boolean
@@ -99,6 +102,7 @@ type ForecastsBrowserProps = {
   filterOptions: {
     domains: string[]
     subDomains: string[]
+    projectCodes: string[]
     teams: string[]
     statuses: string[]
     seats: {
@@ -106,6 +110,7 @@ type ForecastsBrowserProps = {
       seatId: string
       domain: string
       subDomain: string
+      projectCode: string
       team: string
       name: string
       status: string
@@ -188,6 +193,7 @@ export function ForecastsBrowser({
   const [selectedYear, setSelectedYear] = useState(String(activeYear))
   const [selectedDomains, setSelectedDomains] = useState(filters.domains)
   const [selectedSubDomains, setSelectedSubDomains] = useState(filters.subDomains)
+  const [selectedProjectCodes, setSelectedProjectCodes] = useState(filters.projectCodes)
   const [selectedTeams, setSelectedTeams] = useState(filters.teams)
   const [hideInactiveStatuses, setHideInactiveStatuses] = useState(
     filters.hideInactiveStatuses
@@ -209,15 +215,23 @@ export function ForecastsBrowser({
   }, [activeYear])
 
   useEffect(() => {
+    setSelectedDomains(filters.domains)
+    setSelectedSubDomains(filters.subDomains)
+    setSelectedProjectCodes(filters.projectCodes)
+    setSelectedTeams(filters.teams)
     setHideInactiveStatuses(filters.hideInactiveStatuses)
     setNonMonthStart(filters.nonMonthStart)
     setNonMonthEnd(filters.nonMonthEnd)
     setReducedOnLeaveForecast(filters.reducedOnLeaveForecast)
   }, [
+    filters.domains,
     filters.hideInactiveStatuses,
+    filters.projectCodes,
     filters.nonMonthEnd,
     filters.nonMonthStart,
     filters.reducedOnLeaveForecast,
+    filters.subDomains,
+    filters.teams,
   ])
 
   useEffect(() => {
@@ -318,10 +332,16 @@ export function ForecastsBrowser({
 
     appendValues("domain", selectedDomains)
     appendValues("subDomain", selectedSubDomains)
+    appendValues("projectCode", selectedProjectCodes)
     appendValues("team", selectedTeams)
     appendValues("seatId", formData.getAll("seatId"))
     appendValues("name", formData.getAll("name"))
     appendValues("status", formData.getAll("status"))
+
+    const forecastBucket = searchParams.get("forecastBucket")
+    if (forecastBucket) {
+      params.set("forecastBucket", forecastBucket)
+    }
 
     if (formData.get("hideInactiveStatuses") === "true") {
       params.set("hideInactiveStatuses", "true")
@@ -349,6 +369,7 @@ export function ForecastsBrowser({
   function resetFilters() {
     setSelectedDomains([])
     setSelectedSubDomains([])
+    setSelectedProjectCodes([])
     setSelectedTeams([])
     setHideInactiveStatuses(true)
     setNonMonthStart(false)
@@ -358,10 +379,12 @@ export function ForecastsBrowser({
       year: selectedYear,
       domain: null,
       subDomain: null,
+      projectCode: null,
       team: null,
       seatId: null,
       name: null,
       status: null,
+      forecastBucket: null,
       hideInactiveStatuses: "true",
       nonMonthStart: null,
       nonMonthEnd: null,
@@ -483,6 +506,13 @@ export function ForecastsBrowser({
                       pruneInvalidSelections(current, nextHierarchyOptions.teams)
                     )
                   }}
+                />
+                <MultiSelectFilter
+                  label="Project code"
+                  name="projectCode"
+                  options={filterOptions.projectCodes}
+                  selectedValues={selectedProjectCodes}
+                  onSelectedValuesChange={setSelectedProjectCodes}
                 />
                 <MultiSelectFilter
                   label="Team"
@@ -645,7 +675,7 @@ export function ForecastsBrowser({
                         <div className="flex items-start justify-between gap-3">
                           <div>
                             <div className="font-medium">{seat.inSeat || "Unassigned"}</div>
-                            <div className="text-sm text-muted-foreground">
+                          <div className="text-sm text-muted-foreground">
                               {seat.seatId} · {seat.team || "No team"}
                             </div>
                             <div className="text-sm text-muted-foreground">
@@ -667,7 +697,7 @@ export function ForecastsBrowser({
                           </div>
                         </div>
                         <div className="mt-3 text-sm text-muted-foreground">
-                          {seat.subDomain || "Unmapped"}
+                          {[seat.subDomain || "Unmapped", seat.projectCode || "No project code"].join(" · ")}
                         </div>
                         <div className="mt-3 flex items-center justify-between text-sm">
                           <span className="text-muted-foreground">

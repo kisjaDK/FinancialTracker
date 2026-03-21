@@ -10,10 +10,12 @@ type PageProps = {
     year?: string;
     domain?: SearchParamValue;
     subDomain?: SearchParamValue;
+    projectCode?: SearchParamValue;
     team?: SearchParamValue;
     seatId?: SearchParamValue;
     name?: SearchParamValue;
     status?: SearchParamValue;
+    forecastBucket?: string;
     hideInactiveStatuses?: string;
     nonMonthStart?: string;
     nonMonthEnd?: string;
@@ -42,10 +44,17 @@ export default async function ForecastsPage({ searchParams }: PageProps) {
       year,
       domains: toArray(resolvedSearchParams?.domain),
       subDomains: toArray(resolvedSearchParams?.subDomain),
+      projectCodes: toArray(resolvedSearchParams?.projectCode),
       teams: toArray(resolvedSearchParams?.team),
       seatIds: toArray(resolvedSearchParams?.seatId),
       names: toArray(resolvedSearchParams?.name),
       statuses: toArray(resolvedSearchParams?.status),
+      forecastBucket:
+        resolvedSearchParams?.forecastBucket === "perm" ||
+        resolvedSearchParams?.forecastBucket === "ext" ||
+        resolvedSearchParams?.forecastBucket === "cloud"
+          ? resolvedSearchParams.forecastBucket
+          : undefined,
       hideInactiveStatuses:
         resolvedSearchParams?.hideInactiveStatuses !== "false",
       nonMonthStart: resolvedSearchParams?.nonMonthStart === "true",

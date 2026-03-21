@@ -1,5 +1,6 @@
 import type {
   BudgetArea,
+  BudgetMovementBucket,
   BudgetMovement,
   CostAssumption,
   CurrencyCode,
@@ -29,6 +30,7 @@ import {
   buildCostAssumptionLookup,
   deriveSeatMetrics,
   getEffectiveSeat,
+  isCloudSeat,
   isMonthActiveForSeat,
   isTrackerCancelledSeat,
   isExternalSeat,
@@ -40,6 +42,7 @@ import type {
   ExternalActualImportFilters,
   ExternalActualImportView,
   BudgetMovementImportBatchView,
+  BudgetMovementCategoryMappingView,
   AccrualFilters,
   AccrualAccountMappingView,
   BudgetMovementFilters,
@@ -140,6 +143,7 @@ const trackerSeatDerivationByYear = new Map<number, Promise<void>>()
 type TrackerYearSnapshot = {
   budgetAreas: BudgetArea[]
   budgetMovements: BudgetMovement[]
+  budgetMovementCategoryMappings: BudgetMovementCategoryMappingView[]
   seats: SeatWithRelations[]
   assumptions: CostAssumption[]
   exchangeRates: ExchangeRate[]
@@ -879,7 +883,15 @@ async function loadTrackerYearSnapshot(
 ): Promise<TrackerYearSnapshot> {
   const includeBudgetMovements = options?.includeBudgetMovements ?? true
 
-  const [budgetAreas, budgetMovements, seats, assumptions, exchangeRates, departmentMappings] =
+  const [
+    budgetAreas,
+    budgetMovements,
+    budgetMovementCategoryMappings,
+    seats,
+    assumptions,
+    exchangeRates,
+    departmentMappings,
+  ] =
     await Promise.all([
       prisma.budgetArea.findMany({
         where: { trackingYearId },
@@ -890,6 +902,26 @@ async function loadTrackerYearSnapshot(
             where: { trackingYearId },
           })
         : Promise.resolve([]),
+      (async () => {
+        const delegate = getBudgetMovementCategoryMappingDelegate()
+        if (!delegate) {
+          return []
+        }
+
+        const mappings = await delegate.findMany({
+          where: {
+            trackingYearId,
+          },
+          orderBy: [{ category: "asc" }],
+        })
+
+        return mappings.map((mapping) => ({
+          id: mapping.id,
+          category: mapping.category,
+          bucket: mapping.bucket,
+          notes: mapping.notes ?? null,
+        }))
+      })(),
       prisma.trackerSeat.findMany({
         where: {
           trackingYearId,
@@ -922,6 +954,7 @@ async function loadTrackerYearSnapshot(
   return {
     budgetAreas,
     budgetMovements,
+    budgetMovementCategoryMappings,
     seats: seats as SeatWithRelations[],
     assumptions,
     exchangeRates,
@@ -1076,6 +1109,52 @@ function normalizeValues(values: string[]) {
   return new Set(values.map((value) => normalizeValue(value)).filter(Boolean))
 }
 
+function inferBudgetMovementBucket(
+  category: string | null | undefined
+): BudgetMovementBucket {
+  const normalizedCategory = normalizeValue(category)
+
+  if (normalizedCategory.includes(CLOUD_CATEGORY)) {
+    return "CLOUD"
+  }
+
+  if (
+    normalizedCategory.includes("license") ||
+    normalizedCategory.includes("licence")
+  ) {
+    return "LICENSES"
+  }
+
+  if (normalizedCategory.includes("ams")) {
+    return "AMS"
+  }
+
+  if (
+    /\bext\b/.test(normalizedCategory) ||
+    normalizedCategory.includes("external")
+  ) {
+    return "EXT"
+  }
+
+  return "PERM"
+}
+
+function buildBudgetMovementCategoryBucketLookup(
+  mappings: BudgetMovementCategoryMappingView[]
+) {
+  return new Map(
+    mappings.map((mapping) => [normalizeValue(mapping.category), mapping.bucket])
+  )
+}
+
+function resolveBudgetMovementBucket(
+  category: string | null | undefined,
+  mappingLookup: Map<string, BudgetMovementBucket>
+) {
+  const normalizedCategory = normalizeValue(category)
+  return mappingLookup.get(normalizedCategory) ?? inferBudgetMovementBucket(category)
+}
+
 function getAccrualAccountMappingDelegate() {
   const currentPrisma = getPrismaClient()
   const delegate = (currentPrisma as typeof prisma & {
@@ -1088,6 +1167,22 @@ function getAccrualAccountMappingDelegate() {
       delete: typeof prisma.departmentMapping.delete
     }
   }).accrualAccountMapping
+
+  return delegate ?? null
+}
+
+function getBudgetMovementCategoryMappingDelegate() {
+  const currentPrisma = getPrismaClient()
+  const delegate = (currentPrisma as typeof prisma & {
+    budgetMovementCategoryMapping?: {
+      findMany: typeof prisma.departmentMapping.findMany
+      findFirst: typeof prisma.departmentMapping.findFirst
+      findFirstOrThrow: typeof prisma.departmentMapping.findFirstOrThrow
+      create: typeof prisma.departmentMapping.create
+      update: typeof prisma.departmentMapping.update
+      delete: typeof prisma.departmentMapping.delete
+    }
+  }).budgetMovementCategoryMapping
 
   return delegate ?? null
 }
@@ -1444,7 +1539,10 @@ export async function getFinanceWorkspaceData(
   missingActualMonths?: string[],
   openSeatsOnly?: boolean,
   viewer?: Pick<AppViewer, "role" | "scopes">,
-  actualsScopeInput?: ActualsScopeSelectionInput
+  actualsScopeInput?: ActualsScopeSelectionInput,
+  options?: {
+    includeCloudSeats?: boolean
+  }
 ) {
   const startedAt = performance.now()
   const trackingYears = await prisma.trackingYear.findMany({
@@ -1527,6 +1625,55 @@ export async function getFinanceWorkspaceData(
         : summary[0]?.id ?? null
   const assumptionLookup = buildCostAssumptionLookup(snapshot.assumptions)
   const exchangeRateLookup = buildExchangeRateLookup(snapshot.exchangeRates)
+  const getSeatMonthComparisonForecastAmount = (
+    seat: SeatWithRelations,
+    monthIndex: number
+  ) => {
+    const month = seat.months.find((entry) => entry.monthIndex === monthIndex)
+
+    if (month?.usedForecastAmount != null) {
+      return month.usedForecastAmount
+    }
+
+    const metrics = deriveSeatMetrics(
+      seat,
+      assumptionLookup,
+      snapshot.exchangeRates,
+      activeYear,
+      {
+        exchangeRateLookup,
+      }
+    )
+    const currentForecast = metrics.monthlyForecast[monthIndex] ?? 0
+
+    if (currentForecast > 0 || month?.forecastIncluded !== false) {
+      return currentForecast
+    }
+
+    const seatWithIncludedMonth: SeatWithRelations = {
+      ...seat,
+      months: seat.months.map((entry) =>
+        entry.monthIndex === monthIndex
+          ? {
+              ...entry,
+              forecastIncluded: true,
+            }
+          : entry
+      ),
+    }
+
+    return (
+      deriveSeatMetrics(
+        seatWithIncludedMonth,
+        assumptionLookup,
+        snapshot.exchangeRates,
+        activeYear,
+        {
+          exchangeRateLookup,
+        }
+      ).monthlyForecast[monthIndex] ?? 0
+    )
+  }
   const seats =
     effectiveAreaId === null
       ? []
@@ -1547,6 +1694,10 @@ export async function getFinanceWorkspaceData(
           .filter(({ summaryKey, effectiveSeat }) => {
             if (summaryKey !== effectiveAreaId) {
               return false
+            }
+
+            if (options?.includeCloudSeats) {
+              return true
             }
 
             return normalizeValue(effectiveSeat.resourceType) !== "cloud"
@@ -1584,6 +1735,10 @@ export async function getFinanceWorkspaceData(
                   actualAmountRaw: cancelled ? null : month.actualAmountRaw,
                   actualCurrency: month.actualCurrency,
                   exchangeRateUsed: converted.exchangeRateUsed ?? null,
+                  comparisonForecastAmount: getSeatMonthComparisonForecastAmount(
+                    seat,
+                    month.monthIndex
+                  ),
                   forecastIncluded: month.forecastIncluded,
                   notes: month.notes,
                 }
@@ -1592,6 +1747,7 @@ export async function getFinanceWorkspaceData(
               totalForecast: metrics.totalForecast,
               permFte: metrics.permFte,
               extFte: metrics.extFte,
+              amsFte: metrics.amsFte,
               yearlyCostInternal: metrics.yearlyCostInternal,
               yearlyCostExternal: metrics.yearlyCostExternal,
               monthlyForecast: metrics.monthlyForecast,
@@ -1661,10 +1817,12 @@ export async function getForecastsPageData(input?: {
   year?: number
   domains?: string[]
   subDomains?: string[]
+  projectCodes?: string[]
   teams?: string[]
   seatIds?: string[]
   names?: string[]
   statuses?: string[]
+  forecastBucket?: "perm" | "ext" | "cloud"
   hideInactiveStatuses?: boolean
   nonMonthStart?: boolean
   nonMonthEnd?: boolean
@@ -1780,10 +1938,17 @@ export async function getForecastsPageData(input?: {
   const filters = {
     domains: (input?.domains ?? []).map((value) => value.trim()).filter(Boolean),
     subDomains: (input?.subDomains ?? []).map((value) => value.trim()).filter(Boolean),
+    projectCodes: (input?.projectCodes ?? []).map((value) => value.trim()).filter(Boolean),
     teams: (input?.teams ?? []).map((value) => value.trim()).filter(Boolean),
     seatIds: (input?.seatIds ?? []).map((value) => value.trim()).filter(Boolean),
     names: (input?.names ?? []).map((value) => value.trim()).filter(Boolean),
     statuses: (input?.statuses ?? []).map((value) => value.trim()).filter(Boolean),
+    forecastBucket:
+      input?.forecastBucket === "perm" ||
+      input?.forecastBucket === "ext" ||
+      input?.forecastBucket === "cloud"
+        ? input.forecastBucket
+        : null,
     hideInactiveStatuses: input?.hideInactiveStatuses !== false,
     nonMonthStart: Boolean(input?.nonMonthStart),
     nonMonthEnd: Boolean(input?.nonMonthEnd),
@@ -1791,6 +1956,7 @@ export async function getForecastsPageData(input?: {
   }
   const domainFilter = normalizeValues(filters.domains)
   const subDomainFilter = normalizeValues(filters.subDomains)
+  const projectCodeFilter = normalizeValues(filters.projectCodes)
   const teamFilter = normalizeValues(filters.teams)
   const statusFilter = normalizeValues(filters.statuses)
   const seatIdFilter = normalizeValues(filters.seatIds)
@@ -1814,6 +1980,13 @@ export async function getForecastsPageData(input?: {
       }
 
       if (domainFilter.size > 0 && !domainFilter.has(normalizeValue(seat.domain))) {
+        return false
+      }
+
+      if (
+        projectCodeFilter.size > 0 &&
+        !projectCodeFilter.has(normalizeValue(seat.projectCode))
+      ) {
         return false
       }
 
@@ -1874,6 +2047,18 @@ export async function getForecastsPageData(input?: {
         }
       }
 
+      if (filters.forecastBucket === "cloud") {
+        return isCloudSeat(seat)
+      }
+
+      if (filters.forecastBucket === "ext") {
+        return isExternalSeat(seat)
+      }
+
+      if (filters.forecastBucket === "perm") {
+        return !isCloudSeat(seat) && !isExternalSeat(seat)
+      }
+
       return true
     })
     .sort((left, right) => {
@@ -1904,6 +2089,7 @@ export async function getForecastsPageData(input?: {
     filterOptions: {
       domains: collectSortedValues(mappedSeats.map((seat) => seat.domain)),
       subDomains: collectSortedValues(mappedSeats.map((seat) => seat.subDomain)),
+      projectCodes: collectSortedValues(mappedSeats.map((seat) => seat.projectCode)),
       teams: collectSortedValues(mappedSeats.map((seat) => seat.team)),
       statuses: collectSortedValues(mappedSeats.map((seat) => seat.status)),
       seats: mappedSeats.map((seat) => ({
@@ -1911,6 +2097,7 @@ export async function getForecastsPageData(input?: {
         seatId: seat.seatId,
         domain: seat.domain || "",
         subDomain: seat.subDomain || "",
+        projectCode: seat.projectCode || "",
         team: seat.team || "",
         name: seat.inSeat || "",
         status: seat.status || "",
@@ -3861,6 +4048,7 @@ export async function updateExternalActualEntry(
   input: {
     entryId: string
     amount: number
+    monthIndex: number
     invoiceNumber?: string | null
     supplierName?: string | null
   },
@@ -3870,12 +4058,21 @@ export async function updateExternalActualEntry(
     where: { id: input.entryId },
     include: {
       import: true,
+      trackingYear: {
+        select: {
+          year: true,
+        },
+      },
     },
   })
 
   const actorEmail = normalizeValue(actor?.email)
   if (!actorEmail || actorEmail !== normalizeValue(entry.import.importedByEmail)) {
     throw new Error("Only the user who created this external actual can edit it.")
+  }
+
+  if (!Number.isInteger(input.monthIndex) || input.monthIndex < 0 || input.monthIndex > 11) {
+    throw new Error("Month is required.")
   }
 
   const currency = entry.originalCurrency ?? "DKK"
@@ -3893,6 +4090,8 @@ export async function updateExternalActualEntry(
     const nextEntry = await transaction.externalActualEntry.update({
       where: { id: input.entryId },
       data: {
+        monthIndex: input.monthIndex,
+        monthLabel: monthLabel(entry.trackingYear.year, input.monthIndex),
         amount,
         originalAmount,
         originalCurrency: currency,
@@ -3905,6 +4104,14 @@ export async function updateExternalActualEntry(
     })
 
     if (nextEntry.trackerSeatId) {
+      if (entry.monthIndex !== nextEntry.monthIndex) {
+        await syncSeatMonthFromLatestExternalActualEntry(
+          transaction,
+          nextEntry.trackerSeatId,
+          entry.monthIndex
+        )
+      }
+
       await syncSeatMonthFromLatestExternalActualEntry(
         transaction,
         nextEntry.trackerSeatId,
@@ -3934,12 +4141,16 @@ export async function updateExternalActualEntry(
       {
         amount: entry.amount,
         originalAmount: entry.originalAmount,
+        monthIndex: entry.monthIndex,
+        monthLabel: entry.monthLabel,
         invoiceNumber: entry.invoiceNumber,
         supplierName: entry.supplierName,
       },
       {
         amount: updated.amount,
         originalAmount: updated.originalAmount,
+        monthIndex: updated.monthIndex,
+        monthLabel: updated.monthLabel,
         invoiceNumber: updated.invoiceNumber,
         supplierName: updated.supplierName,
       }
@@ -4539,6 +4750,8 @@ export async function getAdminPageData(year?: number) {
     accrualAccountMappings,
     rosterResourceTypes,
     seatReferenceValues,
+    budgetMovementCategoryMappings,
+    budgetMovementCategories,
   ] = await Promise.all([
     ensureStatusDefinitions(activeYear),
     getExchangeRateHistory(activeYear),
@@ -4546,6 +4759,8 @@ export async function getAdminPageData(year?: number) {
     getAccrualAccountMappings(activeYear),
     getActiveRosterResourceTypes(activeYear),
     getSeatReferenceValues(activeYear),
+    getBudgetMovementCategoryMappings(activeYear),
+    getBudgetMovementCategories(activeYear),
   ])
 
   return {
@@ -4557,6 +4772,8 @@ export async function getAdminPageData(year?: number) {
     accrualAccountMappings,
     rosterResourceTypes,
     seatReferenceValues,
+    budgetMovementCategoryMappings,
+    budgetMovementCategories,
   }
 }
 
@@ -5112,6 +5329,7 @@ function buildBudgetAreaSummaryFromSnapshot(
   const {
     budgetAreas,
     budgetMovements,
+    budgetMovementCategoryMappings,
     seats,
     assumptions,
     exchangeRates,
@@ -5124,6 +5342,84 @@ function buildBudgetAreaSummaryFromSnapshot(
   const exchangeRateLookup = buildExchangeRateLookup(exchangeRates)
   const budgetAreasById = new Map(budgetAreas.map((area) => [area.id, area]))
   const summaryMap = new Map<string, BudgetAreaSummary>()
+  const budgetMovementBucketLookup =
+    buildBudgetMovementCategoryBucketLookup(budgetMovementCategoryMappings)
+
+  function getCloudSeatRank(rawSeat: SeatWithRelations) {
+    const effectiveSeat = getEffectiveSeat(rawSeat)
+    const isSyntheticCloudSeat = rawSeat.sourceKey.startsWith("manual-cloud:")
+    const isRosterSeat = rawSeat.sourceType === "ROSTER"
+    const hasNamedOwner = Boolean(effectiveSeat.inSeat?.trim())
+
+    return [
+      isSyntheticCloudSeat ? 1 : 0,
+      isRosterSeat ? 0 : 1,
+      hasNamedOwner ? 0 : 1,
+      rawSeat.createdAt.getTime(),
+    ] as const
+  }
+
+  function shouldReplaceCloudSeat(
+    current: BudgetAreaSummary,
+    candidate: SeatWithRelations
+  ) {
+    if (!current.cloudSeatId) {
+      return true
+    }
+
+    const currentSeat = seats.find((seat) => seat.id === current.cloudSeatId)
+    if (!currentSeat) {
+      return true
+    }
+
+    const currentRank = getCloudSeatRank(currentSeat as SeatWithRelations)
+    const candidateRank = getCloudSeatRank(candidate)
+
+    for (let index = 0; index < candidateRank.length; index += 1) {
+      if (candidateRank[index] === currentRank[index]) {
+        continue
+      }
+
+      return candidateRank[index] < currentRank[index]
+    }
+
+    return false
+  }
+
+  function getCloudComparisonForecastAmount(
+    rawSeat: SeatWithRelations,
+    monthIndex: number
+  ) {
+    const month = rawSeat.months.find((entry) => entry.monthIndex === monthIndex)
+
+    if (month?.usedForecastAmount != null) {
+      return month.usedForecastAmount
+    }
+
+    const metrics = deriveSeatMetrics(rawSeat, assumptionLookup, exchangeRates, year)
+    const currentForecast = metrics.monthlyForecast[monthIndex] ?? 0
+
+    if (currentForecast > 0 || month?.forecastIncluded !== false) {
+      return currentForecast
+    }
+
+    const seatWithIncludedMonth: SeatWithRelations = {
+      ...rawSeat,
+      months: rawSeat.months.map((entry) =>
+        entry.monthIndex === monthIndex
+          ? {
+              ...entry,
+              forecastIncluded: true,
+            }
+          : entry
+      ),
+    }
+
+    return (
+      deriveSeatMetrics(seatWithIncludedMonth, assumptionLookup, exchangeRates, year)
+        .monthlyForecast[monthIndex] ?? 0
+    )
+  }
 
   for (const area of budgetAreas) {
     const mappedHierarchy = resolveDepartmentMapping(mappingLookup, {
@@ -5155,14 +5451,25 @@ function buildBudgetAreaSummaryFromSnapshot(
       remainingBudget: 0,
       totalForecast: existing?.totalForecast || 0,
       forecastRemaining: 0,
+      permBudget: existing?.permBudget || 0,
+      extBudget: existing?.extBudget || 0,
+      amsBudget: existing?.amsBudget || 0,
       permTarget: existing?.permTarget || 0,
       permForecast: existing?.permForecast || 0,
       extForecast: existing?.extForecast || 0,
+      amsForecast: existing?.amsForecast || 0,
       cloudCostSpentToDate: existing?.cloudCostSpentToDate || 0,
       cloudCostTarget: existing?.cloudCostTarget || 0,
       cloudCostForecast: existing?.cloudCostForecast || 0,
+      cloudSeatId: existing?.cloudSeatId || null,
+      cloudSeatLabel: existing?.cloudSeatLabel || null,
+      cloudSeatDescription: existing?.cloudSeatDescription || null,
+      cloudSeatStatus: existing?.cloudSeatStatus || null,
+      cloudSeatTeam: existing?.cloudSeatTeam || null,
       cloudCostMonthlyActuals: existing?.cloudCostMonthlyActuals || Array(12).fill(0),
       cloudCostMonthlyForecast: existing?.cloudCostMonthlyForecast || Array(12).fill(0),
+      cloudCostMonthlyComparisonForecast:
+        existing?.cloudCostMonthlyComparisonForecast || Array(12).fill(0),
       seatCount: existing?.seatCount || 0,
       activeSeatCount: existing?.activeSeatCount || 0,
       openSeatCount: existing?.openSeatCount || 0,
@@ -5204,14 +5511,24 @@ function buildBudgetAreaSummaryFromSnapshot(
         remainingBudget: 0,
         totalForecast: 0,
         forecastRemaining: 0,
+        permBudget: 0,
+        extBudget: 0,
+        amsBudget: 0,
         permTarget: 0,
         permForecast: 0,
         extForecast: 0,
+        amsForecast: 0,
         cloudCostSpentToDate: 0,
         cloudCostTarget: 0,
         cloudCostForecast: 0,
+        cloudSeatId: null,
+        cloudSeatLabel: null,
+        cloudSeatDescription: null,
+        cloudSeatStatus: null,
+        cloudSeatTeam: null,
         cloudCostMonthlyActuals: Array(12).fill(0),
         cloudCostMonthlyForecast: Array(12).fill(0),
+        cloudCostMonthlyComparisonForecast: Array(12).fill(0),
         seatCount: 0,
         activeSeatCount: 0,
         openSeatCount: 0,
@@ -5223,8 +5540,19 @@ function buildBudgetAreaSummaryFromSnapshot(
     summary.financeViewBudget += financeValue
     summary.budget += financeValue
 
-    if (normalizeValue(movement.category).includes(CLOUD_CATEGORY)) {
+    const budgetBucket = resolveBudgetMovementBucket(
+      movement.category,
+      budgetMovementBucketLookup
+    )
+
+    if (budgetBucket === "CLOUD") {
       summary.cloudCostTarget += financeValue
+    } else if (budgetBucket === "EXT") {
+      summary.extBudget += financeValue
+    } else if (budgetBucket === "AMS") {
+      summary.amsBudget += financeValue
+    } else {
+      summary.permBudget += financeValue
     }
   }
 
@@ -5260,14 +5588,24 @@ function buildBudgetAreaSummaryFromSnapshot(
         remainingBudget: 0,
         totalForecast: 0,
         forecastRemaining: 0,
+        permBudget: 0,
+        extBudget: 0,
+        amsBudget: 0,
         permTarget: 0,
         permForecast: 0,
         extForecast: 0,
+        amsForecast: 0,
         cloudCostSpentToDate: 0,
         cloudCostTarget: 0,
         cloudCostForecast: 0,
+        cloudSeatId: null,
+        cloudSeatLabel: null,
+        cloudSeatDescription: null,
+        cloudSeatStatus: null,
+        cloudSeatTeam: null,
         cloudCostMonthlyActuals: Array(12).fill(0),
         cloudCostMonthlyForecast: Array(12).fill(0),
+        cloudCostMonthlyComparisonForecast: Array(12).fill(0),
         seatCount: 0,
         activeSeatCount: 0,
         openSeatCount: 0,
@@ -5306,8 +5644,20 @@ function buildBudgetAreaSummaryFromSnapshot(
     summary.permTarget += metrics.permFte
     summary.permForecast += metrics.permForecast
     summary.extForecast += metrics.extForecast
+    summary.amsForecast += metrics.amsForecast
     summary.cloudCostForecast += metrics.cloudCostForecast
     if (isCloudSeat) {
+      if (shouldReplaceCloudSeat(summary, rawSeat)) {
+        summary.cloudSeatId = rawSeat.id
+        summary.cloudSeatLabel =
+          [effectiveSeat.seatId, effectiveSeat.inSeat || effectiveSeat.team || "Unassigned"]
+            .filter(Boolean)
+            .join(" · ") || effectiveSeat.seatId
+        summary.cloudSeatDescription =
+          effectiveSeat.description || effectiveSeat.inSeat || null
+        summary.cloudSeatStatus = effectiveSeat.status || null
+        summary.cloudSeatTeam = effectiveSeat.team || null
+      }
       summary.cloudCostSpentToDate += metrics.totalSpent
       summary.cloudCostMonthlyActuals = summary.cloudCostMonthlyActuals.map(
         (value, monthIndex) => {
@@ -5327,6 +5677,10 @@ function buildBudgetAreaSummaryFromSnapshot(
       summary.cloudCostMonthlyForecast = summary.cloudCostMonthlyForecast.map(
         (value, monthIndex) => value + (metrics.monthlyForecast[monthIndex] ?? 0)
       )
+      summary.cloudCostMonthlyComparisonForecast =
+        summary.cloudCostMonthlyComparisonForecast.map((value, monthIndex) => {
+          return value + getCloudComparisonForecastAmount(rawSeat, monthIndex)
+        })
     }
   }
 
@@ -5542,6 +5896,49 @@ function buildTrackerDetailFromSnapshot(
   const { seats, assumptions, exchangeRates } = snapshot
   const assumptionLookup = buildCostAssumptionLookup(assumptions)
   const exchangeRateLookup = buildExchangeRateLookup(exchangeRates)
+  const getSeatMonthComparisonForecastAmount = (
+    seat: SeatWithRelations,
+    monthIndex: number
+  ) => {
+    const month = seat.months.find((entry) => entry.monthIndex === monthIndex)
+
+    if (month?.usedForecastAmount != null) {
+      return month.usedForecastAmount
+    }
+
+    const metrics = deriveSeatMetrics(
+      seat,
+      assumptionLookup,
+      exchangeRates,
+      year
+    )
+    const currentForecast = metrics.monthlyForecast[monthIndex] ?? 0
+
+    if (currentForecast > 0 || month?.forecastIncluded !== false) {
+      return currentForecast
+    }
+
+    const seatWithIncludedMonth: SeatWithRelations = {
+      ...seat,
+      months: seat.months.map((entry) =>
+        entry.monthIndex === monthIndex
+          ? {
+              ...entry,
+              forecastIncluded: true,
+            }
+          : entry
+      ),
+    }
+
+    return (
+      deriveSeatMetrics(
+        seatWithIncludedMonth,
+        assumptionLookup,
+        exchangeRates,
+        year
+      ).monthlyForecast[monthIndex] ?? 0
+    )
+  }
 
   return filterScopedItems(
     (seats as SeatWithRelations[])
@@ -5585,8 +5982,10 @@ function buildTrackerDetailFromSnapshot(
           forecastOverrideAmount: month.forecastOverrideAmount ?? null,
           forecastIncluded: month.forecastIncluded,
           usedForecastAmount: month.usedForecastAmount ?? null,
-          comparisonForecastAmount:
-            month.usedForecastAmount ?? (metrics.monthlyForecast[month.monthIndex] ?? 0),
+          comparisonForecastAmount: getSeatMonthComparisonForecastAmount(
+            seat,
+            month.monthIndex
+          ),
           notes: month.notes,
         }
       })
@@ -5605,6 +6004,7 @@ function buildTrackerDetailFromSnapshot(
         yearlyCostExternal: metrics.yearlyCostExternal,
         permFte: metrics.permFte,
         extFte: metrics.extFte,
+        amsFte: metrics.amsFte,
         quarterlyForecast: metrics.quarterlyForecast,
         monthlyForecast: metrics.monthlyForecast,
       }
@@ -6171,6 +6571,53 @@ export async function getSeatReferenceValues(
   }))
 }
 
+export async function getBudgetMovementCategoryMappings(
+  year: number
+): Promise<BudgetMovementCategoryMappingView[]> {
+  ensureValidYear(year)
+  const trackingYear = await getOrCreateTrackingYear(year)
+  const delegate = getBudgetMovementCategoryMappingDelegate()
+  if (!delegate) {
+    return []
+  }
+
+  const mappings = await delegate.findMany({
+    where: {
+      trackingYearId: trackingYear.id,
+    },
+    orderBy: [{ category: "asc" }],
+  })
+
+  return mappings.map((mapping) => ({
+    id: mapping.id,
+    category: mapping.category,
+    bucket: mapping.bucket,
+    notes: mapping.notes ?? null,
+  }))
+}
+
+export async function getBudgetMovementCategories(year: number): Promise<string[]> {
+  ensureValidYear(year)
+  const trackingYear = await getOrCreateTrackingYear(year)
+  const rows = await prisma.budgetMovement.findMany({
+    where: {
+      trackingYearId: trackingYear.id,
+      category: {
+        not: null,
+      },
+    },
+    select: {
+      category: true,
+    },
+    distinct: ["category"],
+    orderBy: [{ category: "asc" }],
+  })
+
+  return rows
+    .map((row) => row.category?.trim() ?? "")
+    .filter(Boolean)
+}
+
 async function persistSeatReferenceSelections(input: {
   trackingYearId: string
   vendor?: string | null
@@ -6677,6 +7124,75 @@ export async function upsertAccrualAccountMapping(input: {
   return mapping
 }
 
+export async function upsertBudgetMovementCategoryMapping(input: {
+  id?: string
+  year: number
+  category: string
+  bucket: BudgetMovementBucket
+  notes?: string
+}, actor?: AuditActor) {
+  const trackingYear = await getOrCreateTrackingYear(input.year)
+  const delegate = getBudgetMovementCategoryMappingDelegate()
+  if (!delegate) {
+    throw new Error(
+      "Budget movement category mappings are unavailable until the Prisma client and database schema are updated."
+    )
+  }
+
+  const category = input.category.trim()
+
+  if (!category) {
+    throw new Error("Category is required.")
+  }
+
+  const before = input.id
+    ? await delegate.findFirst({
+        where: {
+          id: input.id,
+          trackingYearId: trackingYear.id,
+        },
+      })
+    : await delegate.findFirst({
+        where: {
+          trackingYearId: trackingYear.id,
+          category,
+        },
+      })
+
+  const mapping = before
+    ? await delegate.update({
+        where: { id: before.id },
+        data: {
+          category,
+          bucket: input.bucket,
+          notes: input.notes?.trim() || null,
+        },
+      })
+    : await delegate.create({
+        data: {
+          trackingYearId: trackingYear.id,
+          category,
+          bucket: input.bucket,
+          notes: input.notes?.trim() || null,
+        },
+      })
+
+  await writeAuditLog({
+    trackingYearId: trackingYear.id,
+    entityType: "BudgetMovementCategoryMapping",
+    entityId: mapping.id,
+    action: before ? "UPDATE" : "CREATE",
+    actor,
+    changes: buildAuditChanges(before, mapping, [
+      "category",
+      "bucket",
+      "notes",
+    ]),
+  })
+
+  return mapping
+}
+
 export async function deleteAccrualAccountMapping(input: {
   year: number
   id: string
@@ -6710,6 +7226,46 @@ export async function deleteAccrualAccountMapping(input: {
     changes: buildAuditChanges(before, null, [
       "resourceType",
       "accountCode",
+      "notes",
+    ]),
+  })
+
+  return before
+}
+
+export async function deleteBudgetMovementCategoryMapping(input: {
+  year: number
+  id: string
+}, actor?: AuditActor) {
+  ensureValidYear(input.year)
+  const trackingYear = await getOrCreateTrackingYear(input.year)
+  const delegate = getBudgetMovementCategoryMappingDelegate()
+  if (!delegate) {
+    throw new Error(
+      "Budget movement category mappings are unavailable until the Prisma client and database schema are updated."
+    )
+  }
+
+  const before = await delegate.findFirstOrThrow({
+    where: {
+      id: input.id,
+      trackingYearId: trackingYear.id,
+    },
+  })
+
+  await delegate.delete({
+    where: { id: before.id },
+  })
+
+  await writeAuditLog({
+    trackingYearId: trackingYear.id,
+    entityType: "BudgetMovementCategoryMapping",
+    entityId: before.id,
+    action: "DELETE",
+    actor,
+    changes: buildAuditChanges(before, null, [
+      "category",
+      "bucket",
       "notes",
     ]),
   })
@@ -7339,7 +7895,6 @@ async function applyTrackerSeatMonthUpdate(input: {
       },
     }))
   const requiresForecastSnapshot =
-    input.payload.actualAmount === undefined &&
     !(input.payload.forecastIncluded ?? beforeMonth?.forecastIncluded ?? true) &&
     beforeMonth?.usedForecastAmount == null
   const exchangeRates =
@@ -7490,7 +8045,6 @@ export async function updateTrackerSeat(
     const beforeMonth =
       seat.months.find((month) => month.monthIndex === payload.monthIndex) ?? null
     const requiresForecastSnapshot =
-      payload.actualAmount === undefined &&
       !(payload.forecastIncluded ?? beforeMonth?.forecastIncluded ?? true) &&
       beforeMonth?.usedForecastAmount == null
     const [yearRecord, exchangeRateRows, costAssumptionRows] = await Promise.all([
@@ -7940,12 +8494,37 @@ export async function saveCloudActualForBudgetArea(
   const actualAmount = Math.round(input.actualAmount * 100) / 100
   const sourceKey = `manual-cloud:${budgetArea.id}`
   const seatId = `CLOUD-${budgetArea.projectCode || budgetArea.costCenter || budgetArea.id.slice(0, 6)}`
-  const existingSeat = await prisma.trackerSeat.findUnique({
+  const cloudSeatCandidates = await prisma.trackerSeat.findMany({
     where: {
-      trackingYearId_sourceKey: {
-        trackingYearId: trackingYear.id,
-        sourceKey,
+      trackingYearId: trackingYear.id,
+      isActive: true,
+      resourceType: {
+        equals: "cloud",
+        mode: "insensitive",
       },
+      OR: [
+        {
+          budgetAreaId: budgetArea.id,
+        },
+        {
+          domain: normalizedDomain
+            ? {
+                equals: normalizedDomain,
+                mode: "insensitive",
+              }
+            : undefined,
+          subDomain: {
+            equals: normalizedSubDomain,
+            mode: "insensitive",
+          },
+          projectCode: normalizedProjectCode
+            ? {
+                equals: normalizedProjectCode,
+                mode: "insensitive",
+              }
+            : undefined,
+        },
+      ],
     },
     include: {
       months: {
@@ -7955,9 +8534,111 @@ export async function saveCloudActualForBudgetArea(
       budgetArea: true,
     },
   })
+  const syntheticCloudSeat =
+    cloudSeatCandidates.find((candidate) => candidate.sourceKey === sourceKey) ?? null
+  const preferredCloudSeat =
+    cloudSeatCandidates
+      .filter((candidate) => candidate.sourceKey !== sourceKey)
+      .sort((left, right) => {
+        const leftBudgetAreaRank = left.budgetAreaId === budgetArea.id ? 0 : 1
+        const rightBudgetAreaRank = right.budgetAreaId === budgetArea.id ? 0 : 1
+
+        if (leftBudgetAreaRank !== rightBudgetAreaRank) {
+          return leftBudgetAreaRank - rightBudgetAreaRank
+        }
+
+        const leftSourceTypeRank = left.sourceType === "ROSTER" ? 0 : 1
+        const rightSourceTypeRank = right.sourceType === "ROSTER" ? 0 : 1
+
+        if (leftSourceTypeRank !== rightSourceTypeRank) {
+          return leftSourceTypeRank - rightSourceTypeRank
+        }
+
+        return left.createdAt.getTime() - right.createdAt.getTime()
+      })[0] ?? null
+
+  if (
+    preferredCloudSeat &&
+    syntheticCloudSeat &&
+    preferredCloudSeat.id !== syntheticCloudSeat.id
+  ) {
+    const targetMonthsByIndex = new Map(
+      preferredCloudSeat.months.map((month) => [month.monthIndex, month])
+    )
+    const sourceMonthsWithActuals = syntheticCloudSeat.months.filter((month) => {
+      const sourceActual = month.actualAmountRaw ?? month.actualAmount ?? 0
+      return sourceActual > 0
+    })
+    const hasConflictingTargetActuals = sourceMonthsWithActuals.some((month) => {
+      const targetMonth = targetMonthsByIndex.get(month.monthIndex)
+      const targetActual = targetMonth?.actualAmountRaw ?? targetMonth?.actualAmount ?? 0
+      return targetActual > 0
+    })
+
+    if (!hasConflictingTargetActuals && sourceMonthsWithActuals.length > 0) {
+      await prisma.$transaction(async (transaction) => {
+        for (const month of sourceMonthsWithActuals) {
+          await transaction.seatMonth.upsert({
+            where: {
+              trackerSeatId_monthIndex: {
+                trackerSeatId: preferredCloudSeat.id,
+                monthIndex: month.monthIndex,
+              },
+            },
+            update: {
+              actualAmount: month.actualAmount,
+              actualAmountRaw: month.actualAmountRaw,
+              actualCurrency: month.actualCurrency,
+              exchangeRateUsed: month.exchangeRateUsed,
+              forecastIncluded: month.forecastIncluded,
+              usedForecastAmount: month.usedForecastAmount,
+              notes: month.notes,
+            },
+            create: {
+              trackerSeatId: preferredCloudSeat.id,
+              monthIndex: month.monthIndex,
+              actualAmount: month.actualAmount,
+              actualAmountRaw: month.actualAmountRaw,
+              actualCurrency: month.actualCurrency,
+              exchangeRateUsed: month.exchangeRateUsed,
+              forecastIncluded: month.forecastIncluded,
+              usedForecastAmount: month.usedForecastAmount,
+              notes: month.notes,
+            },
+          })
+
+          await transaction.seatMonth.update({
+            where: { id: month.id },
+            data: {
+              actualAmount: 0,
+              actualAmountRaw: null,
+              actualCurrency: "DKK",
+              exchangeRateUsed: null,
+              forecastIncluded: true,
+              usedForecastAmount: null,
+              notes: month.notes
+                ? `Migrated to ${preferredCloudSeat.seatId}: ${month.notes}`
+                : `Migrated to ${preferredCloudSeat.seatId}.`,
+            },
+          })
+        }
+
+        await transaction.trackerSeat.update({
+          where: { id: syntheticCloudSeat.id },
+          data: {
+            isActive: false,
+            notes: syntheticCloudSeat.notes
+              ? `${syntheticCloudSeat.notes}\nSuperseded by ${preferredCloudSeat.seatId}.`
+              : `Superseded by ${preferredCloudSeat.seatId}.`,
+          },
+        })
+      })
+    }
+  }
 
   const seat =
-    existingSeat ??
+    preferredCloudSeat ??
+    syntheticCloudSeat ??
     (await prisma.trackerSeat.create({
       data: {
         trackingYearId: trackingYear.id,
@@ -7986,7 +8667,7 @@ export async function saveCloudActualForBudgetArea(
       },
     }))
 
-  if (!existingSeat) {
+  if (!preferredCloudSeat && !syntheticCloudSeat) {
     await ensureSeatMonthsForSeats([seat.id])
     await writeAuditLog({
       trackingYearId: trackingYear.id,
@@ -8154,7 +8835,6 @@ export async function updateTrackerSeatMonths(
 
     const beforeMonth = beforeMonthsByIndex.get(payload.monthIndex)
     return (
-      payload.actualAmount === undefined &&
       !(payload.forecastIncluded ?? beforeMonth?.forecastIncluded ?? true) &&
       beforeMonth?.usedForecastAmount == null
     )
@@ -8343,6 +9023,99 @@ export async function previewForecastCopyToActualsForSubDomain(input: {
   }
 }
 
+async function getInternalForecastUndoCandidates(input: {
+  year: number
+  budgetAreaId: string
+  monthIndex: number
+}, viewer?: Pick<AppViewer, "role" | "scopes">) {
+  const trackingYear = await getOrCreateTrackingYear(input.year)
+  const selectedSummary = parseSummaryKey(input.budgetAreaId)
+  const seats = await prisma.trackerSeat.findMany({
+    where: {
+      trackingYearId: trackingYear.id,
+      isActive: true,
+    },
+    include: {
+      months: {
+        orderBy: { monthIndex: "asc" },
+      },
+      override: true,
+      budgetArea: true,
+    },
+  })
+
+  return filterScopedItems(
+    (seats as SeatWithRelations[])
+      .map((seat) => {
+        const effectiveSeat = getEffectiveSeat(seat)
+        const month = seat.months.find((entry) => entry.monthIndex === input.monthIndex) ?? null
+
+        if (
+          normalizeValue(effectiveSeat.subDomain) !== normalizeValue(selectedSummary.subDomain) ||
+          normalizeValue(effectiveSeat.projectCode) !== normalizeValue(selectedSummary.projectCode) ||
+          isExternalSeat(effectiveSeat) ||
+          !month ||
+          month.forecastIncluded !== false ||
+          month.usedForecastAmount === null ||
+          normalizeValue(month.actualCurrency) !== "dkk" ||
+          (month.exchangeRateUsed !== null && Math.abs(month.exchangeRateUsed - 1) > 0.0001) ||
+          Math.abs((month.actualAmountRaw ?? month.actualAmount) - month.usedForecastAmount) >
+            0.01
+        ) {
+          return null
+        }
+
+        const allocation = Number.isFinite(Number(effectiveSeat.allocation))
+          ? Number(effectiveSeat.allocation)
+          : 0
+
+        return {
+          trackerSeatId: seat.id,
+          seatId: seat.seatId,
+          inSeat: effectiveSeat.inSeat,
+          team: effectiveSeat.team,
+          status: effectiveSeat.status,
+          allocationPercent: allocation <= 1 ? allocation * 100 : allocation,
+          actualAmount: Math.round(month.actualAmount),
+          forecastAmount: Math.round(month.usedForecastAmount),
+        }
+      })
+      .filter(
+        (
+          seat
+        ): seat is {
+          trackerSeatId: string
+          seatId: string
+          inSeat: string | null
+          team: string | null
+          status: string | null
+          allocationPercent: number
+          actualAmount: number
+          forecastAmount: number
+        } => Boolean(seat)
+      )
+      .sort((left, right) => left.seatId.localeCompare(right.seatId)),
+    viewer,
+    () => ({ domain: null, subDomain: selectedSummary.subDomain })
+  )
+}
+
+export async function previewForecastCopyUndoForSubDomain(input: {
+  year: number
+  budgetAreaId: string
+  monthIndex: number
+}, viewer?: Pick<AppViewer, "role" | "scopes">) {
+  const selectedSummary = parseSummaryKey(input.budgetAreaId)
+  const seats = await getInternalForecastUndoCandidates(input, viewer)
+
+  return {
+    monthIndex: input.monthIndex,
+    monthLabel: monthLabel(input.year, input.monthIndex),
+    subDomain: selectedSummary.subDomain,
+    seats,
+  }
+}
+
 export async function applyForecastCopyToActualsForSubDomain(input: {
   year: number
   budgetAreaId: string
@@ -8426,6 +9199,61 @@ export async function applyForecastCopyToActualsForSubDomain(input: {
   })
 
   return { updatedCount: updates.length }
+}
+
+export async function undoForecastCopyToActualsForSubDomain(input: {
+  year: number
+  budgetAreaId: string
+  monthIndex: number
+}, actor?: AuditActor, viewer?: Pick<AppViewer, "role" | "scopes">) {
+  const trackingYear = await getOrCreateTrackingYear(input.year)
+  const candidates = await getInternalForecastUndoCandidates(input, viewer)
+
+  if (candidates.length === 0) {
+    return { updatedCount: 0 }
+  }
+
+  await prisma.$transaction(
+    candidates.map((candidate) =>
+      prisma.seatMonth.update({
+        where: {
+          trackerSeatId_monthIndex: {
+            trackerSeatId: candidate.trackerSeatId,
+            monthIndex: input.monthIndex,
+          },
+        },
+        data: {
+          actualAmount: 0,
+          actualAmountRaw: null,
+          actualCurrency: "DKK",
+          exchangeRateUsed: null,
+          forecastIncluded: true,
+          usedForecastAmount: null,
+        },
+      })
+    )
+  )
+
+  await writeAuditLog({
+    trackingYearId: trackingYear.id,
+    entityType: "BulkForecastCopy",
+    entityId: input.budgetAreaId,
+    action: "BULK_UNDO",
+    actor,
+    changes: [
+      {
+        field: "bulkForecastUndo",
+        oldValue: null,
+        newValue: JSON.stringify({
+          budgetAreaId: input.budgetAreaId,
+          monthIndex: input.monthIndex,
+          updatedCount: candidates.length,
+        }),
+      },
+    ],
+  })
+
+  return { updatedCount: candidates.length }
 }
 
 export async function rollbackExternalActualImport(

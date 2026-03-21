@@ -9,9 +9,11 @@ type PageProps = {
   searchParams?: Promise<{
     year?: string;
     budgetAreaId?: string;
+    forecastBucket?: string;
     team?: SearchParamValue;
     missingActualMonth?: SearchParamValue;
     openSeatsOnly?: string;
+    showCancelledSeats?: string;
     seatSortField?: string;
     seatSortDirection?: string;
   }>;
@@ -38,6 +40,10 @@ export default async function TrackerPage({ searchParams }: PageProps) {
     toArray(resolvedSearchParams?.missingActualMonth),
     resolvedSearchParams?.openSeatsOnly === "true",
     viewer,
+    undefined,
+    {
+      includeCloudSeats: true,
+    },
   );
   const hasUnrestrictedDomainExportAccess = !hasScopeRestrictions(viewer);
   const exportableDomains = hasUnrestrictedDomainExportAccess
@@ -70,6 +76,7 @@ export default async function TrackerPage({ searchParams }: PageProps) {
         missingActualMonthFilters={workspace.missingActualMonthFilters}
         missingActualMonthOptions={workspace.missingActualMonthOptions}
         openSeatsOnly={workspace.openSeatsOnly}
+        showCancelledSeats={resolvedSearchParams?.showCancelledSeats === "true"}
         hasUnrestrictedDomainExportAccess={hasUnrestrictedDomainExportAccess}
         exportableDomains={exportableDomains}
         seatSortField={resolvedSearchParams?.seatSortField}

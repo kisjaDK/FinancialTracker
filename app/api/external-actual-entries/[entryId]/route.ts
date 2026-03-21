@@ -24,6 +24,7 @@ export async function PATCH(request: Request, context: RouteContext) {
       {
         entryId,
         amount: Number(body.amount),
+        monthIndex: Number(body.monthIndex),
         invoiceNumber: body.invoiceNumber ? String(body.invoiceNumber) : null,
         supplierName: body.supplierName ? String(body.supplierName) : null,
       },
