@@ -14,6 +14,7 @@ type Params = {
 function parseType(value: string): SeatReferenceValueType {
   const normalized = value.trim().toUpperCase()
   if (
+    normalized === "FUNDING" ||
     normalized === "VENDOR" ||
     normalized === "LOCATION" ||
     normalized === "MANAGER" ||

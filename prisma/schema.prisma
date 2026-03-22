@@ -59,6 +59,7 @@ enum ExternalActualSourceKind {
 }
 
 enum SeatReferenceValueType {
+  FUNDING
   VENDOR
   LOCATION
   MANAGER
@@ -345,6 +346,7 @@ model BudgetMovement {
   trackingYearId       String
   batchId              String
   budgetAreaId         String?
+  funding              String?
   givingFunding        String?
   givingPillar         String?
   amountGiven          Float               @default(0)
@@ -362,6 +364,7 @@ model BudgetMovement {
   budgetArea           BudgetArea?         @relation(fields: [budgetAreaId], references: [id], onDelete: SetNull)
 
   @@index([trackingYearId, budgetAreaId])
+  @@index([trackingYearId, funding])
   @@index([batchId])
 }
 

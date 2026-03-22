@@ -114,6 +114,7 @@ export type SeatMonthView = {
 export type BudgetMovementFilters = {
   search: string
   category: string
+  funding: string
   receivingFunding: string
   givingPillar: string
 }
@@ -129,6 +130,7 @@ export type BudgetMovementView = {
   isManual: boolean
   effectiveDate: Date | null
   category: string | null
+  funding: string | null
   givingFunding: string | null
   givingPillar: string | null
   receivingFunding: string
@@ -155,6 +157,56 @@ export type BudgetMovementImportBatchView = {
   fileName: string
   importedAt: Date
   rowCount: number
+}
+
+export type BudgetMovementFundingSummaryView = {
+  funding: string
+  movementCount: number
+  amountGiven: number
+  financeViewAmount: number
+  latestEffectiveDate: Date | null
+}
+
+export type FundingFollowUpSummaryView = {
+  funding: string
+  allocatedFunding: number
+  usedFunding: number
+  projectedFunding: number
+  remainingFunding: number
+  seatCount: number
+  activeSeatCount: number
+  latestMovementDate: Date | null
+}
+
+export type FundingFollowUpSeatView = {
+  id: string
+  seatId: string
+  name: string | null
+  status: string | null
+  funding: string | null
+  domain: string | null
+  subDomain: string | null
+  projectCode: string | null
+  team: string | null
+  role: string | null
+  budgetAreaDisplayName: string | null
+  startDate: Date | null
+  endDate: Date | null
+  actualsToDate: number
+  remainingForecast: number
+  totalProjectedSpend: number
+}
+
+export type FundingAvailabilityPreviewView = {
+  funding: string | null
+  status: "unselected" | "insufficient_data" | "within" | "exceeded"
+  message: string
+  allocatedFunding: number
+  currentProjectedFunding: number
+  proposedProjectedFunding: number | null
+  remainingFundingBeforeSeat: number
+  remainingFundingAfterSeat: number | null
+  exceededAmount: number | null
 }
 
 export type PeopleRosterFilters = {
@@ -197,6 +249,7 @@ export type PeopleRosterView = {
   band: string | null
   role: string | null
   resourceType: string | null
+  funding: string | null
   status: string | null
   manager: string | null
   fte: number | null

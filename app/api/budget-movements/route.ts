@@ -28,6 +28,7 @@ function parseMovementBody(body: Record<string, unknown>) {
   return {
     year: Number(body.year),
     id: body.id ? String(body.id) : undefined,
+    funding: body.funding ? String(body.funding) : undefined,
     givingFunding: body.givingFunding ? String(body.givingFunding) : undefined,
     givingPillar: body.givingPillar ? String(body.givingPillar) : undefined,
     amountGiven: parseRequiredNumber(body.amountGiven),
@@ -76,6 +77,7 @@ export async function PATCH(request: Request) {
     const movement = await updateBudgetMovement(parseMovementBody(body) as {
       year: number
       id: string
+      funding?: string | null
       givingFunding?: string | null
       givingPillar?: string | null
       amountGiven: number

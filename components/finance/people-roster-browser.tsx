@@ -426,6 +426,7 @@ export function PeopleRosterBrowser({
                   <TableHead>Person</TableHead>
                   <TableHead>Hierarchy</TableHead>
                   <TableHead>Project Code</TableHead>
+                  <TableHead>Funding</TableHead>
                   <TableHead>Vendor</TableHead>
                   <TableHead>Location</TableHead>
                   <TableHead>Role</TableHead>
@@ -468,6 +469,7 @@ export function PeopleRosterBrowser({
                       </div>
                     </TableCell>
                     <TableCell>{person.projectCode || "No project code"}</TableCell>
+                    <TableCell>{person.funding || "No funding"}</TableCell>
                     <TableCell>
                       <div>{person.vendor || "No vendor"}</div>
                       {person.dailyRate && person.dailyRate > 0 ? (
@@ -533,7 +535,7 @@ export function PeopleRosterBrowser({
                 {people.length === 0 ? (
                   <TableRow>
                     <TableCell
-                      colSpan={canEditTracker ? 12 : 11}
+                      colSpan={canEditTracker ? 13 : 12}
                       className="py-10 text-center text-muted-foreground"
                     >
                       No roster rows match the current filters.

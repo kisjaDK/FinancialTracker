@@ -8,6 +8,7 @@ type PageProps = {
     year?: string;
     search?: string;
     category?: string;
+    funding?: string;
     receivingFunding?: string;
     givingPillar?: string;
   }>;
@@ -24,6 +25,7 @@ export default async function BudgetMovementsPage({ searchParams }: PageProps) {
       year,
       search: resolvedSearchParams?.search,
       category: resolvedSearchParams?.category,
+      funding: resolvedSearchParams?.funding,
       receivingFunding: resolvedSearchParams?.receivingFunding,
       givingPillar: resolvedSearchParams?.givingPillar,
     },
@@ -42,6 +44,8 @@ export default async function BudgetMovementsPage({ searchParams }: PageProps) {
         trackingYears={data.trackingYears}
         filters={data.filters}
         filterOptions={data.filterOptions}
+        fundingValues={data.fundingValues}
+        fundingSummaries={data.fundingSummaries}
         movements={data.movements}
         totals={data.totals}
         imports={data.imports}

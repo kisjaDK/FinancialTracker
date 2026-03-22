@@ -36,8 +36,10 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
+import { formatCurrency } from "@/lib/finance/format"
 import type {
   DepartmentMappingView,
+  FundingAvailabilityPreviewView,
   PeopleRosterView,
   SeatReferenceValueView,
 } from "@/lib/finance/types"
@@ -72,6 +74,7 @@ type FormState = {
   subDomain: string
   budgetAreaId: string
   projectCode: string
+  funding: string
   inSeat: string
   team: string
   resourceType: string
@@ -96,6 +99,7 @@ const EMPTY_FORM: FormState = {
   subDomain: "",
   budgetAreaId: "",
   projectCode: "",
+  funding: "",
   inSeat: "",
   team: "",
   resourceType: "",
@@ -167,6 +171,7 @@ function buildFormState(seat: PeopleRosterView | null, budgetAreas: BudgetAreaOp
     subDomain: seat.mappedSubDomain || seat.subDomain || "",
     budgetAreaId: matchingArea?.id || "",
     projectCode: seat.projectCode || matchingArea?.projectCode || "",
+    funding: seat.funding || matchingArea?.funding || "",
     inSeat: seat.name || "",
     team: seat.team || "",
     resourceType: seat.resourceType || "",
@@ -291,6 +296,8 @@ export function SeatEditorDialog({
   const [isSaving, setIsSaving] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false)
+  const [fundingPreview, setFundingPreview] =
+    useState<FundingAvailabilityPreviewView | null>(null)
 
   useEffect(() => {
     if (!open) {
@@ -299,6 +306,106 @@ export function SeatEditorDialog({
 
     setForm(buildFormState(seat, budgetAreas))
   }, [open, seat, budgetAreas])
+
+  useEffect(() => {
+    if (!open) {
+      return
+    }
+
+    if (!form.funding) {
+      setFundingPreview({
+        funding: null,
+        status: "unselected",
+        message: "Select funding to see remaining allocation before saving the seat.",
+        allocatedFunding: 0,
+        currentProjectedFunding: 0,
+        proposedProjectedFunding: null,
+        remainingFundingBeforeSeat: 0,
+        remainingFundingAfterSeat: null,
+        exceededAmount: null,
+      })
+      return
+    }
+
+    let cancelled = false
+
+    void fetchJson("/api/tracker/funding-follow-up/preview", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        year: activeYear,
+        seatId: seat?.trackerSeatId ?? null,
+        profile: {
+          domain: form.domain || null,
+          subDomain: form.subDomain || null,
+          budgetAreaId: form.budgetAreaId || null,
+          funding: form.funding || null,
+          projectCode: form.projectCode || null,
+          team: form.team || null,
+          inSeat: form.inSeat || null,
+          resourceType: form.resourceType || null,
+          description: form.description || null,
+          band: form.band || null,
+          vendor: form.vendor || null,
+          location: form.location || null,
+          manager: form.manager || null,
+          dailyRate: form.dailyRate || null,
+          status: form.status || null,
+          allocation: form.allocation || null,
+          startDate: form.startDate || null,
+          endDate: form.endDate || null,
+        },
+      }),
+    })
+      .then((body: { preview: FundingAvailabilityPreviewView }) => {
+        if (!cancelled) {
+          setFundingPreview(body.preview)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setFundingPreview({
+            funding: form.funding,
+            status: "insufficient_data",
+            message: "Funding availability could not be estimated right now.",
+            allocatedFunding: 0,
+            currentProjectedFunding: 0,
+            proposedProjectedFunding: null,
+            remainingFundingBeforeSeat: 0,
+            remainingFundingAfterSeat: null,
+            exceededAmount: null,
+          })
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [
+    activeYear,
+    form.allocation,
+    form.band,
+    form.budgetAreaId,
+    form.dailyRate,
+    form.domain,
+    form.endDate,
+    form.funding,
+    form.inSeat,
+    form.location,
+    form.manager,
+    form.projectCode,
+    form.resourceType,
+    form.startDate,
+    form.status,
+    form.subDomain,
+    form.team,
+    form.vendor,
+    form.description,
+    open,
+    seat?.trackerSeatId,
+  ])
 
   const domainOptions = useMemo(
     () =>
@@ -386,6 +493,9 @@ export function SeatEditorDialog({
   const vendorOptions = seatReferenceValues
     .filter((value) => value.type === "VENDOR")
     .map((value) => value.value)
+  const fundingOptions = seatReferenceValues
+    .filter((value) => value.type === "FUNDING")
+    .map((value) => value.value)
   const locationOptions = seatReferenceValues
     .filter((value) => value.type === "LOCATION")
     .map((value) => value.value)
@@ -401,6 +511,7 @@ export function SeatEditorDialog({
   const resourceTypeOptions = seatReferenceValues
     .filter((value) => value.type === "RESOURCE_TYPE")
     .map((value) => value.value)
+  const fundingTypeaheadOptions = fundingOptions.map((value) => ({ value, label: value }))
   const vendorTypeaheadOptions = vendorOptions.map((value) => ({ value, label: value }))
   const locationTypeaheadOptions = locationOptions.map((value) => ({ value, label: value }))
   const managerTypeaheadOptions = managerOptions.map((value) => ({ value, label: value }))
@@ -417,6 +528,7 @@ export function SeatEditorDialog({
           domain: form.domain || null,
           subDomain: form.subDomain || null,
           budgetAreaId: form.budgetAreaId || null,
+          funding: form.funding || null,
           projectCode: form.projectCode || null,
           inSeat: form.inSeat || null,
           team: form.team || null,
@@ -601,6 +713,16 @@ export function SeatEditorDialog({
               </SelectContent>
             </Select>
           </div>
+          <SeatTypeaheadField
+            id="seat-funding"
+            label="Funding"
+            value={form.funding}
+            options={fundingTypeaheadOptions}
+            placeholder="Select funding"
+            searchPlaceholder="Search funding..."
+            emptyText="No funding found."
+            onChange={(value) => setForm((current) => ({ ...current, funding: value }))}
+          />
           <div className="space-y-2">
             <Label htmlFor="seat-resource-type">Resource type</Label>
             <NativeSelect
@@ -739,6 +861,52 @@ export function SeatEditorDialog({
                 setForm((current) => ({ ...current, endDate: event.target.value }))
               }
             />
+          </div>
+          <div className="space-y-3 md:col-span-2">
+            <Label>Funding follow-up</Label>
+            <div
+              className={cn(
+                "rounded-lg border px-4 py-3 text-sm",
+                fundingPreview?.status === "exceeded"
+                  ? "border-rose-200 bg-rose-50 text-rose-700"
+                  : fundingPreview?.status === "within"
+                    ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                    : "border-border bg-muted/30 text-muted-foreground"
+              )}
+            >
+              <p className="font-medium">
+                {fundingPreview?.message ||
+                  "Select funding to see remaining allocation before saving the seat."}
+              </p>
+              {fundingPreview ? (
+                <div className="mt-2 grid gap-2 text-xs sm:grid-cols-2 xl:grid-cols-4">
+                  <div>
+                    <div className="text-muted-foreground">Allocated</div>
+                    <div>{formatCurrency(fundingPreview.allocatedFunding)}</div>
+                  </div>
+                  <div>
+                    <div className="text-muted-foreground">Current projected</div>
+                    <div>{formatCurrency(fundingPreview.currentProjectedFunding)}</div>
+                  </div>
+                  <div>
+                    <div className="text-muted-foreground">This seat projected</div>
+                    <div>
+                      {fundingPreview.proposedProjectedFunding === null
+                        ? "Not ready"
+                        : formatCurrency(fundingPreview.proposedProjectedFunding)}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-muted-foreground">Remaining after seat</div>
+                    <div>
+                      {fundingPreview.remainingFundingAfterSeat === null
+                        ? "Not ready"
+                        : formatCurrency(fundingPreview.remainingFundingAfterSeat)}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+            </div>
           </div>
           <div className="space-y-2">
             <Label htmlFor="seat-spend-plan">Spend plan ID</Label>

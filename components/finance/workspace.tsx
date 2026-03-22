@@ -318,10 +318,7 @@ function isAmsSeatType(resourceType: string | null | undefined) {
 function isLicenseSeatType(resourceType: string | null | undefined) {
 	const normalizedResourceType = (resourceType || "").trim().toLowerCase();
 
-	return (
-		normalizedResourceType.includes("license") ||
-		normalizedResourceType.includes("licence")
-	);
+	return normalizedResourceType.includes("license");
 }
 
 export function FinanceWorkspace({
@@ -704,6 +701,7 @@ export function FinanceWorkspace({
 		missingActualMonthFilters,
 		openSeatsOnly,
 		openSeatStatuses,
+		showCancelledSeats,
 		trackerTeamFilters,
 	]);
 	const sortedSeats = useMemo(() => {
@@ -1079,17 +1077,21 @@ export function FinanceWorkspace({
 				title="Financial Tracker"
 				subtitle="Imported budget movements, roster-derived seats, and manual finance assumptions."
 			/>
-			<section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+			<section className="space-y-2">
+				<div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+					All monetary values in DKK
+				</div>
+				<div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
 				<Card className="brand-stat-card">
 					<CardHeader className="gap-1 p-5">
 						<CardDescription className="text-sm text-muted-foreground">
 							Total Budget
 						</CardDescription>
 						<CardTitle className="text-[2.05rem] font-semibold tracking-tight">
-							{formatCurrency(summaryTotals.amountGivenBudget)}
+							{formatBudgetSummaryAmount(summaryTotals.amountGivenBudget)}
 						</CardTitle>
 						<div className="text-xs text-muted-foreground">
-							Finance view {formatCurrency(summaryTotals.financeViewBudget)}
+							Finance view {formatBudgetSummaryAmount(summaryTotals.financeViewBudget)}
 						</div>
 					</CardHeader>
 				</Card>
@@ -1099,7 +1101,7 @@ export function FinanceWorkspace({
 							Spent to date
 						</CardDescription>
 						<CardTitle className="text-[2.05rem] font-semibold tracking-tight">
-							{formatCurrency(summaryTotals.spent)}
+							{formatBudgetSummaryAmount(summaryTotals.spent)}
 						</CardTitle>
 					</CardHeader>
 				</Card>
@@ -1109,7 +1111,7 @@ export function FinanceWorkspace({
 							Total Forecast
 						</CardDescription>
 						<CardTitle className="text-[2.05rem] font-semibold tracking-tight">
-							{formatCurrency(summaryTotals.forecast)}
+							{formatBudgetSummaryAmount(summaryTotals.forecast)}
 						</CardTitle>
 					</CardHeader>
 				</Card>
@@ -1123,6 +1125,7 @@ export function FinanceWorkspace({
 						</CardTitle>
 					</CardHeader>
 				</Card>
+				</div>
 			</section>
 
 			<section className="space-y-6">
@@ -1222,28 +1225,28 @@ export function FinanceWorkspace({
 					</CardHeader>
 					<CardContent className="pt-5">
 						<div className="brand-table-shell">
-							<Table className="min-w-[1080px]">
+							<Table className="min-w-270">
 								<TableHeader>
 									<TableRow>
-										<TableHead className="h-14 w-[31rem] bg-muted/30 text-sm font-medium">
+										<TableHead className="h-14 w-124 bg-muted/30 text-sm font-medium">
 											Pillar
 										</TableHead>
-										<TableHead className="h-14 w-[12rem] bg-muted/30 text-right text-sm font-medium">
+										<TableHead className="h-14 w-48 bg-muted/30 text-right text-sm font-medium">
 											Budget
 										</TableHead>
-										<TableHead className="h-14 w-[10rem] bg-muted/30 text-right text-sm font-medium whitespace-normal leading-tight">
+										<TableHead className="h-14 w-40 bg-muted/30 text-right text-sm font-medium whitespace-normal leading-tight">
 											<span className="block">Spent To</span>
 											<span className="block">Date</span>
 										</TableHead>
-										<TableHead className="h-14 w-[11rem] bg-muted/30 text-right text-sm font-medium whitespace-normal leading-tight">
+										<TableHead className="h-14 w-44 bg-muted/30 text-right text-sm font-medium whitespace-normal leading-tight">
 											<span className="block">Remaining</span>
 											<span className="block">Budget</span>
 										</TableHead>
-										<TableHead className="h-14 w-[12rem] bg-muted/30 text-right text-sm font-medium whitespace-normal leading-tight">
+										<TableHead className="h-14 w-48 bg-muted/30 text-right text-sm font-medium whitespace-normal leading-tight">
 											<span className="block">Forecast Spent</span>
 											<span className="block">To End Of Year</span>
 										</TableHead>
-										<TableHead className="h-14 w-[11rem] bg-muted/30 text-right text-sm font-medium whitespace-normal leading-tight">
+										<TableHead className="h-14 w-44 bg-muted/30 text-right text-sm font-medium whitespace-normal leading-tight">
 											<span className="block">End Of Year</span>
 											<span className="block">Balance</span>
 										</TableHead>
@@ -1356,10 +1359,25 @@ export function FinanceWorkspace({
 								? `${selectedArea.displayName} for ${activeYear}`
 								: `No pillar selected for ${activeYear}`}
 						</CardDescription>
+						<div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+							All monetary values in DKK
+						</div>
 					</CardHeader>
 					<CardContent className="space-y-4 text-sm">
 						{selectedArea ? (
 							<>
+								<div className="flex flex-wrap items-center justify-between gap-3">
+									<div className="text-xs text-muted-foreground">
+										Open funding follow-up with the selected domain and sub-domain scope.
+									</div>
+									<Button asChild variant="outline">
+										<Link
+											href={`/tracker/funding-follow-up?year=${activeYear}${selectedArea.domain ? `&domain=${encodeURIComponent(selectedArea.domain)}` : ""}${selectedArea.subDomain ? `&subDomain=${encodeURIComponent(selectedArea.subDomain)}` : ""}${selectedArea.projectCode ? `&projectCode=${encodeURIComponent(selectedArea.projectCode)}` : ""}`}
+										>
+											Funding Follow-Up
+										</Link>
+									</Button>
+								</div>
 								<div className="grid gap-3 md:grid-cols-5">
 									<div className="rounded-2xl bg-muted/45 p-4">
 										<div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
@@ -1398,7 +1416,7 @@ export function FinanceWorkspace({
 											Cloud Target
 										</div>
 										<div className="mt-2 text-base font-semibold">
-											{formatCurrency(selectedArea.cloudCostTarget)}
+											{formatBudgetSummaryAmount(selectedArea.cloudCostTarget)}
 										</div>
 									</div>
 								</div>
@@ -1416,7 +1434,7 @@ export function FinanceWorkspace({
 											PERM Forecast
 										</div>
 										<div className="mt-2 font-medium">
-											{formatCurrency(selectedArea.permForecast)}
+											{formatBudgetSummaryAmount(selectedArea.permForecast)}
 										</div>
 										<div className="mt-2 text-xs text-muted-foreground">
 											{activeForecastBucket === "perm"
@@ -1437,7 +1455,7 @@ export function FinanceWorkspace({
 											EXT Forecast
 										</div>
 										<div className="mt-2 font-medium">
-											{formatCurrency(selectedArea.extForecast)}
+											{formatBudgetSummaryAmount(selectedArea.extForecast)}
 										</div>
 										<div className="mt-2 text-xs text-muted-foreground">
 											{activeForecastBucket === "ext"
@@ -1458,7 +1476,7 @@ export function FinanceWorkspace({
 											AMS Forecast
 										</div>
 										<div className="mt-2 font-medium">
-											{formatCurrency(selectedArea.amsForecast)}
+											{formatBudgetSummaryAmount(selectedArea.amsForecast)}
 										</div>
 										<div className="mt-2 text-xs text-muted-foreground">
 											{activeForecastBucket === "ams"
@@ -1479,7 +1497,7 @@ export function FinanceWorkspace({
 											Cloud Forecast
 										</div>
 										<div className="mt-2 font-medium">
-											{formatCurrency(selectedArea.cloudCostForecast)}
+											{formatBudgetSummaryAmount(selectedArea.cloudCostForecast)}
 										</div>
 										<div className="mt-2 text-xs text-muted-foreground">
 											{activeForecastBucket === "cloud"
@@ -1494,7 +1512,7 @@ export function FinanceWorkspace({
 											PERM Budget - Spent
 										</div>
 										<div className="mt-2 font-medium">
-											{formatCurrency(
+											{formatBudgetSummaryAmount(
 												selectedArea.permBudget -
 													selectedAreaBucketBudgetDelta.permSpent,
 											)}
@@ -1505,7 +1523,7 @@ export function FinanceWorkspace({
 											EXT Budget - Spent
 										</div>
 										<div className="mt-2 font-medium">
-											{formatCurrency(
+											{formatBudgetSummaryAmount(
 												selectedArea.extBudget -
 													selectedAreaBucketBudgetDelta.extSpent,
 											)}
@@ -1516,7 +1534,7 @@ export function FinanceWorkspace({
 											AMS Budget - Spent
 										</div>
 										<div className="mt-2 font-medium">
-											{formatCurrency(
+											{formatBudgetSummaryAmount(
 												selectedArea.amsBudget -
 													selectedAreaBucketBudgetDelta.amsSpent,
 											)}
@@ -1527,7 +1545,7 @@ export function FinanceWorkspace({
 											Cloud Budget - Spent
 										</div>
 										<div className="mt-2 font-medium">
-											{formatCurrency(
+											{formatBudgetSummaryAmount(
 												selectedArea.cloudCostTarget -
 													selectedAreaBucketBudgetDelta.cloudSpent,
 											)}
@@ -1538,19 +1556,19 @@ export function FinanceWorkspace({
 									<div className="flex items-center gap-2">
 										<span className="text-muted-foreground">Spent</span>
 										<span className="font-medium">
-											{formatCurrency(selectedArea.spentToDate)}
+											{formatBudgetSummaryAmount(selectedArea.spentToDate)}
 										</span>
 									</div>
 									<div className="flex items-center gap-2">
 										<span className="text-muted-foreground">Budget</span>
 										<span className="font-medium">
-											{formatCurrency(selectedArea.amountGivenBudget)}
+											{formatBudgetSummaryAmount(selectedArea.amountGivenBudget)}
 										</span>
 									</div>
 									<div className="flex items-center gap-2">
 										<span className="text-muted-foreground">Remaining</span>
 										<span className="font-medium">
-											{formatCurrency(selectedArea.forecastRemaining)}
+											{formatBudgetSummaryAmount(selectedArea.forecastRemaining)}
 										</span>
 									</div>
 								</div>
@@ -1578,6 +1596,9 @@ export function FinanceWorkspace({
 									? `Filtered to ${activeForecastBucketLabel.toLowerCase()} for the selected pillar.`
 									: "Detail rows derived from the latest approved roster import."}
 						</CardDescription>
+						<div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+							All monetary values in DKK
+						</div>
 					</CardHeader>
 					<CardContent>
 						<form
@@ -1696,19 +1717,19 @@ export function FinanceWorkspace({
 							<div className="flex items-center gap-2">
 								<span className="text-muted-foreground">Listed spent</span>
 								<span className="font-medium">
-									{formatCurrency(listedSeatTotals.spent)}
+									{formatBudgetSummaryAmount(listedSeatTotals.spent)}
 								</span>
 							</div>
 							<div className="flex items-center gap-2">
 								<span className="text-muted-foreground">Listed remaining forecast</span>
 								<span className="font-medium">
-									{formatCurrency(listedSeatTotals.remainingForecast)}
+									{formatBudgetSummaryAmount(listedSeatTotals.remainingForecast)}
 								</span>
 							</div>
 							<div className="flex items-center gap-2">
 								<span className="text-muted-foreground">Listed year end spent</span>
 								<span className="font-medium">
-									{formatCurrency(listedSeatTotals.yearEndSpent)}
+									{formatBudgetSummaryAmount(listedSeatTotals.yearEndSpent)}
 								</span>
 							</div>
 							<div className="flex items-center gap-2">
@@ -1852,7 +1873,7 @@ export function FinanceWorkspace({
 													}
 													onClick={() => selectSeat(seat.id)}
 												>
-													<TableCell className="align-top whitespace-normal break-words">
+													<TableCell className="align-top whitespace-normal wrap-break-word">
 														<div className="flex items-center justify-between gap-3">
 															<Link
 																href={`/people-roster?year=${activeYear}&seatId=${encodeURIComponent(seat.seatId)}`}
@@ -1875,8 +1896,8 @@ export function FinanceWorkspace({
 															{seat.projectCode || "No project code"}
 														</div>
 													</TableCell>
-													<TableCell className="align-top whitespace-normal break-words">
-														<div className="break-words whitespace-normal">
+													<TableCell className="align-top whitespace-normal wrap-break-word">
+														<div className="whitespace-normal wrap-break-word">
 															{seat.inSeat || "Unassigned"}
 														</div>
 														<div className="text-xs text-muted-foreground">
@@ -1886,14 +1907,14 @@ export function FinanceWorkspace({
 															{seat.location || "No location"}
 														</div>
 													</TableCell>
-													<TableCell className="align-top whitespace-normal break-words">
-														<div className="break-words whitespace-normal">
+													<TableCell className="align-top whitespace-normal wrap-break-word">
+														<div className="whitespace-normal wrap-break-word">
 															{seat.resourceType || "n/a"}
 														</div>
-														<div className="text-xs text-muted-foreground whitespace-normal break-words">
+														<div className="text-xs text-muted-foreground whitespace-normal wrap-break-word">
 															{seat.description || "No role"}
 														</div>
-														<div className="text-xs text-muted-foreground whitespace-normal break-words">
+														<div className="text-xs text-muted-foreground whitespace-normal wrap-break-word">
 															{formatOptionalDate(seat.startDate)} to{" "}
 															{formatOptionalDate(seat.endDate)}
 														</div>
@@ -1902,27 +1923,27 @@ export function FinanceWorkspace({
 														{formatPercent(seat.allocation)}
 													</TableCell>
 													<TableCell>
-														{formatCurrency(seat.totalSpent)}
+														{formatBudgetSummaryAmount(seat.totalSpent)}
 													</TableCell>
 													{showSpentQuarterly ? (
 														<>
 															<TableCell>
-																{formatCurrency(quarterlySpent[0])}
+																{formatBudgetSummaryAmount(quarterlySpent[0])}
 															</TableCell>
 															<TableCell>
-																{formatCurrency(quarterlySpent[1])}
+																{formatBudgetSummaryAmount(quarterlySpent[1])}
 															</TableCell>
 															<TableCell>
-																{formatCurrency(quarterlySpent[2])}
+																{formatBudgetSummaryAmount(quarterlySpent[2])}
 															</TableCell>
 															<TableCell>
-																{formatCurrency(quarterlySpent[3])}
+																{formatBudgetSummaryAmount(quarterlySpent[3])}
 															</TableCell>
 														</>
 													) : null}
 													<TableCell className="align-top">
 														<div className="flex items-center gap-1">
-															<span>{formatCurrency(remainingForecast)}</span>
+															<span>{formatBudgetSummaryAmount(remainingForecast)}</span>
 															{seat.hasForecastAdjustments ? (
 																<PenLine
 																	className="size-3.5 text-rose-700 dark:text-rose-300"
@@ -1937,21 +1958,21 @@ export function FinanceWorkspace({
 													{showForecastQuarterly ? (
 														<>
 															<TableCell>
-																{formatCurrency(quarterlyForecast[0])}
+																{formatBudgetSummaryAmount(quarterlyForecast[0])}
 															</TableCell>
 															<TableCell>
-																{formatCurrency(quarterlyForecast[1])}
+																{formatBudgetSummaryAmount(quarterlyForecast[1])}
 															</TableCell>
 															<TableCell>
-																{formatCurrency(quarterlyForecast[2])}
+																{formatBudgetSummaryAmount(quarterlyForecast[2])}
 															</TableCell>
 															<TableCell>
-																{formatCurrency(quarterlyForecast[3])}
+																{formatBudgetSummaryAmount(quarterlyForecast[3])}
 															</TableCell>
 														</>
 													) : null}
 													<TableCell>
-														<div>{formatCurrency(seat.totalForecast)}</div>
+														<div>{formatBudgetSummaryAmount(seat.totalForecast)}</div>
 														<div
 															className={cn(
 																"text-xs",
@@ -1962,8 +1983,7 @@ export function FinanceWorkspace({
 																		: "text-muted-foreground",
 															)}
 														>
-															vs full year {yearEndSpentDeviation > 0 ? "+" : ""}
-															{formatCurrency(yearEndSpentDeviation)}
+															vs full year {formatBudgetSummaryAmount(yearEndSpentDeviation)}
 														</div>
 													</TableCell>
 													<TableCell className="align-top text-right">
@@ -2022,6 +2042,9 @@ export function FinanceWorkspace({
 						<DialogDescription>
 							Review monthly forecast and actuals for the selected seat.
 						</DialogDescription>
+						<div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+							All monetary values in DKK
+						</div>
 					</DialogHeader>
 					{detailDialogSeat ? (
 						<div className="space-y-4 overflow-y-auto pr-1">
@@ -2058,12 +2081,12 @@ export function FinanceWorkspace({
 												<TableRow key={month}>
 													<TableCell>{month}</TableCell>
 													<TableCell>
-														{formatCurrency(
+														{formatBudgetSummaryAmount(
 															detailDialogSeat.monthlyForecast[monthIndex] ?? 0,
 														)}
 													</TableCell>
 													<TableCell>
-														{formatCurrency(monthEntry?.actualAmountDkk ?? 0)}
+														{formatBudgetSummaryAmount(monthEntry?.actualAmountDkk ?? 0)}
 													</TableCell>
 													<TableCell className="text-xs text-muted-foreground">
 														{monthEntry?.actualAmountRaw ?? 0}{" "}

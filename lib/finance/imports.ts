@@ -119,6 +119,29 @@ export function parseDate(value: string | undefined) {
         `${datePart} ${hours}:${minutes}${seconds ? `:${seconds}` : ""}`
     )
 
+  const dayFirstMatch = normalized.match(
+    /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/
+  )
+  if (dayFirstMatch) {
+    const [, dayRaw, monthRaw, yearRaw, hourRaw, minuteRaw, secondRaw] = dayFirstMatch
+    const day = Number(dayRaw)
+    const monthIndex = Number(monthRaw) - 1
+    const year = Number(yearRaw)
+    const hours = hourRaw ? Number(hourRaw) : 0
+    const minutes = minuteRaw ? Number(minuteRaw) : 0
+    const seconds = secondRaw ? Number(secondRaw) : 0
+
+    const date = new Date(year, monthIndex, day, hours, minutes, seconds)
+    if (
+      date.getFullYear() === year &&
+      date.getMonth() === monthIndex &&
+      date.getDate() === day &&
+      isSupportedImportDate(date)
+    ) {
+      return date
+    }
+  }
+
   const parsed = new Date(normalized)
   if (Number.isNaN(parsed.getTime())) {
     return null
@@ -624,6 +647,13 @@ async function persistRosterImportRows(
   ])
 
   const dedupedRows = dedupeRosterRows(rows)
+  const fundingValues = Array.from(
+    new Set(
+      dedupedRows
+        .map((row) => row.fundingType?.trim() ?? "")
+        .filter((value) => value.length > 0)
+    )
+  )
   const errorRowCount = dedupedRows.filter((row) =>
     Boolean(
       resolveRosterImportValues(row, departmentMappings, departmentMappingLookup).importError
@@ -685,6 +715,17 @@ async function persistRosterImportRows(
 
     return nextBatch
   })
+
+  for (const funding of fundingValues) {
+    await upsertSeatReferenceValue(
+      {
+        year,
+        type: "FUNDING" as SeatReferenceValueType,
+        value: funding,
+      },
+      actor
+    )
+  }
 
   await deriveTrackerSeatsForYear(year)
   await writeAuditLog({
@@ -904,6 +945,7 @@ export async function importBudgetMovementsCsv(
     !("Amount Given" in sample) ? "Amount Given" : null,
     !hasCostCenterHeader ? "Receiving Cost Center / Receing Funding" : null,
     !hasProjectCodeHeader ? "Receiving Project Code / Receiving Pillar" : null,
+    !("Funding" in sample) ? "Funding" : null,
     !("Date of Change" in sample) ? "Date of Change" : null,
   ].filter(Boolean)
 
@@ -936,6 +978,13 @@ export async function importBudgetMovementsCsv(
   })
   const departmentCodeMappings = new Map(
     departmentMappings.map((mapping) => [mapping.sourceCode.trim().toLowerCase(), mapping])
+  )
+  const fundingValues = Array.from(
+    new Set(
+      rows
+        .map((row) => row["Funding"]?.trim() ?? "")
+        .filter((value) => value.length > 0)
+    )
   )
 
   await prisma.$transaction(async (transaction) => {
@@ -1015,6 +1064,7 @@ export async function importBudgetMovementsCsv(
           trackingYearId: trackingYear.id,
           batchId: batch.id,
           budgetAreaId: budgetArea.id,
+          funding,
           givingFunding: row["Giving Funding"] || null,
           givingPillar: row["Giving Pillar"] || null,
           amountGiven: parseNumber(row["Amount Given"]) ?? 0,
@@ -1030,6 +1080,17 @@ export async function importBudgetMovementsCsv(
       })
     }
   })
+
+  for (const funding of fundingValues) {
+    await upsertSeatReferenceValue(
+      {
+        year,
+        type: "FUNDING" as SeatReferenceValueType,
+        value: funding,
+      },
+      actor
+    )
+  }
 
   await deriveTrackerSeatsForYear(year)
   const batch = await prisma.budgetMovementBatch.findFirstOrThrow({

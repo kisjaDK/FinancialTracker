@@ -233,6 +233,7 @@ export function AdminBrowser({
     rates: exchangeRates.filter((rate) => rate.currency === currency),
   }))
   const vendorValues = seatReferenceValues.filter((value) => value.type === "VENDOR")
+  const fundingValues = seatReferenceValues.filter((value) => value.type === "FUNDING")
   const locationValues = seatReferenceValues.filter((value) => value.type === "LOCATION")
   const managerValues = seatReferenceValues.filter((value) => value.type === "MANAGER")
   const roleValues = seatReferenceValues.filter((value) => value.type === "ROLE")
@@ -1260,6 +1261,16 @@ export function AdminBrowser({
           </TabsContent>
 
           <TabsContent value="data" className="space-y-6">
+            <section className="grid gap-6 xl:grid-cols-3">
+              <SeatReferenceValuesCard
+                activeYear={activeYear}
+                title="Funding"
+                description="Maintain the allowed funding dropdown values used by seats and budget movements."
+                type="FUNDING"
+                values={fundingValues}
+              />
+            </section>
+
             <Card className="brand-card">
               <CardHeader>
                 <CardTitle>Reset Year Data</CardTitle>

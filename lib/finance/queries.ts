@@ -38,6 +38,10 @@ import {
 } from "@/lib/finance/derive"
 import type {
   BudgetAreaSummary,
+  FundingAvailabilityPreviewView,
+  FundingFollowUpSeatView,
+  FundingFollowUpSummaryView,
+  BudgetMovementFundingSummaryView,
   ExternalActualImportBatchView,
   ExternalActualImportFilters,
   ExternalActualImportView,
@@ -62,6 +66,7 @@ import type {
   StaffingTargetView,
   StatusDefinitionView,
 } from "@/lib/finance/types"
+import { formatCurrency } from "@/lib/finance/format"
 import { filterByScopes, hasScopeRestrictions, type AppViewer } from "@/lib/authz"
 import { getPrismaClient, prisma } from "@/lib/prisma"
 
@@ -167,6 +172,65 @@ function logTrackerSummaryTiming(input: {
 
 function normalizeValue(value: string | null | undefined) {
   return value?.trim().toLowerCase() ?? ""
+}
+
+const UNASSIGNED_FUNDING_FILTER = "__unassigned__"
+
+function normalizeFundingValue(value: string | null | undefined) {
+  const trimmed = value?.trim()
+  return trimmed ? trimmed : null
+}
+
+function getFundingFilterValue(value: string | null | undefined) {
+  return normalizeFundingValue(value) ?? UNASSIGNED_FUNDING_FILTER
+}
+
+function getFundingDisplayLabel(value: string | null | undefined) {
+  return normalizeFundingValue(value) ?? "Unassigned"
+}
+
+function matchesFundingFilter(
+  value: string | null | undefined,
+  filterValue: string | null | undefined
+) {
+  if (!filterValue?.trim()) {
+    return true
+  }
+
+  if (filterValue === UNASSIGNED_FUNDING_FILTER) {
+    return !normalizeFundingValue(value)
+  }
+
+  return normalizeValue(value) === normalizeValue(filterValue)
+}
+
+function matchesHierarchyScope(
+  value: {
+    domain: string | null | undefined
+    subDomain: string | null | undefined
+    projectCode?: string | null | undefined
+  },
+  scope?: { domain?: string | null; subDomain?: string | null; projectCode?: string | null }
+) {
+  if (scope?.domain?.trim() && normalizeValue(value.domain) !== normalizeValue(scope.domain)) {
+    return false
+  }
+
+  if (
+    scope?.subDomain?.trim() &&
+    normalizeValue(value.subDomain) !== normalizeValue(scope.subDomain)
+  ) {
+    return false
+  }
+
+  if (
+    scope?.projectCode?.trim() &&
+    normalizeValue(value.projectCode) !== normalizeValue(scope.projectCode)
+  ) {
+    return false
+  }
+
+  return true
 }
 
 function filterScopedItems<T>(
@@ -2174,6 +2238,7 @@ export async function getBudgetMovementsPageData(input?: {
   year?: number
   search?: string
   category?: string
+  funding?: string
   receivingFunding?: string
   givingPillar?: string
 }, viewer?: Pick<AppViewer, "role" | "scopes">) {
@@ -2192,11 +2257,12 @@ export async function getBudgetMovementsPageData(input?: {
   const filters: BudgetMovementFilters = {
     search: input?.search?.trim() ?? "",
     category: input?.category?.trim() ?? "",
+    funding: input?.funding?.trim() ?? "",
     receivingFunding: input?.receivingFunding?.trim() ?? "",
     givingPillar: input?.givingPillar?.trim() ?? "",
   }
 
-  const [budgetMovements, departmentMappings, importBatches] = await Promise.all([
+  const [budgetMovements, departmentMappings, importBatches, seatReferenceValues] = await Promise.all([
     prisma.budgetMovement.findMany({
       where: { trackingYearId: trackingYear.id },
       include: {
@@ -2218,6 +2284,7 @@ export async function getBudgetMovementsPageData(input?: {
       },
       orderBy: { importedAt: "desc" },
     }),
+    getSeatReferenceValues(activeYear),
   ])
   const mappingLookup = buildDepartmentMappingLookup(departmentMappings)
 
@@ -2233,6 +2300,7 @@ export async function getBudgetMovementsPageData(input?: {
       isManual: movement.batch.isManual,
       effectiveDate: movement.effectiveDate,
       category: movement.category,
+      funding: movement.funding,
       givingFunding: movement.givingFunding,
       givingPillar: movement.givingPillar,
       receivingFunding: movement.receivingCostCenter,
@@ -2277,6 +2345,16 @@ export async function getBudgetMovementsPageData(input?: {
       return false
     }
 
+    if (filters.funding) {
+      if (filters.funding === "__unassigned__") {
+        if (normalizeValue(movement.funding).length > 0) {
+          return false
+        }
+      } else if (normalizeValue(movement.funding) !== normalizeValue(filters.funding)) {
+        return false
+      }
+    }
+
     if (
       filters.receivingFunding &&
       normalizeValue(movement.receivingFunding) !==
@@ -2295,6 +2373,28 @@ export async function getBudgetMovementsPageData(input?: {
     return true
   })
 
+  const fundingSummaryMap = filteredMovements.reduce<
+    Map<string, BudgetMovementFundingSummaryView>
+  >((map, movement) => {
+    const funding = movement.funding?.trim() || "Unassigned"
+    const existing = map.get(funding)
+    const financeViewAmount = movement.financeViewAmount ?? movement.amountGiven
+
+    map.set(funding, {
+      funding,
+      movementCount: (existing?.movementCount ?? 0) + 1,
+      amountGiven: (existing?.amountGiven ?? 0) + movement.amountGiven,
+      financeViewAmount: (existing?.financeViewAmount ?? 0) + financeViewAmount,
+      latestEffectiveDate:
+        !existing?.latestEffectiveDate ||
+        (movement.effectiveDate && movement.effectiveDate > existing.latestEffectiveDate)
+          ? movement.effectiveDate
+          : existing.latestEffectiveDate,
+    })
+
+    return map
+  }, new Map())
+
   return {
     activeYear,
     trackingYears,
@@ -2302,6 +2402,7 @@ export async function getBudgetMovementsPageData(input?: {
     movements: filteredMovements,
     filterOptions: {
       categories: collectSortedValues(scopedMovements.map((movement) => movement.category)),
+      funding: collectSortedValues(scopedMovements.map((movement) => movement.funding)),
       receivingFunding: Array.from(
         new Map(
           scopedMovements.map((movement) => [
@@ -2319,6 +2420,16 @@ export async function getBudgetMovementsPageData(input?: {
         scopedMovements.map((movement) => movement.givingPillar)
       ),
     },
+    fundingValues: Array.from(
+      new Set([
+        ...seatReferenceValues
+          .filter((value) => value.type === "FUNDING")
+          .map((value) => value.value),
+        ...scopedMovements
+          .map((movement) => movement.funding)
+          .filter((value): value is string => Boolean(value)),
+      ])
+    ).sort((left, right) => left.localeCompare(right)),
     totals: {
       movementCount: filteredMovements.length,
       financeViewAmount: filteredMovements.reduce(
@@ -2330,6 +2441,9 @@ export async function getBudgetMovementsPageData(input?: {
         0
       ),
     },
+    fundingSummaries: Array.from(fundingSummaryMap.values()).sort((left, right) =>
+      left.funding.localeCompare(right.funding)
+    ),
     imports: importBatches.map(
       (batch): BudgetMovementImportBatchView => ({
         id: batch.id,
@@ -2339,6 +2453,561 @@ export async function getBudgetMovementsPageData(input?: {
       })
     ),
   }
+}
+
+function buildFundingFollowUpFromSnapshot(input: {
+  year: number
+  snapshot: TrackerYearSnapshot
+  statusDefinitions: StatusDefinitionView[]
+  seatReferenceValues: SeatReferenceValueView[]
+  selectedFunding?: string
+  selectedDomain?: string
+  selectedSubDomain?: string
+  selectedProjectCode?: string
+  viewer?: Pick<AppViewer, "role" | "scopes">
+  excludeSeatId?: string | null
+}) {
+  const mappingLookup = buildDepartmentMappingLookup(input.snapshot.departmentMappings)
+  const budgetAreasById = new Map(
+    input.snapshot.budgetAreas.map((area) => [area.id, area])
+  )
+  const activeStatuses = buildActiveStatusLookup(input.statusDefinitions)
+  const assumptionLookup = buildCostAssumptionLookup(input.snapshot.assumptions)
+  const exchangeRateLookup = buildExchangeRateLookup(input.snapshot.exchangeRates)
+  const summaryMap = new Map<string, FundingFollowUpSummaryView>()
+  const seatRows: FundingFollowUpSeatView[] = []
+
+  function ensureSummary(fundingValue: string | null | undefined) {
+    const key = getFundingFilterValue(fundingValue)
+    const existing = summaryMap.get(key)
+    if (existing) {
+      return existing
+    }
+
+    const summary: FundingFollowUpSummaryView = {
+      funding: getFundingDisplayLabel(fundingValue),
+      allocatedFunding: 0,
+      usedFunding: 0,
+      projectedFunding: 0,
+      remainingFunding: 0,
+      seatCount: 0,
+      activeSeatCount: 0,
+      latestMovementDate: null,
+    }
+    summaryMap.set(key, summary)
+    return summary
+  }
+
+  for (const value of input.seatReferenceValues) {
+    if (value.type === "FUNDING") {
+      ensureSummary(value.value)
+    }
+  }
+
+  const scopedMovements = filterScopedItems(
+    input.snapshot.budgetMovements,
+    input.viewer,
+    (movement) => {
+      const budgetArea = movement.budgetAreaId
+        ? budgetAreasById.get(movement.budgetAreaId) ?? null
+        : null
+      const mappedHierarchy = resolveDepartmentMapping(mappingLookup, {
+        sourceCode: movement.receivingCostCenter,
+        projectCode: movement.receivingProjectCode,
+      })
+
+      return {
+        domain: normalizeDomainLabel(
+          mappedHierarchy?.domain ?? budgetArea?.domain ?? null
+        ),
+        subDomain:
+          mappedHierarchy?.subDomain ?? budgetArea?.subDomain ?? null,
+        projectCode: budgetArea?.projectCode ?? movement.receivingProjectCode,
+      }
+    }
+  ).filter((movement) => {
+    const budgetArea = movement.budgetAreaId
+      ? budgetAreasById.get(movement.budgetAreaId) ?? null
+      : null
+    const mappedHierarchy = resolveDepartmentMapping(mappingLookup, {
+      sourceCode: movement.receivingCostCenter,
+      projectCode: movement.receivingProjectCode,
+    })
+
+    return matchesHierarchyScope(
+      {
+        domain: normalizeDomainLabel(mappedHierarchy?.domain ?? budgetArea?.domain ?? null),
+        subDomain: mappedHierarchy?.subDomain ?? budgetArea?.subDomain ?? null,
+        projectCode: budgetArea?.projectCode ?? movement.receivingProjectCode,
+      },
+      {
+        domain: input.selectedDomain,
+        subDomain: input.selectedSubDomain,
+        projectCode: input.selectedProjectCode,
+      }
+    )
+  })
+
+  for (const movement of scopedMovements) {
+    const summary = ensureSummary(movement.funding)
+    const allocatedFunding = movement.financeViewAmount ?? movement.amountGiven
+
+    summary.allocatedFunding += allocatedFunding
+    if (
+      !summary.latestMovementDate ||
+      (movement.effectiveDate && movement.effectiveDate > summary.latestMovementDate)
+    ) {
+      summary.latestMovementDate = movement.effectiveDate
+    }
+  }
+
+  const scopedSeats = filterScopedItems(
+    input.snapshot.seats as SeatWithRelations[],
+    input.viewer,
+    (seat) => {
+      const effectiveSeat = getEffectiveSeat(seat)
+      return { domain: effectiveSeat.domain, subDomain: effectiveSeat.subDomain }
+    }
+  ).filter((seat) => {
+    const effectiveSeat = getEffectiveSeat(seat)
+    return matchesHierarchyScope(
+      {
+        domain: effectiveSeat.domain,
+        subDomain: effectiveSeat.subDomain,
+        projectCode: effectiveSeat.projectCode,
+      },
+      {
+        domain: input.selectedDomain,
+        subDomain: input.selectedSubDomain,
+        projectCode: input.selectedProjectCode,
+      }
+    )
+  })
+
+  for (const rawSeat of scopedSeats) {
+    if (input.excludeSeatId && rawSeat.id === input.excludeSeatId) {
+      continue
+    }
+
+    const effectiveSeat = getEffectiveSeat(rawSeat)
+    const summary = ensureSummary(effectiveSeat.funding)
+    const metrics = deriveSeatMetrics(
+      rawSeat,
+      assumptionLookup,
+      input.snapshot.exchangeRates,
+      input.year,
+      {
+        exchangeRateLookup,
+      }
+    )
+    const normalizedStatus = normalizeValue(effectiveSeat.status)
+    const normalizedInSeat = normalizeValue(effectiveSeat.inSeat)
+    const remainingForecast = Math.max(metrics.totalForecast - metrics.totalSpent, 0)
+
+    summary.seatCount += 1
+    summary.usedFunding += metrics.totalSpent
+    summary.projectedFunding += metrics.totalForecast
+
+    if (
+      activeStatuses.has(normalizedStatus) ||
+      (normalizedStatus.length === 0 &&
+        normalizedInSeat.length > 0 &&
+        normalizedInSeat !== "vacant")
+    ) {
+      summary.activeSeatCount += 1
+    }
+
+    seatRows.push({
+      id: rawSeat.id,
+      seatId: rawSeat.seatId,
+      name: effectiveSeat.inSeat ?? null,
+      status: effectiveSeat.status ?? null,
+      funding: effectiveSeat.funding ?? null,
+      domain: effectiveSeat.domain ?? null,
+      subDomain: effectiveSeat.subDomain ?? null,
+      projectCode: effectiveSeat.projectCode ?? null,
+      team: effectiveSeat.team ?? null,
+      role: effectiveSeat.description ?? null,
+      budgetAreaDisplayName: rawSeat.budgetArea
+        ? computeAreaDisplayName(rawSeat.budgetArea)
+        : effectiveSeat.subDomain ?? effectiveSeat.domain ?? null,
+      startDate: effectiveSeat.startDate ?? null,
+      endDate: effectiveSeat.endDate ?? null,
+      actualsToDate: metrics.totalSpent,
+      remainingForecast,
+      totalProjectedSpend: metrics.totalForecast,
+    })
+  }
+
+  const summaries = Array.from(summaryMap.values())
+    .map((summary) => ({
+      ...summary,
+      remainingFunding: summary.allocatedFunding - summary.projectedFunding,
+    }))
+    .sort((left, right) => left.funding.localeCompare(right.funding))
+
+  const selectedFunding = input.selectedFunding?.trim() ?? ""
+  const filteredSeats = selectedFunding
+    ? seatRows.filter((seat) => matchesFundingFilter(seat.funding, selectedFunding))
+    : []
+
+  return {
+    summaries,
+    seats: filteredSeats.sort((left, right) => {
+      const nameCompare = (left.name || "").localeCompare(right.name || "", undefined, {
+        sensitivity: "base",
+      })
+      if (nameCompare !== 0) {
+        return nameCompare
+      }
+
+      return left.seatId.localeCompare(right.seatId, undefined, {
+        sensitivity: "base",
+      })
+    }),
+  }
+}
+
+function buildPreviewSeatFromProfile(input: {
+  trackingYearId: string
+  seatId?: string | null
+  existingSeat?: SeatWithRelations | null
+  budgetArea: BudgetArea | null
+  profile: ReturnType<typeof normalizeTrackerSeatProfilePayload>
+}) {
+  if (input.existingSeat) {
+    return {
+      ...input.existingSeat,
+      ...input.profile,
+      budgetArea: input.budgetArea,
+      override: null,
+      allocation: input.profile.allocation ?? 0,
+    } as unknown as SeatWithRelations
+  }
+
+  return {
+    id: input.seatId ?? "preview-seat",
+    trackingYearId: input.trackingYearId,
+    rosterPersonId: null,
+    budgetAreaId: input.profile.budgetAreaId ?? null,
+    domain: input.profile.domain ?? null,
+    subDomain: input.profile.subDomain ?? null,
+    funding: input.profile.funding ?? null,
+    pillar: input.profile.pillar ?? null,
+    costCenter: input.profile.costCenter ?? null,
+    projectCode: input.profile.projectCode ?? null,
+    sourceType: "MANUAL",
+    sourceKey: "preview:manual",
+    seatId: "Preview",
+    isActive: true,
+    resourceType: input.profile.resourceType ?? null,
+    team: input.profile.team ?? null,
+    inSeat: input.profile.inSeat ?? null,
+    description: input.profile.description ?? null,
+    band: input.profile.band ?? null,
+    location: input.profile.location ?? null,
+    vendor: input.profile.vendor ?? null,
+    manager: input.profile.manager ?? null,
+    dailyRate: input.profile.dailyRate ?? null,
+    ritm: input.profile.ritm ?? null,
+    sow: input.profile.sow ?? null,
+    spendPlanId: input.profile.spendPlanId ?? null,
+    status: input.profile.status ?? null,
+    allocation: input.profile.allocation ?? 0,
+    startDate: input.profile.startDate ?? null,
+    endDate: input.profile.endDate ?? null,
+    notes: input.profile.notes ?? null,
+    createdAt: new Date(0),
+    updatedAt: new Date(0),
+    months: [],
+    override: null,
+    budgetArea: input.budgetArea,
+  } as unknown as SeatWithRelations
+}
+
+export async function getFundingFollowUpPageData(input?: {
+  year?: number
+  funding?: string
+  domain?: string
+  subDomain?: string
+  projectCode?: string
+}, viewer?: Pick<AppViewer, "role" | "scopes">) {
+  const trackingYears = await prisma.trackingYear.findMany({
+    orderBy: { year: "asc" },
+  })
+
+  const activeYear =
+    (Number.isInteger(input?.year) ? input?.year : undefined) ??
+    trackingYears.find((trackingYear) => trackingYear.isActive)?.year ??
+    trackingYears.at(-1)?.year ??
+    new Date().getFullYear()
+
+  const trackingYear = await getOrCreateTrackingYear(activeYear)
+  await ensureFreshTrackerDerivation(activeYear)
+  const [statusDefinitions, seatReferenceValues, snapshot] = await Promise.all([
+    ensureStatusDefinitions(activeYear),
+    getSeatReferenceValues(activeYear),
+    loadTrackerYearSnapshot(trackingYear.id, {
+      includeBudgetMovements: true,
+      seatOrderBy: [{ team: "asc" }, { inSeat: "asc" }],
+    }),
+  ])
+
+  const selectedFunding = input?.funding?.trim() ?? ""
+  const selectedDomain = input?.domain?.trim() ?? ""
+  const selectedSubDomain = input?.subDomain?.trim() ?? ""
+  const selectedProjectCode = input?.projectCode?.trim() ?? ""
+  const mappingLookup = buildDepartmentMappingLookup(snapshot.departmentMappings)
+  const resolvedBudgetAreas = filterScopedItems(
+    snapshot.budgetAreas,
+    viewer,
+    (area) => {
+      const mappedHierarchy = resolveDepartmentMapping(mappingLookup, {
+        sourceCode: area.costCenter,
+        subDomain: area.subDomain,
+        projectCode: area.projectCode,
+      })
+
+      return {
+        domain: normalizeDomainLabel(mappedHierarchy?.domain ?? area.domain ?? null),
+        subDomain: normalizeSubDomainLabel(mappedHierarchy?.subDomain ?? area.subDomain ?? null),
+        projectCode: area.projectCode,
+      }
+    }
+  ).map((area) => {
+    const mappedHierarchy = resolveDepartmentMapping(mappingLookup, {
+      sourceCode: area.costCenter,
+      subDomain: area.subDomain,
+      projectCode: area.projectCode,
+    })
+
+    return {
+      domain: normalizeDomainLabel(mappedHierarchy?.domain ?? area.domain ?? null),
+      subDomain: normalizeSubDomainLabel(mappedHierarchy?.subDomain ?? area.subDomain ?? null),
+      projectCode: area.projectCode,
+    }
+  })
+  const followUp = buildFundingFollowUpFromSnapshot({
+    year: activeYear,
+    snapshot,
+    statusDefinitions,
+    seatReferenceValues,
+    selectedFunding,
+    selectedDomain,
+    selectedSubDomain,
+    selectedProjectCode,
+    viewer,
+  })
+
+  return {
+    activeYear,
+    trackingYears,
+    selectedFunding,
+    selectedDomain,
+    selectedSubDomain,
+    selectedProjectCode,
+    filterOptions: {
+      domains: collectSortedValues(resolvedBudgetAreas.map((area) => area.domain)),
+      subDomains: collectSortedValues(
+        resolvedBudgetAreas
+          .filter((area) =>
+            selectedDomain
+              ? normalizeValue(area.domain) === normalizeValue(selectedDomain)
+              : true
+          )
+          .map((area) => area.subDomain)
+      ),
+      projectCodes: collectSortedValues(
+        resolvedBudgetAreas
+          .filter((area) =>
+            selectedDomain
+              ? normalizeValue(area.domain) === normalizeValue(selectedDomain)
+              : true
+          )
+          .filter((area) =>
+            selectedSubDomain
+              ? normalizeValue(area.subDomain) === normalizeValue(selectedSubDomain)
+              : true
+          )
+          .map((area) => area.projectCode)
+      ),
+    },
+    fundingOptions: followUp.summaries.map((summary) => ({
+      value:
+        summary.funding === "Unassigned"
+          ? UNASSIGNED_FUNDING_FILTER
+          : summary.funding,
+      label: summary.funding,
+    })),
+    summaries: followUp.summaries,
+    seats: followUp.seats,
+  }
+}
+
+export async function getFundingAvailabilityPreview(input: {
+  year: number
+  seatId?: string | null
+  profile: TrackerSeatProfilePayload
+}, viewer?: Pick<AppViewer, "role" | "scopes">): Promise<FundingAvailabilityPreviewView> {
+  ensureValidYear(input.year)
+  const trackingYear = await getOrCreateTrackingYear(input.year)
+  await ensureFreshTrackerDerivation(input.year)
+  const [statusDefinitions, seatReferenceValues, snapshot] = await Promise.all([
+    ensureStatusDefinitions(input.year),
+    getSeatReferenceValues(input.year),
+    loadTrackerYearSnapshot(trackingYear.id, {
+      includeBudgetMovements: true,
+      seatOrderBy: [{ team: "asc" }, { inSeat: "asc" }],
+    }),
+  ])
+
+  const existingSeat = input.seatId
+    ? ((snapshot.seats as SeatWithRelations[]).find((seat) => seat.id === input.seatId) ?? null)
+    : null
+  const budgetArea = await resolveBudgetAreaForSeatProfile({
+    trackingYearId: trackingYear.id,
+    budgetAreaId: input.profile.budgetAreaId,
+    domain: input.profile.domain,
+    subDomain: input.profile.subDomain,
+    projectCode: input.profile.projectCode,
+    pillar: input.profile.pillar,
+  })
+  const normalizedProfile = normalizeTrackerSeatProfilePayload(input.profile, budgetArea)
+  const funding = normalizedProfile.funding ?? null
+
+  if (!funding) {
+    return {
+      funding: null,
+      status: "unselected",
+      message: "Select funding to see remaining allocation before saving the seat.",
+      allocatedFunding: 0,
+      currentProjectedFunding: 0,
+      proposedProjectedFunding: null,
+      remainingFundingBeforeSeat: 0,
+      remainingFundingAfterSeat: null,
+      exceededAmount: null,
+    }
+  }
+
+  const fundingSummaryData = buildFundingFollowUpFromSnapshot({
+    year: input.year,
+    snapshot,
+    statusDefinitions,
+    seatReferenceValues,
+    selectedFunding: funding,
+    selectedProjectCode: normalizedProfile.projectCode ?? undefined,
+    viewer,
+    excludeSeatId: existingSeat?.id ?? null,
+  })
+  const currentSummary =
+    fundingSummaryData.summaries.find((summary) => summary.funding === getFundingDisplayLabel(funding)) ??
+    {
+      funding: getFundingDisplayLabel(funding),
+      allocatedFunding: 0,
+      usedFunding: 0,
+      projectedFunding: 0,
+      remainingFunding: 0,
+      seatCount: 0,
+      activeSeatCount: 0,
+      latestMovementDate: null,
+    }
+
+  const allocation = normalizedProfile.allocation ?? 0
+  const startDate = normalizedProfile.startDate ?? null
+  const endDate = normalizedProfile.endDate ?? null
+  const previewSeat = buildPreviewSeatFromProfile({
+    trackingYearId: trackingYear.id,
+    seatId: existingSeat?.id ?? null,
+    existingSeat,
+    budgetArea,
+    profile: normalizedProfile,
+  })
+  const assumptionLookup = buildCostAssumptionLookup(snapshot.assumptions)
+  const metrics = deriveSeatMetrics(
+    previewSeat,
+    assumptionLookup,
+    snapshot.exchangeRates,
+    input.year,
+    {
+      exchangeRateLookup: buildExchangeRateLookup(snapshot.exchangeRates),
+    }
+  )
+  const isExternal = isExternalSeat(previewSeat)
+  const hasRequiredCostInputs =
+    allocation > 0 &&
+    Boolean(startDate) &&
+    Boolean(endDate) &&
+    (isExternal
+      ? (normalizedProfile.dailyRate ?? 0) > 0
+      : metrics.yearlyCostInternal > 0)
+
+  if (!hasRequiredCostInputs) {
+    return {
+      funding,
+      status: "insufficient_data",
+      message:
+        "Add dates, allocation, and the required rate or internal-cost inputs to estimate remaining funding.",
+      allocatedFunding: currentSummary.allocatedFunding,
+      currentProjectedFunding: currentSummary.projectedFunding,
+      proposedProjectedFunding: null,
+      remainingFundingBeforeSeat: currentSummary.remainingFunding,
+      remainingFundingAfterSeat: null,
+      exceededAmount: null,
+    }
+  }
+
+  const remainingAfterSeat = currentSummary.allocatedFunding - (
+    currentSummary.projectedFunding + metrics.totalForecast
+  )
+
+  return {
+    funding,
+    status: remainingAfterSeat < 0 ? "exceeded" : "within",
+    message:
+      remainingAfterSeat < 0
+        ? `${getFundingDisplayLabel(funding)} would be exceeded by ${formatCurrency(Math.abs(remainingAfterSeat))} with this seat.`
+        : `${formatCurrency(remainingAfterSeat)} would remain in ${getFundingDisplayLabel(funding)} after saving this seat.`,
+    allocatedFunding: currentSummary.allocatedFunding,
+    currentProjectedFunding: currentSummary.projectedFunding,
+    proposedProjectedFunding: metrics.totalForecast,
+    remainingFundingBeforeSeat: currentSummary.remainingFunding,
+    remainingFundingAfterSeat: remainingAfterSeat,
+    exceededAmount: remainingAfterSeat < 0 ? Math.abs(remainingAfterSeat) : null,
+  }
+}
+
+export async function getBudgetMovementExportRows(
+  input: {
+    year: number
+    search?: string
+    category?: string
+    funding?: string
+    receivingFunding?: string
+    givingPillar?: string
+  },
+  viewer?: Pick<AppViewer, "role" | "scopes">
+) {
+  const data = await getBudgetMovementsPageData(input, viewer)
+
+  return data.movements.map((movement) => ({
+    Date: formatExportDate(movement.effectiveDate),
+    Source: movement.isManual ? "Manual" : "Imported",
+    "Batch File": movement.batchFileName,
+    Category: movement.category,
+    Funding: movement.funding,
+    "Giving Funding": movement.givingFunding,
+    "Giving Pillar": movement.givingPillar,
+    "Receiving Cost Center": movement.receivingFunding,
+    "Receiving Project Code": movement.receivingProjectCode,
+    "Receiving Domain Code": movement.receivingDomainCode,
+    "Area Domain": movement.areaDomain,
+    "Area Sub-domain": movement.areaSubDomain,
+    "Area Display Name": movement.areaDisplayName,
+    "Finance View Amount": movement.financeViewAmount ?? movement.amountGiven,
+    "Amount Given": movement.amountGiven,
+    "CAPEX Target": movement.capexTarget,
+    Notes: movement.notes,
+  }))
 }
 
 async function getOrCreateManualBudgetMovementBatch(
@@ -2425,6 +3094,7 @@ async function findOrCreateBudgetAreaForMovement(
 }
 
 function buildBudgetMovementAuditShape(movement: {
+  funding: string | null
   givingFunding: string | null
   givingPillar: string | null
   amountGiven: number
@@ -2439,6 +3109,7 @@ function buildBudgetMovementAuditShape(movement: {
   batchId: string
 }) {
   return {
+    funding: movement.funding,
     givingFunding: movement.givingFunding,
     givingPillar: movement.givingPillar,
     amountGiven: movement.amountGiven,
@@ -2474,6 +3145,7 @@ function validateBudgetMovementInput(input: {
 
 export async function createBudgetMovement(input: {
   year: number
+  funding?: string | null
   givingFunding?: string | null
   givingPillar?: string | null
   amountGiven: number
@@ -2496,12 +3168,21 @@ export async function createBudgetMovement(input: {
       receivingCostCenter: input.receivingCostCenter.trim(),
       receivingProjectCode: input.receivingProjectCode.trim(),
     })
+    const normalizedFunding = normalizeOptionalString(input.funding)
+    const resolvedBudgetArea =
+      normalizedFunding && budgetArea.funding !== normalizedFunding
+        ? await transaction.budgetArea.update({
+            where: { id: budgetArea.id },
+            data: { funding: normalizedFunding },
+          })
+        : budgetArea
 
     const created = await transaction.budgetMovement.create({
       data: {
         trackingYearId: trackingYear.id,
         batchId: batch.id,
-        budgetAreaId: budgetArea.id,
+        budgetAreaId: resolvedBudgetArea.id,
+        funding: normalizedFunding,
         givingFunding: normalizeOptionalString(input.givingFunding),
         givingPillar: normalizeOptionalString(input.givingPillar),
         amountGiven: input.amountGiven,
@@ -2520,6 +3201,10 @@ export async function createBudgetMovement(input: {
   })
 
   await deriveTrackerSeatsForYear(input.year)
+  await persistSeatReferenceSelections({
+    trackingYearId: trackingYear.id,
+    funding: input.funding ?? null,
+  })
   await writeAuditLog({
     trackingYearId: trackingYear.id,
     entityType: "BudgetMovement",
@@ -2527,6 +3212,7 @@ export async function createBudgetMovement(input: {
     action: "CREATE",
     actor,
     changes: buildAuditChanges(null, buildBudgetMovementAuditShape(movement), [
+      "funding",
       "givingFunding",
       "givingPillar",
       "amountGiven",
@@ -2548,6 +3234,7 @@ export async function createBudgetMovement(input: {
 export async function updateBudgetMovement(input: {
   year: number
   id: string
+  funding?: string | null
   givingFunding?: string | null
   givingPillar?: string | null
   amountGiven: number
@@ -2576,11 +3263,20 @@ export async function updateBudgetMovement(input: {
       receivingCostCenter: input.receivingCostCenter.trim(),
       receivingProjectCode: input.receivingProjectCode.trim(),
     })
+    const normalizedFunding = normalizeOptionalString(input.funding)
+    const resolvedBudgetArea =
+      normalizedFunding && budgetArea.funding !== normalizedFunding
+        ? await transaction.budgetArea.update({
+            where: { id: budgetArea.id },
+            data: { funding: normalizedFunding },
+          })
+        : budgetArea
 
     return transaction.budgetMovement.update({
       where: { id: input.id },
       data: {
-        budgetAreaId: budgetArea.id,
+        budgetAreaId: resolvedBudgetArea.id,
+        funding: normalizedFunding,
         givingFunding: normalizeOptionalString(input.givingFunding),
         givingPillar: normalizeOptionalString(input.givingPillar),
         amountGiven: input.amountGiven,
@@ -2596,6 +3292,10 @@ export async function updateBudgetMovement(input: {
   })
 
   await deriveTrackerSeatsForYear(input.year)
+  await persistSeatReferenceSelections({
+    trackingYearId: trackingYear.id,
+    funding: input.funding ?? null,
+  })
   await writeAuditLog({
     trackingYearId: trackingYear.id,
     entityType: "BudgetMovement",
@@ -2606,6 +3306,7 @@ export async function updateBudgetMovement(input: {
       buildBudgetMovementAuditShape(before),
       buildBudgetMovementAuditShape(movement),
       [
+        "funding",
         "givingFunding",
         "givingPillar",
         "amountGiven",
@@ -2673,6 +3374,68 @@ export async function deleteBudgetMovement(input: {
   })
 
   return before
+}
+
+export async function rollbackBudgetMovementImport(
+  input: {
+    batchId: string
+  },
+  actor?: AuditActor
+) {
+  const batch = await prisma.budgetMovementBatch.findUniqueOrThrow({
+    where: { id: input.batchId },
+  })
+
+  if (batch.isManual) {
+    throw new Error("Manual budget movements cannot be rolled back as an import batch.")
+  }
+
+  const latestBatch = await prisma.budgetMovementBatch.findFirst({
+    where: {
+      trackingYearId: batch.trackingYearId,
+      isManual: false,
+    },
+    orderBy: [{ importedAt: "desc" }],
+  })
+
+  if (!latestBatch || latestBatch.id !== batch.id) {
+    throw new Error("Only the latest budget movement import can be rolled back.")
+  }
+
+  await prisma.budgetMovementBatch.delete({
+    where: { id: batch.id },
+  })
+
+  const trackingYear = await prisma.trackingYear.findUniqueOrThrow({
+    where: { id: batch.trackingYearId },
+    select: { year: true },
+  })
+
+  await deriveTrackerSeatsForYear(trackingYear.year)
+
+  await writeAuditLog({
+    trackingYearId: batch.trackingYearId,
+    entityType: "BudgetMovementImport",
+    entityId: batch.id,
+    action: "ROLLBACK",
+    actor,
+    changes: [
+      {
+        field: "budgetMovementImport",
+        oldValue: JSON.stringify({
+          fileName: batch.fileName,
+          importedAt: batch.importedAt,
+          rowCount: batch.rowCount,
+        }),
+        newValue: null,
+      },
+    ],
+  })
+
+  return {
+    id: batch.id,
+    fileName: batch.fileName,
+  }
 }
 
 function splitAmountByWeights(amount: number, weights: number[]) {
@@ -4375,6 +5138,7 @@ export async function getPeopleRosterPageData(input?: {
       band: effectiveSeat?.band || person.band,
       role: effectiveSeat?.description || person.title,
       resourceType: effectiveSeat?.resourceType || person.resourceType,
+      funding: effectiveSeat?.funding || person.fundingType,
       status: effectiveSeat?.status || person.status,
       manager: effectiveSeat?.manager || person.lineManager,
       fte: effectiveSeat?.allocation ?? person.allocation,
@@ -4418,6 +5182,7 @@ export async function getPeopleRosterPageData(input?: {
         band: effectiveSeat.band ?? null,
         role: effectiveSeat.description ?? null,
         resourceType: effectiveSeat.resourceType ?? null,
+        funding: effectiveSeat.funding ?? null,
         status: effectiveSeat.status ?? null,
         manager: effectiveSeat.manager ?? null,
         fte: effectiveSeat.allocation ?? 0,
@@ -6473,6 +7238,7 @@ async function syncSeatReferenceValuesFromCurrentData(year: number) {
         isActive: true,
       },
       select: {
+        funding: true,
         description: true,
         band: true,
         resourceType: true,
@@ -6507,6 +7273,10 @@ async function syncSeatReferenceValuesFromCurrentData(year: number) {
       .values()
   )
   const valuesByType: Record<SeatReferenceValueType, string[]> = {
+    FUNDING: collectSortedValues([
+      ...seats.map((seat) => seat.funding),
+      ...latestPeople.map((person) => person.fundingType),
+    ]),
     VENDOR: collectSortedValues([
       ...seats.map((seat) => seat.vendor),
       ...latestPeople.map((person) => person.vendor),
@@ -6620,6 +7390,7 @@ export async function getBudgetMovementCategories(year: number): Promise<string[
 
 async function persistSeatReferenceSelections(input: {
   trackingYearId: string
+  funding?: string | null
   vendor?: string | null
   location?: string | null
   manager?: string | null
@@ -6628,6 +7399,10 @@ async function persistSeatReferenceSelections(input: {
   resourceType?: string | null
 }) {
   const referenceValues = [
+    {
+      type: "FUNDING" as const,
+      value: normalizeSeatReferenceValue(input.funding),
+    },
     {
       type: "VENDOR" as const,
       value: normalizeSeatReferenceValue(input.vendor),
@@ -8180,6 +8955,7 @@ export async function updateTrackerSeatProfile(
 
     await persistSeatReferenceSelections({
       trackingYearId: seat.trackingYearId,
+      funding: normalizedPayload.funding,
       vendor: normalizedPayload.vendor,
       location: normalizedPayload.location,
       manager: normalizedPayload.manager,
@@ -8241,6 +9017,7 @@ export async function updateTrackerSeatProfile(
 
   await persistSeatReferenceSelections({
     trackingYearId: seat.trackingYearId,
+    funding: normalizedPayload.funding,
     vendor: normalizedPayload.vendor,
     location: normalizedPayload.location,
     manager: normalizedPayload.manager,
@@ -8369,6 +9146,7 @@ export async function createManualTrackerSeat(
   await ensureSeatMonthsForSeats([seat.id])
   await persistSeatReferenceSelections({
     trackingYearId: trackingYear.id,
+    funding: normalizedProfile.funding,
     vendor: normalizedProfile.vendor,
     location: normalizedProfile.location,
     manager: normalizedProfile.manager,
