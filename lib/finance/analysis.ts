@@ -22,8 +22,14 @@ export type BudgetOutlookSummaryInput = Pick<
   | "remainingBudget"
   | "totalForecast"
   | "forecastRemaining"
+  | "permBudget"
+  | "extBudget"
+  | "amsBudget"
   | "permForecast"
   | "extForecast"
+  | "amsForecast"
+  | "cloudCostSpentToDate"
+  | "cloudCostTarget"
   | "cloudCostForecast"
   | "seatCount"
   | "activeSeatCount"
@@ -37,6 +43,10 @@ export type BudgetOutlookSeatInput = {
   team: string | null
   status: string | null
   resourceType: string | null
+  permFte: number
+  extFte: number
+  amsFte: number
+  totalSpent: number
   totalForecast: number
   hasForecastAdjustments: boolean
   monthlyForecast: number[]
@@ -83,9 +93,19 @@ export type DeterministicBudgetOutlookFacts = {
     remainingBudget: number
     totalForecast: number
     forecastRemaining: number
+    permBudget: number
+    extBudget: number
+    amsBudget: number
     permForecast: number
     extForecast: number
+    amsForecast: number
+    cloudCostSpentToDate: number
+    cloudCostTarget: number
     cloudCostForecast: number
+    permSpent: number
+    extSpent: number
+    amsSpent: number
+    cloudSpent: number
     seatCount: number
     activeSeatCount: number
     openSeatCount: number
@@ -113,6 +133,8 @@ export type DeterministicBudgetOutlookFacts = {
   concentration: {
     topForecastSeats: BudgetOutlookTopSeat[]
     topThreeForecastShare: number
+    topThreeForecastAmount: number
+    concentrationForecastTotal: number
   }
   drivers: BudgetOutlookDriverSignal[]
 }
@@ -132,6 +154,49 @@ function normalizeValue(value: string | null | undefined) {
 function normalizeLabel(value: string | null | undefined, fallback: string) {
   const trimmed = value?.trim()
   return trimmed || fallback
+}
+
+function isExternalOrAmsSeat(seat: Pick<BudgetOutlookSeatInput, "resourceType" | "extFte" | "amsFte">) {
+  if ((seat.amsFte ?? 0) > 0 || isAmsResourceType(seat.resourceType)) {
+    return true
+  }
+
+  if ((seat.extFte ?? 0) > 0) {
+    return true
+  }
+
+  const normalizedResourceType = normalizeValue(seat.resourceType)
+  return (
+    normalizedResourceType.includes("external") ||
+    normalizedResourceType.includes("managed service") ||
+    normalizedResourceType.includes("managed services") ||
+    normalizedResourceType.includes("ams")
+  )
+}
+
+function isCloudResourceType(resourceType: string | null | undefined) {
+  return normalizeValue(resourceType) === "cloud"
+}
+
+function isAmsResourceType(resourceType: string | null | undefined) {
+  const normalizedResourceType = normalizeValue(resourceType)
+  return (
+    normalizedResourceType.includes("managed service") ||
+    normalizedResourceType.includes("managed services") ||
+    normalizedResourceType.includes("ams")
+  )
+}
+
+function isAmsSeat(seat: Pick<BudgetOutlookSeatInput, "resourceType" | "amsFte">) {
+  return (seat.amsFte ?? 0) > 0 || isAmsResourceType(seat.resourceType)
+}
+
+function isExtSeat(seat: Pick<BudgetOutlookSeatInput, "extFte">) {
+  return (seat.extFte ?? 0) > 0
+}
+
+function isPermSeat(seat: Pick<BudgetOutlookSeatInput, "permFte">) {
+  return (seat.permFte ?? 0) > 0
 }
 
 function buildTopForecastSeats(
@@ -174,17 +239,139 @@ function buildResourceTypeBreakdown(
     }))
 }
 
+function buildCategoryPerformanceSignals(input: {
+  year: number
+  asOfDate: Date
+  summary: DeterministicBudgetOutlookFacts["summary"]
+}) {
+  const { year, asOfDate, summary } = input
+  const currentYear = asOfDate.getFullYear()
+  const currentMonthIndex = asOfDate.getMonth()
+  const elapsedRatio =
+    year < currentYear ? 1 : year > currentYear ? 0 : (currentMonthIndex + 1) / 12
+
+  const categories = [
+    {
+      key: "perm-performance",
+      title: "PERM performance",
+      budget: summary.permBudget,
+      spent: summary.permSpent,
+      forecast: summary.permForecast,
+    },
+    {
+      key: "ext-performance",
+      title: "EXT performance",
+      budget: summary.extBudget,
+      spent: summary.extSpent,
+      forecast: summary.extForecast,
+    },
+    {
+      key: "ams-performance",
+      title: "AMS performance",
+      budget: summary.amsBudget,
+      spent: summary.amsSpent,
+      forecast: summary.amsForecast,
+    },
+    {
+      key: "cloud-performance",
+      title: "Cloud performance",
+      budget: summary.cloudCostTarget,
+      spent: summary.cloudSpent,
+      forecast: summary.cloudCostForecast,
+    },
+  ] satisfies Array<{
+    key: string
+    title: string
+    budget: number
+    spent: number
+    forecast: number
+  }>
+
+  return categories
+    .filter((category) => category.budget > 0 || category.spent > 0 || category.forecast > 0)
+    .map((category) => {
+      const pacedBudget = category.budget * elapsedRatio
+      const spentVsPace = category.spent - pacedBudget
+      const forecastDelta = category.forecast - category.budget
+      const direction =
+        forecastDelta > 0 ? "unfavorable" : forecastDelta < 0 ? "favorable" : "neutral"
+      const ytdDetail =
+        elapsedRatio > 0
+          ? `Spent to date is ${formatCurrencyForDetail(category.spent)} versus paced budget ${formatCurrencyForDetail(pacedBudget)}.`
+          : "No year-to-date spend window is expected yet for this period."
+      const projectionDetail =
+        forecastDelta > 0
+          ? `Projected year-end is ${formatCurrencyForDetail(category.forecast)}, above budget by ${formatCurrencyForDetail(Math.abs(forecastDelta))}.`
+          : forecastDelta < 0
+            ? `Projected year-end is ${formatCurrencyForDetail(category.forecast)}, below budget by ${formatCurrencyForDetail(Math.abs(forecastDelta))}.`
+            : `Projected year-end is ${formatCurrencyForDetail(category.forecast)}, matching budget.`
+
+      return {
+        key: category.key,
+        title: category.title,
+        direction,
+        impactValue: Math.max(Math.abs(forecastDelta), Math.abs(spentVsPace)),
+        amount: forecastDelta,
+        share: category.budget > 0 ? Math.abs(forecastDelta) / category.budget : null,
+        detail: `${ytdDetail} ${projectionDetail}`,
+      } satisfies BudgetOutlookDriverSignal
+    })
+}
+
+function formatCurrencyForDetail(value: number) {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "DKK",
+    maximumFractionDigits: 0,
+  }).format(value)
+}
+
 function buildDriverSignals(input: {
+  year: number
+  asOfDate: Date
   summary: BudgetOutlookSummaryInput
+  bucketSpentTotals: {
+    permSpent: number
+    extSpent: number
+    amsSpent: number
+    cloudSpent: number
+  }
   openSeatForecast: number
   uncoveredForecastAmount: number
   topThreeForecastShare: number
+  topThreeForecastAmount: number
+  concentrationForecastTotal: number
   topResourceTypes: Array<{ resourceType: string; forecast: number; share: number }>
 }) {
   const summary = input.summary
   const signals: BudgetOutlookDriverSignal[] = []
   const forecastGap = summary.totalForecast - summary.budget
   const financeAdjustmentDelta = summary.financeViewBudget - summary.amountGivenBudget
+  const summaryForCategorySignals: DeterministicBudgetOutlookFacts["summary"] = {
+    budget: summary.budget,
+    amountGivenBudget: summary.amountGivenBudget,
+    financeViewBudget: summary.financeViewBudget,
+    spentToDate: summary.spentToDate,
+    remainingBudget: summary.remainingBudget,
+    totalForecast: summary.totalForecast,
+    forecastRemaining: summary.forecastRemaining,
+    permBudget: summary.permBudget,
+    extBudget: summary.extBudget,
+    amsBudget: summary.amsBudget,
+    permForecast: summary.permForecast,
+    extForecast: summary.extForecast,
+    amsForecast: summary.amsForecast,
+    cloudCostSpentToDate: summary.cloudCostSpentToDate,
+    cloudCostTarget: summary.cloudCostTarget,
+    cloudCostForecast: summary.cloudCostForecast,
+    permSpent: 0,
+    extSpent: 0,
+    amsSpent: 0,
+    cloudSpent: 0,
+    seatCount: summary.seatCount,
+    activeSeatCount: summary.activeSeatCount,
+    openSeatCount: summary.openSeatCount,
+  }
 
   signals.push({
     key: "forecast-gap",
@@ -281,41 +468,98 @@ function buildDriverSignals(input: {
       key: "forecast-concentration",
       title: "Seat-level forecast concentration",
       direction: input.topThreeForecastShare >= 0.6 ? "unfavorable" : "neutral",
-      impactValue: input.topThreeForecastShare * summary.totalForecast,
-      amount: null,
+      impactValue: input.topThreeForecastAmount,
+      amount: input.topThreeForecastAmount,
       share: input.topThreeForecastShare,
       detail: topResourceType
-        ? `A small number of seats and resource types, led by ${topResourceType.resourceType}, drive a large share of forecast.`
-        : "A small number of seats drive a large share of forecast.",
+        ? `The top external and AMS seats, led by ${topResourceType.resourceType}, account for a large share of external and AMS forecast spend.`
+        : "The top external and AMS seats account for a large share of external and AMS forecast spend.",
     })
   }
+
+  signals.push(
+    ...buildCategoryPerformanceSignals({
+      year: input.year,
+      asOfDate: input.asOfDate,
+      summary: {
+        ...summaryForCategorySignals,
+        permSpent: input.bucketSpentTotals.permSpent,
+        extSpent: input.bucketSpentTotals.extSpent,
+        amsSpent: input.bucketSpentTotals.amsSpent,
+        cloudSpent: input.bucketSpentTotals.cloudSpent,
+      },
+    })
+  )
 
   return signals
     .filter((signal) => signal.impactValue > 0)
     .sort((left, right) => right.impactValue - left.impactValue)
-    .slice(0, 5)
+    .slice(0, 12)
 }
 
 export function buildBudgetOutlookFactsFromData(input: {
   year: number
   summary: BudgetOutlookSummaryInput
   seats: BudgetOutlookSeatInput[]
+  asOfDate?: Date
 }): DeterministicBudgetOutlookFacts {
   const { summary, seats, year } = input
+  const asOfDate = input.asOfDate ?? new Date()
   const totalForecast = summary.totalForecast
-  const topForecastSeats = buildTopForecastSeats(seats, totalForecast)
+  const concentrationSeats = seats.filter((seat) => isExternalOrAmsSeat(seat))
+  const concentrationForecastTotal = concentrationSeats.reduce(
+    (sum, seat) => sum + seat.totalForecast,
+    0
+  )
+  const topForecastSeats = buildTopForecastSeats(
+    concentrationSeats,
+    concentrationForecastTotal
+  )
   const topThreeForecastShare = topForecastSeats.reduce(
     (sum, seat) => sum + seat.share,
     0
   )
+  const topThreeForecastAmount = topForecastSeats.reduce(
+    (sum, seat) => sum + seat.totalForecast,
+    0
+  )
   const topResourceTypes = buildResourceTypeBreakdown(seats, totalForecast)
+  const concentrationResourceTypes = buildResourceTypeBreakdown(
+    concentrationSeats,
+    concentrationForecastTotal
+  )
   const openSeatForecast = seats
     .filter((seat) => normalizeValue(seat.status) === "open")
     .reduce((sum, seat) => sum + seat.totalForecast, 0)
+  const bucketSpentTotals = seats.reduce(
+    (totals, seat) => {
+      if (isCloudResourceType(seat.resourceType)) {
+        totals.cloudSpent += seat.totalSpent
+      } else if (isAmsSeat(seat)) {
+        totals.amsSpent += seat.totalSpent
+      } else if (isExtSeat(seat)) {
+        totals.extSpent += seat.totalSpent
+      } else if (isPermSeat(seat)) {
+        totals.permSpent += seat.totalSpent
+      }
+
+      return totals
+    },
+    {
+      permSpent: 0,
+      extSpent: 0,
+      amsSpent: 0,
+      cloudSpent: 0,
+    }
+  )
 
   let forecastMonthsWithoutActuals = 0
   let uncoveredForecastAmount = 0
   let seatsWithForecastAdjustments = 0
+  const currentYear = asOfDate.getFullYear()
+  const currentMonthIndex = asOfDate.getMonth()
+  const lastCoveredMonthIndex =
+    year < currentYear ? 11 : year === currentYear ? currentMonthIndex - 1 : -1
 
   for (const seat of seats) {
     if (seat.hasForecastAdjustments) {
@@ -323,6 +567,10 @@ export function buildBudgetOutlookFactsFromData(input: {
     }
 
     for (const month of seat.months) {
+      if (month.monthIndex > lastCoveredMonthIndex) {
+        continue
+      }
+
       const monthForecast = seat.monthlyForecast[month.monthIndex] ?? 0
       const actualAmount = month.actualAmountRaw ?? month.actualAmountDkk ?? 0
       if (monthForecast > 0 && actualAmount <= 0) {
@@ -333,11 +581,16 @@ export function buildBudgetOutlookFactsFromData(input: {
   }
 
   const drivers = buildDriverSignals({
+    year,
+    asOfDate,
     summary,
+    bucketSpentTotals,
     openSeatForecast,
     uncoveredForecastAmount,
     topThreeForecastShare,
-    topResourceTypes,
+    topThreeForecastAmount,
+    concentrationForecastTotal,
+    topResourceTypes: concentrationResourceTypes,
   })
 
   return {
@@ -357,9 +610,19 @@ export function buildBudgetOutlookFactsFromData(input: {
       remainingBudget: summary.remainingBudget,
       totalForecast: summary.totalForecast,
       forecastRemaining: summary.forecastRemaining,
+      permBudget: summary.permBudget,
+      extBudget: summary.extBudget,
+      amsBudget: summary.amsBudget,
       permForecast: summary.permForecast,
       extForecast: summary.extForecast,
+      amsForecast: summary.amsForecast,
+      cloudCostSpentToDate: summary.cloudCostSpentToDate,
+      cloudCostTarget: summary.cloudCostTarget,
       cloudCostForecast: summary.cloudCostForecast,
+      permSpent: bucketSpentTotals.permSpent,
+      extSpent: bucketSpentTotals.extSpent,
+      amsSpent: bucketSpentTotals.amsSpent,
+      cloudSpent: bucketSpentTotals.cloudSpent,
       seatCount: summary.seatCount,
       activeSeatCount: summary.activeSeatCount,
       openSeatCount: summary.openSeatCount,
@@ -383,6 +646,8 @@ export function buildBudgetOutlookFactsFromData(input: {
     concentration: {
       topForecastSeats,
       topThreeForecastShare,
+      topThreeForecastAmount,
+      concentrationForecastTotal,
     },
     drivers,
   }
@@ -411,6 +676,10 @@ export async function getBudgetOutlookFacts(
       team: seat.team,
       status: seat.status,
       resourceType: seat.resourceType,
+      permFte: seat.permFte,
+      extFte: seat.extFte,
+      amsFte: seat.amsFte,
+      totalSpent: seat.totalSpent,
       totalForecast: seat.totalForecast,
       hasForecastAdjustments: seat.hasForecastAdjustments,
       monthlyForecast: seat.monthlyForecast,

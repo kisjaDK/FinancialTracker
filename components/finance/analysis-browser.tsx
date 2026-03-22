@@ -21,6 +21,7 @@ import { Separator } from "@/components/ui/separator"
 import type { BudgetOutlookRunResult, BudgetOutlookStatusCode } from "@/lib/ai/tasks/run-budget-outlook"
 import type { DeterministicBudgetOutlookFacts } from "@/lib/finance/analysis"
 import { formatCurrency, formatNumber, formatPercent } from "@/lib/finance/format"
+import { cn } from "@/lib/utils"
 
 type TrackingYearOption = {
   id: string
@@ -86,6 +87,27 @@ async function fetchJson(input: RequestInfo, init?: RequestInit) {
   }
 
   return body
+}
+
+function formatAnalysisCurrency(value: number) {
+  const normalized = Number.isFinite(value) ? value : 0
+  const absoluteFormatted = formatCurrency(Math.abs(normalized)).replace("DKK", "").trim()
+  return normalized < 0 ? `(${absoluteFormatted})` : absoluteFormatted
+}
+
+function getAnalysisCurrencyClassName(value: number) {
+  return value < 0 ? "text-rose-600" : undefined
+}
+
+function getDriverAmountClassName(input: {
+  amount: number
+  direction: DeterministicBudgetOutlookFacts["drivers"][number]["direction"]
+}) {
+  if (input.direction === "favorable") {
+    return "text-emerald-600"
+  }
+
+  return getAnalysisCurrencyClassName(input.amount)
 }
 
 export function AnalysisBrowser({
@@ -242,13 +264,28 @@ export function AnalysisBrowser({
               <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                 <MetricCard
                   label="Budget"
-                  value={formatCurrency(selectedSummaryOption.budget)}
-                  detail={`Spent ${formatCurrency(selectedSummaryOption.spentToDate)}`}
+                  value={formatAnalysisCurrency(selectedSummaryOption.budget)}
+                  detail={
+                    <>
+                      Spent{" "}
+                      <span className={cn(getAnalysisCurrencyClassName(selectedSummaryOption.spentToDate))}>
+                        {formatAnalysisCurrency(selectedSummaryOption.spentToDate)}
+                      </span>
+                    </>
+                  }
                 />
                 <MetricCard
                   label="Forecast"
-                  value={formatCurrency(selectedSummaryOption.totalForecast)}
-                  detail={`Remaining ${formatCurrency(selectedSummaryOption.forecastRemaining)}`}
+                  value={formatAnalysisCurrency(selectedSummaryOption.totalForecast)}
+                  valueClassName={getAnalysisCurrencyClassName(selectedSummaryOption.totalForecast)}
+                  detail={
+                    <>
+                      Remaining{" "}
+                      <span className={cn(getAnalysisCurrencyClassName(selectedSummaryOption.forecastRemaining))}>
+                        {formatAnalysisCurrency(selectedSummaryOption.forecastRemaining)}
+                      </span>
+                    </>
+                  }
                 />
                 <MetricCard
                   label="Domain"
@@ -426,61 +463,145 @@ function DeterministicFactsPanel({
     <section className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(20rem,0.8fr)]">
       <Card className="border-border/70">
         <CardHeader>
-          <CardTitle>Deterministic facts</CardTitle>
-          <CardDescription>
-            Scope: {facts.scope.displayName}
-            {facts.scope.projectCode ? ` · ${facts.scope.projectCode}` : ""}
-          </CardDescription>
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <CardTitle>Deterministic facts</CardTitle>
+              <CardDescription>
+                Scope: {facts.scope.displayName}
+                {facts.scope.projectCode ? ` · ${facts.scope.projectCode}` : ""}
+              </CardDescription>
+            </div>
+            <span className="text-xs text-muted-foreground">All financial values in DKK</span>
+          </div>
         </CardHeader>
-        <CardContent className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          <MetricCard
-            label="Budget"
-            value={formatCurrency(facts.summary.budget)}
-            detail={`Finance view ${formatCurrency(facts.summary.financeViewBudget)}`}
-          />
-          <MetricCard
-            label="Spent to date"
-            value={formatCurrency(facts.summary.spentToDate)}
-            detail={`Remaining budget ${formatCurrency(facts.summary.remainingBudget)}`}
-          />
-          <MetricCard
-            label="Forecast Spend To End Of Year"
-            value={formatCurrency(facts.coverage.uncoveredForecastAmount)}
-            detail={
-              <>
-                <span>End of year balance</span>
-                <span className="mt-1 block">
-                  {facts.summary.forecastRemaining > 0 ? "+" : ""}
-                  {formatCurrency(facts.summary.forecastRemaining)}
+        <CardContent className="space-y-4">
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <MetricCard
+              label="Budget"
+              value={formatAnalysisCurrency(facts.summary.budget)}
+              detail={
+                <>
+                  Finance view{" "}
+                  <span className={cn(getAnalysisCurrencyClassName(facts.summary.financeViewBudget))}>
+                    {formatAnalysisCurrency(facts.summary.financeViewBudget)}
+                  </span>
+                </>
+              }
+            />
+            <MetricCard
+              label="Spent to date"
+              value={formatAnalysisCurrency(facts.summary.spentToDate)}
+              valueClassName={getAnalysisCurrencyClassName(facts.summary.spentToDate)}
+              detail={
+                <>
+                  Remaining budget{" "}
+                  <span className={cn(getAnalysisCurrencyClassName(facts.summary.remainingBudget))}>
+                    {formatAnalysisCurrency(facts.summary.remainingBudget)}
+                  </span>
+                </>
+              }
+            />
+            <MetricCard
+              label="Forecast Spend To End Of Year"
+              value={formatAnalysisCurrency(facts.summary.totalForecast)}
+              detail={
+                <>
+                  <span>End of year balance</span>
+                  <span
+                    className={cn(
+                      "mt-1 block",
+                      getAnalysisCurrencyClassName(facts.summary.forecastRemaining)
+                    )}
+                  >
+                    {formatAnalysisCurrency(facts.summary.forecastRemaining)}
+                  </span>
+                </>
+              }
+            />
+            <MetricCard
+              label="Seats"
+              value={formatNumber(facts.summary.seatCount)}
+              detail={`${facts.summary.activeSeatCount} active · ${facts.summary.openSeatCount} open`}
+            />
+            <MetricCard
+              label="External share"
+              value={formatPercent(facts.staffing.externalForecastShare)}
+              detail={`Perm ${formatPercent(facts.staffing.permForecastShare)}`}
+            />
+            <MetricCard
+              label="Cloud share"
+              value={formatPercent(facts.resourceMix.cloudForecastShare)}
+              detail={
+                <span className={cn(getAnalysisCurrencyClassName(facts.summary.cloudCostForecast))}>
+                  {formatAnalysisCurrency(facts.summary.cloudCostForecast)}
                 </span>
-              </>
-            }
-          />
-          <MetricCard
-            label="Seats"
-            value={formatNumber(facts.summary.seatCount)}
-            detail={`${facts.summary.activeSeatCount} active · ${facts.summary.openSeatCount} open`}
-          />
-          <MetricCard
-            label="External share"
-            value={formatPercent(facts.staffing.externalForecastShare)}
-            detail={`Perm ${formatPercent(facts.staffing.permForecastShare)}`}
-          />
-          <MetricCard
-            label="Cloud share"
-            value={formatPercent(facts.resourceMix.cloudForecastShare)}
-            detail={formatCurrency(facts.summary.cloudCostForecast)}
-          />
-          <MetricCard
-            label="Open-seat share"
-            value={formatPercent(facts.staffing.openSeatShare)}
-            detail={formatCurrency(facts.staffing.openSeatForecast)}
-          />
-          <MetricCard
-            label="Coverage gaps"
-            value={formatNumber(facts.coverage.forecastMonthsWithoutActuals)}
-            detail={formatCurrency(facts.coverage.uncoveredForecastAmount)}
-          />
+              }
+            />
+            <MetricCard
+              label="Open-seat share"
+              value={formatPercent(facts.staffing.openSeatShare)}
+              detail={
+                <span className={cn(getAnalysisCurrencyClassName(facts.staffing.openSeatForecast))}>
+                  {formatAnalysisCurrency(facts.staffing.openSeatForecast)}
+                </span>
+              }
+            />
+            <MetricCard
+              label="Coverage gaps"
+              value={formatNumber(facts.coverage.forecastMonthsWithoutActuals)}
+              detail={
+                <span className={cn(getAnalysisCurrencyClassName(facts.coverage.uncoveredForecastAmount))}>
+                  {formatAnalysisCurrency(facts.coverage.uncoveredForecastAmount)}
+                </span>
+              }
+            />
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-4">
+            <BucketMetricCard
+              label="Perm Forecast"
+              value={facts.summary.permForecast}
+              detail="Share of remaining forecast in permanent seats."
+              dashed
+            />
+            <BucketMetricCard
+              label="Ext Forecast"
+              value={facts.summary.extForecast}
+              detail="Share of remaining forecast in external seats."
+              dashed
+            />
+            <BucketMetricCard
+              label="AMS Forecast"
+              value={facts.summary.amsForecast}
+              detail="Share of remaining forecast in managed services."
+              dashed
+            />
+            <BucketMetricCard
+              label="Cloud Forecast"
+              value={facts.summary.cloudCostForecast}
+              detail="Share of remaining forecast in cloud spend."
+              dashed
+            />
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-4">
+            <BucketMetricCard
+              label="Perm Budget - Spent"
+              value={facts.summary.permBudget - facts.summary.permSpent}
+            />
+            <BucketMetricCard
+              label="Ext Budget - Spent"
+              value={facts.summary.extBudget - facts.summary.extSpent}
+            />
+            <BucketMetricCard
+              label="AMS Budget - Spent"
+              value={facts.summary.amsBudget - facts.summary.amsSpent}
+            />
+            <BucketMetricCard
+              label="Cloud Budget - Spent"
+              value={facts.summary.cloudCostTarget - facts.summary.cloudSpent}
+            />
+          </div>
         </CardContent>
       </Card>
 
@@ -499,7 +620,20 @@ function DeterministicFactsPanel({
                 </div>
                 <p className="text-sm text-muted-foreground">{driver.detail}</p>
                 <p className="text-xs text-muted-foreground">
-                  {driver.amount !== null ? formatCurrency(driver.amount) : "No direct amount"}
+                  {driver.amount !== null ? (
+                    <span
+                      className={cn(
+                        getDriverAmountClassName({
+                          amount: driver.amount,
+                          direction: driver.direction,
+                        })
+                      )}
+                    >
+                      {formatAnalysisCurrency(driver.amount)}
+                    </span>
+                  ) : (
+                    "No direct amount"
+                  )}
                   {driver.share !== null ? ` · ${formatPercent(driver.share)}` : ""}
                 </p>
               </div>
@@ -510,14 +644,36 @@ function DeterministicFactsPanel({
         <Card className="border-border/70">
           <CardHeader>
             <CardTitle>Forecast concentration</CardTitle>
-            <CardDescription>Top forecast-driving seats in the selected summary row.</CardDescription>
+            <CardDescription>
+              Top external and AMS seats by forecast amount. This highlights spend concentration, not uncovered months.
+            </CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
+            {facts.concentration.concentrationForecastTotal > 0 ? (
+              <p className="text-xs text-muted-foreground">
+                Top 3 seats account for{" "}
+                <span
+                  className={cn(
+                    "font-medium text-foreground",
+                    getAnalysisCurrencyClassName(facts.concentration.topThreeForecastAmount)
+                  )}
+                >
+                  {formatAnalysisCurrency(facts.concentration.topThreeForecastAmount)}
+                </span>{" "}
+                of{" "}
+                <span className="font-medium text-foreground">
+                  {formatAnalysisCurrency(facts.concentration.concentrationForecastTotal)}
+                </span>{" "}
+                external and AMS forecast spend.
+              </p>
+            ) : null}
             {facts.concentration.topForecastSeats.map((seat) => (
               <div key={seat.seatId} className="space-y-1">
                 <div className="flex items-center justify-between gap-3">
                   <span className="text-sm font-medium">{seat.label}</span>
-                  <span className="text-sm">{formatCurrency(seat.totalForecast)}</span>
+                  <span className={cn("text-sm", getAnalysisCurrencyClassName(seat.totalForecast))}>
+                    {formatAnalysisCurrency(seat.totalForecast)}
+                  </span>
                 </div>
                 <p className="text-xs text-muted-foreground">
                   Seat {seat.seatId} · {formatPercent(seat.share)}
@@ -525,6 +681,11 @@ function DeterministicFactsPanel({
                 <Separator />
               </div>
             ))}
+            {facts.concentration.topForecastSeats.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                No external or AMS forecast seats are driving concentration for this scope.
+              </p>
+            ) : null}
           </CardContent>
         </Card>
       </div>
@@ -535,10 +696,12 @@ function DeterministicFactsPanel({
 function MetricCard({
   label,
   value,
+  valueClassName,
   detail,
 }: {
   label: string
   value: string
+  valueClassName?: string
   detail: React.ReactNode
 }) {
   return (
@@ -546,8 +709,35 @@ function MetricCard({
       <p className="text-[0.7rem] font-medium uppercase tracking-[0.18em] text-muted-foreground">
         {label}
       </p>
-      <p className="mt-2 text-lg font-semibold text-foreground">{value}</p>
+      <p className={cn("mt-2 text-lg font-semibold text-foreground", valueClassName)}>{value}</p>
       <div className="mt-1 text-xs text-muted-foreground">{detail}</div>
+    </div>
+  )
+}
+
+function BucketMetricCard({
+  label,
+  value,
+  detail,
+  dashed = false,
+}: {
+  label: string
+  value: number
+  detail?: string
+  dashed?: boolean
+}) {
+  return (
+    <div
+      className={cn(
+        "rounded-2xl bg-muted/35 px-4 py-4",
+        dashed && "border border-dashed border-border bg-transparent"
+      )}
+    >
+      <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">{label}</div>
+      <div className={cn("mt-2 font-medium", getAnalysisCurrencyClassName(value))}>
+        {formatAnalysisCurrency(value)}
+      </div>
+      {detail ? <div className="mt-2 text-xs text-muted-foreground">{detail}</div> : null}
     </div>
   )
 }

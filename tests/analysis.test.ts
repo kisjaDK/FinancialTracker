@@ -22,8 +22,14 @@ function createSummary(overrides: Partial<BudgetOutlookSummaryInput> = {}): Budg
     remainingBudget: 600_000,
     totalForecast: 1_120_000,
     forecastRemaining: -120_000,
+    permBudget: 700_000,
+    extBudget: 250_000,
+    amsBudget: 50_000,
     permForecast: 720_000,
     extForecast: 400_000,
+    amsForecast: 0,
+    cloudCostSpentToDate: 40_000,
+    cloudCostTarget: 200_000,
     cloudCostForecast: 220_000,
     seatCount: 4,
     activeSeatCount: 3,
@@ -40,6 +46,10 @@ function createSeat(overrides: Partial<BudgetOutlookSeatInput> = {}): BudgetOutl
     team: "Architecture",
     status: "Active",
     resourceType: "Internal",
+    permFte: 1,
+    extFte: 0,
+    amsFte: 0,
+    totalSpent: 120_000,
     totalForecast: 240_000,
     hasForecastAdjustments: false,
     monthlyForecast: Array.from({ length: 12 }, (_, monthIndex) =>
@@ -57,6 +67,7 @@ function createSeat(overrides: Partial<BudgetOutlookSeatInput> = {}): BudgetOutl
 test("buildBudgetOutlookFactsFromData computes forecast and coverage signals", () => {
   const facts = buildBudgetOutlookFactsFromData({
     year: 2026,
+    asOfDate: new Date("2026-03-21T12:00:00Z"),
     summary: createSummary(),
     seats: [
       createSeat(),
@@ -65,13 +76,29 @@ test("buildBudgetOutlookFactsFromData computes forecast and coverage signals", (
         inSeat: "Vacant",
         status: "Open",
         resourceType: "External",
+        permFte: 0,
+        extFte: 1,
+        amsFte: 0,
+        totalSpent: 80_000,
         totalForecast: 400_000,
         hasForecastAdjustments: true,
+        monthlyForecast: Array.from({ length: 12 }, (_, monthIndex) =>
+          monthIndex >= 1 ? 50_000 : 0
+        ),
+        months: Array.from({ length: 12 }, (_, monthIndex) => ({
+          monthIndex,
+          actualAmountDkk: 0,
+          actualAmountRaw: null,
+        })),
       }),
       createSeat({
         seatId: "300129",
         inSeat: "Cloud Budget",
         resourceType: "Cloud",
+        permFte: 0,
+        extFte: 0,
+        amsFte: 0,
+        totalSpent: 40_000,
         totalForecast: 220_000,
       }),
     ],
@@ -80,11 +107,25 @@ test("buildBudgetOutlookFactsFromData computes forecast and coverage signals", (
   assert.equal(facts.scope.year, 2026)
   assert.equal(facts.summary.forecastRemaining, -120_000)
   assert.equal(facts.coverage.seatsWithForecastAdjustments, 1)
-  assert.equal(facts.coverage.forecastMonthsWithoutActuals, 27)
+  assert.equal(facts.coverage.forecastMonthsWithoutActuals, 1)
+  assert.equal(facts.coverage.uncoveredForecastAmount, 50_000)
   assert.equal(facts.staffing.openSeatForecast, 400_000)
+  assert.equal(facts.summary.totalForecast, 1_120_000)
+  assert.equal(facts.summary.amsForecast, 0)
+  assert.equal(facts.summary.cloudCostTarget, 200_000)
+  assert.equal(facts.summary.permSpent, 120_000)
+  assert.equal(facts.summary.extSpent, 80_000)
+  assert.equal(facts.summary.cloudSpent, 40_000)
   assert.equal(facts.resourceMix.topResourceTypes[0]?.resourceType, "External")
+  assert.equal(facts.concentration.topForecastSeats.length, 1)
+  assert.equal(facts.concentration.topForecastSeats[0]?.seatId, "300128")
+  assert.equal(facts.concentration.topThreeForecastShare, 1)
+  assert.equal(facts.concentration.topThreeForecastAmount, 400_000)
+  assert.equal(facts.drivers.find((driver) => driver.key === "forecast-concentration")?.amount, 400_000)
+  assert.equal(facts.drivers.find((driver) => driver.key === "perm-performance")?.amount, 20_000)
+  assert.equal(facts.drivers.find((driver) => driver.key === "ext-performance")?.amount, 150_000)
+  assert.equal(facts.drivers.find((driver) => driver.key === "cloud-performance")?.amount, 20_000)
   assert.ok(facts.drivers.length > 0)
-  assert.ok(facts.coverage.uncoveredForecastAmount > 0)
 })
 
 test("budgetOutlookOutputSchema accepts valid structured AI output", () => {
