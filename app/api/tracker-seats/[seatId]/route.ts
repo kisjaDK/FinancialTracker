@@ -1,3 +1,4 @@
+import { revalidatePath } from "next/cache"
 import { NextResponse } from "next/server"
 import { requireApiAccess } from "@/lib/authz"
 import {
@@ -6,6 +7,15 @@ import {
   updateTrackerSeatMonths,
   updateTrackerSeatProfile,
 } from "@/lib/finance/queries"
+
+function revalidateFinanceSeatPages() {
+  revalidatePath("/people-roster")
+  revalidatePath("/tracker")
+  revalidatePath("/forecasts")
+  revalidatePath("/actuals")
+  revalidatePath("/analysis")
+  revalidatePath("/tracker/funding-follow-up")
+}
 
 type Params = {
   params: Promise<{
@@ -166,6 +176,7 @@ export async function POST(request: Request, context: Params) {
           actor
         )
 
+    revalidateFinanceSeatPages()
     return NextResponse.json({ seat })
   } catch (error) {
     const message = error instanceof Error ? error.message : "Update failed"
@@ -188,6 +199,7 @@ export async function DELETE(_request: Request, context: Params) {
       email: viewer.email,
     })
 
+    revalidateFinanceSeatPages()
     return NextResponse.json({ ok: true })
   } catch (error) {
     const message = error instanceof Error ? error.message : "Delete failed"

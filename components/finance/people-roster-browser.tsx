@@ -488,7 +488,8 @@ export function PeopleRosterBrowser({
                     <TableCell>
                       <div>FTE: {person.fte ?? 0}</div>
                       <div className="text-xs text-muted-foreground">
-                        {formatDate(person.startDate)} to {formatDate(person.endDate)}
+                        {formatDate(person.effectiveStartDate || person.startDate)} to{" "}
+                        {formatDate(person.effectiveEndDate || person.endDate)}
                       </div>
                       <div className="text-xs text-muted-foreground">
                         Manager: {person.manager || "No manager"}

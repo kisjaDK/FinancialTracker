@@ -1,6 +1,16 @@
+import { revalidatePath } from "next/cache"
 import { NextResponse } from "next/server"
 import { requireApiAccess } from "@/lib/authz"
 import { createManualTrackerSeat } from "@/lib/finance/queries"
+
+function revalidateFinanceSeatPages() {
+  revalidatePath("/people-roster")
+  revalidatePath("/tracker")
+  revalidatePath("/forecasts")
+  revalidatePath("/actuals")
+  revalidatePath("/analysis")
+  revalidatePath("/tracker/funding-follow-up")
+}
 
 export async function POST(request: Request) {
   const viewer = await requireApiAccess("MEMBER")
@@ -64,6 +74,7 @@ export async function POST(request: Request) {
       }
     )
 
+    revalidateFinanceSeatPages()
     return NextResponse.json({ seat })
   } catch (error) {
     const message = error instanceof Error ? error.message : "Create failed"
