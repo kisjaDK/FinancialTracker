@@ -4,7 +4,7 @@ import { serializeCsv } from "@/lib/finance/csv"
 import { getBudgetMovementExportRows } from "@/lib/finance/queries"
 
 const HEADERS = [
-  "Date",
+  "Date of Change",
   "Source",
   "Batch File",
   "Category",

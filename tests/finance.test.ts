@@ -1,7 +1,7 @@
 import { buildAccrualsPageModel, resolveAccrualAccount } from "@/lib/finance/accruals"
 import test from "node:test"
 import assert from "node:assert/strict"
-import { parseCsv } from "@/lib/finance/csv"
+import { parseCsv, serializeCsv } from "@/lib/finance/csv"
 import { normalizeRosterVendor, parseDate, parseNumber } from "@/lib/finance/imports"
 import {
   buildCostAssumptionLookup,
@@ -63,6 +63,20 @@ test("parseCsv skips single-cell preamble rows before the header", () => {
   assert.equal(rows[0]["Giving Funding"], "Initial Budget")
   assert.equal(rows[0]["Amount Given"], "1.000.000")
   assert.equal(rows[0]["Notes"], "Initial Run Budget")
+})
+
+test("serializeCsv preserves budget movement import date header", () => {
+  const csv = serializeCsv(
+    [
+      {
+        "Date of Change": "2026-01-19",
+        Source: "Imported",
+      },
+    ],
+    ["Date of Change", "Source"]
+  )
+
+  assert.equal(csv, "Date of Change,Source\n2026-01-19,Imported")
 })
 
 test("parseNumber supports parenthesized negatives from Excel exports", () => {

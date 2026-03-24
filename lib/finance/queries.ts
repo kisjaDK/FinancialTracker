@@ -2990,7 +2990,7 @@ export async function getBudgetMovementExportRows(
   const data = await getBudgetMovementsPageData(input, viewer)
 
   return data.movements.map((movement) => ({
-    Date: formatExportDate(movement.effectiveDate),
+    "Date of Change": formatExportDate(movement.effectiveDate),
     Source: movement.isManual ? "Manual" : "Imported",
     "Batch File": movement.batchFileName,
     Category: movement.category,
