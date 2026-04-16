@@ -29,6 +29,7 @@ import {
 import {
   buildCostAssumptionLookup,
   deriveSeatMetrics,
+  getMonthForecastWithForecastIncluded,
   getEffectiveSeat,
   isCloudSeat,
   isMonthActiveForSeat,
@@ -65,6 +66,7 @@ import type {
   StaffingOverviewRow,
   StaffingTargetView,
   StatusDefinitionView,
+  SeatDerivedMetrics,
 } from "@/lib/finance/types"
 import { formatCurrency } from "@/lib/finance/format"
 import { filterByScopes, hasScopeRestrictions, type AppViewer } from "@/lib/authz"
@@ -345,14 +347,13 @@ async function computeSeatMonthForecastSnapshot(input: {
   exchangeRates: ExchangeRate[]
 }) {
   const assumptionLookup = buildCostAssumptionLookup(input.assumptions)
-  const metrics = deriveSeatMetrics(
+  return getMonthForecastWithForecastIncluded(
     input.seat,
     assumptionLookup,
     input.exchangeRates,
-    input.year
+    input.year,
+    input.monthIndex
   )
-
-  return metrics.monthlyForecast[input.monthIndex] ?? 0
 }
 
 function computeAreaDisplayName(area: {
@@ -570,6 +571,99 @@ function normalizeBudgetMovementDate(value: Date | string | null | undefined) {
   return Number.isNaN(parsed.getTime()) ? null : parsed
 }
 
+export type BudgetMovementFundingImpact = {
+  funding: string
+  amountGivenDelta: number
+  financeViewAmountDelta: number
+}
+
+export function getBudgetMovementFundingImpacts(movement: {
+  funding: string | null | undefined
+  givingFunding: string | null | undefined
+  amountGiven: number
+  financeViewAmount?: number | null
+}): BudgetMovementFundingImpact[] {
+  const financeViewAmount = movement.financeViewAmount ?? movement.amountGiven
+  const impacts = new Map<string, BudgetMovementFundingImpact>()
+
+  if (movement.funding?.trim()) {
+    const funding = movement.funding.trim()
+    impacts.set(funding, {
+      funding,
+      amountGivenDelta: movement.amountGiven,
+      financeViewAmountDelta: financeViewAmount,
+    })
+  }
+
+  if (movement.givingFunding?.trim()) {
+    const funding = movement.givingFunding.trim()
+    const existing = impacts.get(funding)
+
+    impacts.set(funding, {
+      funding,
+      amountGivenDelta: (existing?.amountGivenDelta ?? 0) - movement.amountGiven,
+      financeViewAmountDelta:
+        (existing?.financeViewAmountDelta ?? 0) - financeViewAmount,
+    })
+  }
+
+  return Array.from(impacts.values())
+}
+
+export type BudgetMovementProjectImpact = {
+  projectCode: string
+  amountGivenDelta: number
+  financeViewAmountDelta: number
+}
+
+export function getBudgetMovementProjectImpacts(movement: {
+  sourceProjectCode: string | null | undefined
+  receivingProjectCode: string | null | undefined
+  amountGiven: number
+  financeViewAmount?: number | null
+}): BudgetMovementProjectImpact[] {
+  const financeViewAmount = movement.financeViewAmount ?? movement.amountGiven
+  const impacts = new Map<string, BudgetMovementProjectImpact>()
+
+  if (movement.sourceProjectCode?.trim()) {
+    const projectCode = movement.sourceProjectCode.trim()
+    impacts.set(projectCode, {
+      projectCode,
+      amountGivenDelta: -movement.amountGiven,
+      financeViewAmountDelta: -financeViewAmount,
+    })
+  }
+
+  if (movement.receivingProjectCode?.trim()) {
+    const projectCode = movement.receivingProjectCode.trim()
+    const existing = impacts.get(projectCode)
+
+    impacts.set(projectCode, {
+      projectCode,
+      amountGivenDelta: (existing?.amountGivenDelta ?? 0) + movement.amountGiven,
+      financeViewAmountDelta:
+        (existing?.financeViewAmountDelta ?? 0) + financeViewAmount,
+    })
+  }
+
+  return Array.from(impacts.values())
+}
+
+function updateLatestMovementDate(
+  current: Date | null | undefined,
+  candidate: Date | null | undefined
+) {
+  if (!current) {
+    return candidate ?? null
+  }
+
+  if (!candidate) {
+    return current
+  }
+
+  return candidate > current ? candidate : current
+}
+
 function ensureValidYear(year: number) {
   if (!Number.isInteger(year)) {
     throw new Error("Year is required.")
@@ -679,6 +773,10 @@ function matchesActiveBucket(
 
 function normalizeStaffingProjectCode(value: string | null | undefined) {
   return value?.trim() || null
+}
+
+function isProjectCodeLike(value: string | null | undefined) {
+  return /^[LP]\d{8}$/i.test(value?.trim() || "")
 }
 
 function buildStaffingRowKey(input: {
@@ -1556,6 +1654,8 @@ async function deriveTrackerSeatsForYearInternal(year: number) {
         dailyRate: person.dailyRate,
         status: person.status,
         allocation: normalizeAllocation(person.allocation),
+        originalStartDate:
+          existingSeat?.originalStartDate ?? existingSeat?.startDate ?? person.expectedStartDate ?? null,
         startDate: person.expectedStartDate,
         endDate: person.expectedEndDate,
       },
@@ -1585,6 +1685,7 @@ async function deriveTrackerSeatsForYearInternal(year: number) {
         dailyRate: person.dailyRate,
         status: person.status,
         allocation: normalizeAllocation(person.allocation),
+        originalStartDate: person.expectedStartDate,
         startDate: person.expectedStartDate,
         endDate: person.expectedEndDate,
       },
@@ -1689,6 +1790,69 @@ export async function getFinanceWorkspaceData(
         : summary[0]?.id ?? null
   const assumptionLookup = buildCostAssumptionLookup(snapshot.assumptions)
   const exchangeRateLookup = buildExchangeRateLookup(snapshot.exchangeRates)
+  function getAnnualizedFullYearBudget(rawSeat: SeatWithRelations) {
+    const seatWithAllMonthsIncluded: SeatWithRelations = {
+      ...rawSeat,
+      startDate: null,
+      endDate: null,
+      months: rawSeat.months.map((month) => ({
+        ...month,
+        forecastIncluded: true,
+      })),
+      override: rawSeat.override
+        ? {
+            ...rawSeat.override,
+            startDate: null,
+            endDate: null,
+          }
+        : null,
+    }
+
+    return deriveSeatMetrics(
+      seatWithAllMonthsIncluded,
+      assumptionLookup,
+      snapshot.exchangeRates,
+      activeYear,
+      {
+        exchangeRateLookup,
+        ignoreForecastOverrides: true,
+      }
+    ).monthlyForecast.reduce((sum, value) => sum + value, 0)
+  }
+  function getAnnualizedFullYearForecast(
+    rawSeat: SeatWithRelations,
+    metrics: SeatDerivedMetrics
+  ) {
+    const seatWithAllMonthsIncluded: SeatWithRelations = {
+      ...rawSeat,
+      startDate: null,
+      endDate: null,
+      months: rawSeat.months.map((month) => ({
+        ...month,
+        forecastIncluded: true,
+      })),
+      override: rawSeat.override
+        ? {
+            ...rawSeat.override,
+            startDate: null,
+            endDate: null,
+          }
+        : null,
+    }
+
+    return (
+      deriveSeatMetrics(
+        seatWithAllMonthsIncluded,
+        assumptionLookup,
+        snapshot.exchangeRates,
+        activeYear,
+        {
+          exchangeRateLookup,
+          ignoreForecastOverrides: true,
+        }
+      ).totalForecast ?? metrics.totalForecast
+    )
+  }
   const getSeatMonthComparisonForecastAmount = (
     seat: SeatWithRelations,
     monthIndex: number
@@ -1776,6 +1940,18 @@ export async function getFinanceWorkspaceData(
                 exchangeRateLookup,
               }
             )
+            const baseMetrics = deriveSeatMetrics(
+              seat,
+              assumptionLookup,
+              snapshot.exchangeRates,
+              activeYear,
+              {
+                exchangeRateLookup,
+                ignoreForecastOverrides: true,
+              }
+            )
+            const originalTotalForecast = getAnnualizedFullYearForecast(seat, metrics)
+            const annualizedFullYearBudget = getAnnualizedFullYearBudget(seat)
             const cancelled = isTrackerCancelledSeat(effectiveSeat)
 
             return {
@@ -1809,6 +1985,10 @@ export async function getFinanceWorkspaceData(
               }),
               totalSpent: metrics.totalSpent,
               totalForecast: metrics.totalForecast,
+              annualizedFullYearBudget,
+              originalTotalForecast,
+              baseTotalForecast: baseMetrics.totalForecast,
+              baseMonthlyForecast: baseMetrics.monthlyForecast,
               permFte: metrics.permFte,
               extFte: metrics.extFte,
               amsFte: metrics.amsFte,
@@ -2346,11 +2526,11 @@ export async function getBudgetMovementsPageData(input?: {
     }
 
     if (filters.funding) {
-      if (filters.funding === "__unassigned__") {
-        if (normalizeValue(movement.funding).length > 0) {
-          return false
-        }
-      } else if (normalizeValue(movement.funding) !== normalizeValue(filters.funding)) {
+      const matchesFunding =
+        matchesFundingFilter(movement.funding, filters.funding) ||
+        matchesFundingFilter(movement.givingFunding, filters.funding)
+
+      if (!matchesFunding) {
         return false
       }
     }
@@ -2376,21 +2556,25 @@ export async function getBudgetMovementsPageData(input?: {
   const fundingSummaryMap = filteredMovements.reduce<
     Map<string, BudgetMovementFundingSummaryView>
   >((map, movement) => {
-    const funding = movement.funding?.trim() || "Unassigned"
-    const existing = map.get(funding)
     const financeViewAmount = movement.financeViewAmount ?? movement.amountGiven
+    const movementDate = normalizeBudgetMovementDate(movement.effectiveDate)
 
-    map.set(funding, {
-      funding,
-      movementCount: (existing?.movementCount ?? 0) + 1,
-      amountGiven: (existing?.amountGiven ?? 0) + movement.amountGiven,
-      financeViewAmount: (existing?.financeViewAmount ?? 0) + financeViewAmount,
-      latestEffectiveDate:
-        !existing?.latestEffectiveDate ||
-        (movement.effectiveDate && movement.effectiveDate > existing.latestEffectiveDate)
-          ? movement.effectiveDate
-          : existing.latestEffectiveDate,
-    })
+    for (const impact of getBudgetMovementFundingImpacts(movement)) {
+      const existing = map.get(impact.funding)
+
+      map.set(impact.funding, {
+        funding: impact.funding,
+        movementCount: (existing?.movementCount ?? 0) + 1,
+        amountGiven:
+          (existing?.amountGiven ?? 0) + impact.amountGivenDelta,
+        financeViewAmount:
+          (existing?.financeViewAmount ?? 0) + impact.financeViewAmountDelta,
+        latestEffectiveDate: updateLatestMovementDate(
+          existing?.latestEffectiveDate,
+          movementDate
+        ),
+      })
+    }
 
     return map
   }, new Map())
@@ -2426,7 +2610,7 @@ export async function getBudgetMovementsPageData(input?: {
           .filter((value) => value.type === "FUNDING")
           .map((value) => value.value),
         ...scopedMovements
-          .map((movement) => movement.funding)
+          .flatMap((movement) => [movement.funding, movement.givingFunding])
           .filter((value): value is string => Boolean(value)),
       ])
     ).sort((left, right) => left.localeCompare(right)),
@@ -2549,15 +2733,16 @@ function buildFundingFollowUpFromSnapshot(input: {
   })
 
   for (const movement of scopedMovements) {
-    const summary = ensureSummary(movement.funding)
-    const allocatedFunding = movement.financeViewAmount ?? movement.amountGiven
+    const movementImpacts = getBudgetMovementFundingImpacts(movement)
+    const movementDate = normalizeBudgetMovementDate(movement.effectiveDate)
 
-    summary.allocatedFunding += allocatedFunding
-    if (
-      !summary.latestMovementDate ||
-      (movement.effectiveDate && movement.effectiveDate > summary.latestMovementDate)
-    ) {
-      summary.latestMovementDate = movement.effectiveDate
+    for (const impact of movementImpacts) {
+      const summary = ensureSummary(impact.funding)
+      summary.allocatedFunding += impact.financeViewAmountDelta
+      summary.latestMovementDate = updateLatestMovementDate(
+        summary.latestMovementDate,
+        movementDate
+      )
     }
   }
 
@@ -2714,6 +2899,7 @@ function buildPreviewSeatFromProfile(input: {
     spendPlanId: input.profile.spendPlanId ?? null,
     status: input.profile.status ?? null,
     allocation: input.profile.allocation ?? 0,
+    originalStartDate: input.profile.startDate ?? null,
     startDate: input.profile.startDate ?? null,
     endDate: input.profile.endDate ?? null,
     notes: input.profile.notes ?? null,
@@ -6106,6 +6292,9 @@ function buildBudgetAreaSummaryFromSnapshot(
   const mappingLookup = buildDepartmentMappingLookup(departmentMappings)
   const exchangeRateLookup = buildExchangeRateLookup(exchangeRates)
   const budgetAreasById = new Map(budgetAreas.map((area) => [area.id, area]))
+  const budgetAreasByProjectCode = new Map(
+    budgetAreas.map((area) => [normalizeValue(area.projectCode), area])
+  )
   const summaryMap = new Map<string, BudgetAreaSummary>()
   const budgetMovementBucketLookup =
     buildBudgetMovementCategoryBucketLookup(budgetMovementCategoryMappings)
@@ -6157,32 +6346,27 @@ function buildBudgetAreaSummaryFromSnapshot(
   ) {
     const month = rawSeat.months.find((entry) => entry.monthIndex === monthIndex)
 
-    if (month?.usedForecastAmount != null) {
+    if (month?.usedForecastAmount != null && month.usedForecastAmount > 0) {
       return month.usedForecastAmount
     }
 
-    const metrics = deriveSeatMetrics(rawSeat, assumptionLookup, exchangeRates, year)
-    const currentForecast = metrics.monthlyForecast[monthIndex] ?? 0
+    const currentForecast = deriveSeatMetrics(
+      rawSeat,
+      assumptionLookup,
+      exchangeRates,
+      year
+    ).monthlyForecast[monthIndex] ?? 0
 
     if (currentForecast > 0 || month?.forecastIncluded !== false) {
       return currentForecast
     }
 
-    const seatWithIncludedMonth: SeatWithRelations = {
-      ...rawSeat,
-      months: rawSeat.months.map((entry) =>
-        entry.monthIndex === monthIndex
-          ? {
-              ...entry,
-              forecastIncluded: true,
-            }
-          : entry
-      ),
-    }
-
-    return (
-      deriveSeatMetrics(seatWithIncludedMonth, assumptionLookup, exchangeRates, year)
-        .monthlyForecast[monthIndex] ?? 0
+    return getMonthForecastWithForecastIncluded(
+      rawSeat,
+      assumptionLookup,
+      exchangeRates,
+      year,
+      monthIndex
     )
   }
 
@@ -6245,6 +6429,12 @@ function buildBudgetAreaSummaryFromSnapshot(
     const budgetArea = movement.budgetAreaId
       ? budgetAreasById.get(movement.budgetAreaId)
       : null
+    const sourceProjectCode = isProjectCodeLike(movement.givingPillar)
+      ? movement.givingPillar?.trim() || null
+      : null
+    const sourceBudgetArea = sourceProjectCode
+      ? budgetAreasByProjectCode.get(normalizeValue(sourceProjectCode)) || null
+      : null
     const mappedHierarchy = resolveDepartmentMapping(mappingLookup, {
       sourceCode: movement.receivingCostCenter,
       projectCode: movement.receivingProjectCode,
@@ -6253,71 +6443,93 @@ function buildBudgetAreaSummaryFromSnapshot(
         subDomain: normalizeSubDomainLabel(budgetArea?.subDomain || null),
         projectCode: budgetArea?.projectCode || movement.receivingProjectCode,
       }
-    const summaryKey = buildSummaryKey({
-      subDomain: mappedHierarchy?.subDomain || null,
-      projectCode: movement.receivingProjectCode,
+
+    const budgetMovementImpacts = getBudgetMovementProjectImpacts({
+      sourceProjectCode,
+      receivingProjectCode: movement.receivingProjectCode,
+      amountGiven: movement.amountGiven,
+      financeViewAmount: movement.financeViewAmount,
     })
-    const summary =
-      summaryMap.get(summaryKey) ||
-      {
-        id: summaryKey,
-        domain: normalizeDomainLabel(mappedHierarchy?.domain || null),
-        subDomain: normalizeSubDomainLabel(mappedHierarchy?.subDomain || null),
-        funding: null,
-        pillar: null,
-        costCenter: movement.receivingCostCenter,
-        projectCode: movement.receivingProjectCode,
-        displayName:
-          mappedHierarchy?.subDomain || mappedHierarchy?.domain || "Unmapped",
-        budget: 0,
-        amountGivenBudget: 0,
-        financeViewBudget: 0,
-        spentToDate: 0,
-        remainingBudget: 0,
-        totalForecast: 0,
-        forecastRemaining: 0,
-        permBudget: 0,
-        extBudget: 0,
-        amsBudget: 0,
-        permTarget: 0,
-        permForecast: 0,
-        extForecast: 0,
-        amsForecast: 0,
-        cloudCostSpentToDate: 0,
-        cloudCostTarget: 0,
-        cloudCostForecast: 0,
-        cloudSeatId: null,
-        cloudSeatLabel: null,
-        cloudSeatDescription: null,
-        cloudSeatStatus: null,
-        cloudSeatTeam: null,
-        cloudCostMonthlyActuals: Array(12).fill(0),
-        cloudCostMonthlyForecast: Array(12).fill(0),
-        cloudCostMonthlyComparisonForecast: Array(12).fill(0),
-        seatCount: 0,
-        activeSeatCount: 0,
-        openSeatCount: 0,
+
+    for (const impact of budgetMovementImpacts) {
+      const isReceivingProject = impact.projectCode === movement.receivingProjectCode
+      const impactBudgetArea = isReceivingProject ? budgetArea : sourceBudgetArea
+      const summarySubDomain = isReceivingProject
+        ? mappedHierarchy?.subDomain || null
+        : normalizeSubDomainLabel(impactBudgetArea?.subDomain || null)
+      const summaryDomain = isReceivingProject
+        ? mappedHierarchy?.domain || null
+        : normalizeDomainLabel(impactBudgetArea?.domain || null)
+      const summaryKey = buildSummaryKey({
+        subDomain: summarySubDomain,
+        projectCode: impact.projectCode,
+      })
+      const summary =
+        summaryMap.get(summaryKey) ||
+        {
+          id: summaryKey,
+          domain: normalizeDomainLabel(summaryDomain || null),
+          subDomain: normalizeSubDomainLabel(summarySubDomain || null),
+          funding: null,
+          pillar: null,
+          costCenter: isReceivingProject
+            ? movement.receivingCostCenter
+            : impactBudgetArea?.costCenter || null,
+          projectCode: impact.projectCode,
+          displayName:
+            summarySubDomain ||
+            summaryDomain ||
+            impactBudgetArea?.displayName ||
+            "Unmapped",
+          budget: 0,
+          amountGivenBudget: 0,
+          financeViewBudget: 0,
+          spentToDate: 0,
+          remainingBudget: 0,
+          totalForecast: 0,
+          forecastRemaining: 0,
+          permBudget: 0,
+          extBudget: 0,
+          amsBudget: 0,
+          permTarget: 0,
+          permForecast: 0,
+          extForecast: 0,
+          amsForecast: 0,
+          cloudCostSpentToDate: 0,
+          cloudCostTarget: 0,
+          cloudCostForecast: 0,
+          cloudSeatId: null,
+          cloudSeatLabel: null,
+          cloudSeatDescription: null,
+          cloudSeatStatus: null,
+          cloudSeatTeam: null,
+          cloudCostMonthlyActuals: Array(12).fill(0),
+          cloudCostMonthlyForecast: Array(12).fill(0),
+          cloudCostMonthlyComparisonForecast: Array(12).fill(0),
+          seatCount: 0,
+          activeSeatCount: 0,
+          openSeatCount: 0,
+        }
+      summaryMap.set(summaryKey, summary)
+
+      summary.amountGivenBudget += impact.amountGivenDelta
+      summary.financeViewBudget += impact.financeViewAmountDelta
+      summary.budget += impact.financeViewAmountDelta
+
+      const budgetBucket = resolveBudgetMovementBucket(
+        movement.category,
+        budgetMovementBucketLookup
+      )
+
+      if (budgetBucket === "CLOUD") {
+        summary.cloudCostTarget += impact.financeViewAmountDelta
+      } else if (budgetBucket === "EXT") {
+        summary.extBudget += impact.financeViewAmountDelta
+      } else if (budgetBucket === "AMS") {
+        summary.amsBudget += impact.financeViewAmountDelta
+      } else {
+        summary.permBudget += impact.financeViewAmountDelta
       }
-    summaryMap.set(summaryKey, summary)
-
-    const financeValue = movement.financeViewAmount ?? movement.amountGiven
-    summary.amountGivenBudget += movement.amountGiven
-    summary.financeViewBudget += financeValue
-    summary.budget += financeValue
-
-    const budgetBucket = resolveBudgetMovementBucket(
-      movement.category,
-      budgetMovementBucketLookup
-    )
-
-    if (budgetBucket === "CLOUD") {
-      summary.cloudCostTarget += financeValue
-    } else if (budgetBucket === "EXT") {
-      summary.extBudget += financeValue
-    } else if (budgetBucket === "AMS") {
-      summary.amsBudget += financeValue
-    } else {
-      summary.permBudget += financeValue
     }
   }
 
@@ -6328,6 +6540,16 @@ function buildBudgetAreaSummaryFromSnapshot(
       assumptionLookup,
       exchangeRates,
       year
+    )
+    const baseMetrics = deriveSeatMetrics(
+      rawSeat,
+      assumptionLookup,
+      exchangeRates,
+      year,
+      {
+        exchangeRateLookup,
+        ignoreForecastOverrides: true,
+      }
     )
     const isCloudSeat = normalizeValue(effectiveSeat.resourceType) === "cloud"
     const summaryKey = buildSummaryKey({
@@ -6667,41 +6889,27 @@ function buildTrackerDetailFromSnapshot(
   ) => {
     const month = seat.months.find((entry) => entry.monthIndex === monthIndex)
 
-    if (month?.usedForecastAmount != null) {
+    if (month?.usedForecastAmount != null && month.usedForecastAmount > 0) {
       return month.usedForecastAmount
     }
 
-    const metrics = deriveSeatMetrics(
+    const currentForecast = deriveSeatMetrics(
       seat,
       assumptionLookup,
       exchangeRates,
       year
-    )
-    const currentForecast = metrics.monthlyForecast[monthIndex] ?? 0
+    ).monthlyForecast[monthIndex] ?? 0
 
     if (currentForecast > 0 || month?.forecastIncluded !== false) {
       return currentForecast
     }
 
-    const seatWithIncludedMonth: SeatWithRelations = {
-      ...seat,
-      months: seat.months.map((entry) =>
-        entry.monthIndex === monthIndex
-          ? {
-              ...entry,
-              forecastIncluded: true,
-            }
-          : entry
-      ),
-    }
-
-    return (
-      deriveSeatMetrics(
-        seatWithIncludedMonth,
-        assumptionLookup,
-        exchangeRates,
-        year
-      ).monthlyForecast[monthIndex] ?? 0
+    return getMonthForecastWithForecastIncluded(
+      seat,
+      assumptionLookup,
+      exchangeRates,
+      year,
+      monthIndex
     )
   }
 
@@ -6757,6 +6965,7 @@ function buildTrackerDetailFromSnapshot(
 
       return {
         ...effectiveSeat,
+        originalStartDate: effectiveSeat.originalStartDate ?? null,
         months,
         totalSpent: metrics.totalSpent,
         totalForecast: metrics.totalForecast,
@@ -8517,6 +8726,7 @@ type TrackerSeatProfilePayload = {
   status?: string | null
   allocation?: number | null
   startDate?: Date | null
+  originalStartDate?: Date | null
   endDate?: Date | null
   notes?: string | null
 }
@@ -8547,6 +8757,7 @@ function buildTrackerSeatProfileAuditShape(
     status: seat.status ?? null,
     allocation: seat.allocation ?? null,
     startDate: seat.startDate ?? null,
+    originalStartDate: seat.originalStartDate ?? null,
     endDate: seat.endDate ?? null,
     notes: seat.notes ?? null,
   }
@@ -8943,6 +9154,8 @@ export async function updateTrackerSeatProfile(
       data: {
         ...normalizedPayload,
         allocation: normalizedPayload.allocation ?? 0,
+        originalStartDate:
+          seat.originalStartDate ?? seat.startDate ?? normalizedPayload.startDate ?? null,
       },
       include: {
         months: {
@@ -8995,6 +9208,7 @@ export async function updateTrackerSeatProfile(
           "spendPlanId",
           "status",
           "allocation",
+          "originalStartDate",
           "startDate",
           "endDate",
           "notes",
@@ -9133,6 +9347,7 @@ export async function createManualTrackerSeat(
       isActive: true,
       ...normalizedProfile,
       allocation: normalizedProfile.allocation ?? 0,
+      originalStartDate: normalizedProfile.startDate ?? null,
     },
     include: {
       months: {
@@ -9194,6 +9409,7 @@ export async function createManualTrackerSeat(
         "spendPlanId",
         "status",
         "allocation",
+        "originalStartDate",
         "startDate",
         "endDate",
         "notes",
@@ -9580,6 +9796,7 @@ export async function deleteManualTrackerSeat(seatId: string, actor?: AuditActor
         "spendPlanId",
         "status",
         "allocation",
+        "originalStartDate",
         "startDate",
         "endDate",
         "notes",

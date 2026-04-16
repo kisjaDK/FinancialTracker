@@ -848,7 +848,10 @@ export function ActualsBrowser({
       setBulkCopyPreview(response)
       setBulkCopyOverrides(
         Object.fromEntries(
-          response.seats.map((seat) => [seat.trackerSeatId, String(seat.amount)])
+          response.seats.map((seat) => [
+            seat.trackerSeatId,
+            normalizeValue(seat.status) === "open" ? "0" : String(seat.amount),
+          ])
         )
       )
       setBulkCopyConfirmations(

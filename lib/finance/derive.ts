@@ -280,3 +280,34 @@ export function deriveSeatMetrics(
     monthlyForecast,
   }
 }
+
+export function getMonthForecastWithForecastIncluded(
+  seat: SeatWithRelations,
+  assumptions: CostAssumptionLookup,
+  exchangeRates: ExchangeRate[],
+  targetYear: number,
+  monthIndex: number,
+  options?: DeriveSeatMetricsOptions
+) {
+  const seatWithIncludedMonth: SeatWithRelations = {
+    ...seat,
+    months: seat.months.map((entry) =>
+      entry.monthIndex === monthIndex
+        ? {
+            ...entry,
+            forecastIncluded: true,
+          }
+        : entry
+    ),
+  }
+
+  return (
+    deriveSeatMetrics(
+      seatWithIncludedMonth,
+      assumptions,
+      exchangeRates,
+      targetYear,
+      options
+    ).monthlyForecast[monthIndex] ?? 0
+  )
+}
