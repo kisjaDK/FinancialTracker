@@ -6,6 +6,7 @@ import { normalizeRosterVendor, parseDate, parseNumber } from "@/lib/finance/imp
 import {
   buildCostAssumptionLookup,
   deriveSeatMetrics,
+  getMonthForecastWithForecastIncluded,
 } from "@/lib/finance/derive"
 import {
   buildExchangeRateLookup,
@@ -14,6 +15,8 @@ import {
 } from "@/lib/finance/currency"
 import {
   buildStaffingOverviewRows,
+  getBudgetMovementFundingImpacts,
+  getBudgetMovementProjectImpacts,
   parsePastedInvoiceAmount,
   resolveActualsScopeSelection,
   resolveRosterSeatAssignment,
@@ -108,6 +111,82 @@ test("parsePastedInvoiceAmount preserves dot decimals in pasted invoice totals",
 test("parsePastedInvoiceAmount supports European thousands and decimal separators", () => {
   assert.equal(parsePastedInvoiceAmount("41.185,22"), 41185.22)
   assert.equal(parsePastedInvoiceAmount("51 481,53"), 51481.53)
+})
+
+test("getBudgetMovementFundingImpacts nets received and given funding amounts", () => {
+  const sameFundingImpacts = getBudgetMovementFundingImpacts({
+    funding: "L44530001",
+    givingFunding: "L44530001",
+    amountGiven: 250_000,
+    financeViewAmount: 275_000,
+  })
+
+  assert.equal(sameFundingImpacts.length, 1)
+  assert.deepEqual(sameFundingImpacts, [
+    {
+      funding: "L44530001",
+      amountGivenDelta: 0,
+      financeViewAmountDelta: 0,
+    },
+  ])
+
+  const transferImpacts = getBudgetMovementFundingImpacts({
+    funding: "L44530001",
+    givingFunding: "L68210001",
+    amountGiven: 250_000,
+    financeViewAmount: 275_000,
+  })
+
+  assert.deepEqual(transferImpacts, [
+    {
+      funding: "L44530001",
+      amountGivenDelta: 250_000,
+      financeViewAmountDelta: 275_000,
+    },
+    {
+      funding: "L68210001",
+      amountGivenDelta: -250_000,
+      financeViewAmountDelta: -275_000,
+    },
+  ])
+})
+
+test("getBudgetMovementProjectImpacts nets source and receiving project codes", () => {
+  const sameProjectImpacts = getBudgetMovementProjectImpacts({
+    sourceProjectCode: "L44530001",
+    receivingProjectCode: "L44530001",
+    amountGiven: 250_000,
+    financeViewAmount: 275_000,
+  })
+
+  assert.equal(sameProjectImpacts.length, 1)
+  assert.deepEqual(sameProjectImpacts, [
+    {
+      projectCode: "L44530001",
+      amountGivenDelta: 0,
+      financeViewAmountDelta: 0,
+    },
+  ])
+
+  const transferImpacts = getBudgetMovementProjectImpacts({
+    sourceProjectCode: "L44530001",
+    receivingProjectCode: "L68210001",
+    amountGiven: 250_000,
+    financeViewAmount: 275_000,
+  })
+
+  assert.deepEqual(transferImpacts, [
+    {
+      projectCode: "L44530001",
+      amountGivenDelta: -250_000,
+      financeViewAmountDelta: -275_000,
+    },
+    {
+      projectCode: "L68210001",
+      amountGivenDelta: 250_000,
+      financeViewAmountDelta: 275_000,
+    },
+  ])
 })
 
 test("normalizeRosterVendor lets internal resource type override conflicting vendor", () => {
@@ -218,6 +297,86 @@ test("deriveSeatMetrics uses internal cost assumptions", () => {
   assert.equal(metrics.yearlyCostInternal, 1200000)
   assert.equal(metrics.monthlyForecast[0], 0)
   assert.equal(metrics.monthlyForecast[1], 100000)
+})
+
+test("getMonthForecastWithForecastIncluded preserves the original forecast for a month with actuals", () => {
+  const lookup = buildCostAssumptionLookup([
+    {
+      id: "cost-1",
+      trackingYearId: "year-1",
+      band: "Band 5",
+      location: "Denmark",
+      yearlyCost: 1200000,
+      notes: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    },
+  ])
+
+  const seat = {
+    id: "seat-forecast",
+    trackingYearId: "year-1",
+    budgetAreaId: "area-1",
+    rosterPersonId: null,
+    sourceType: "ROSTER",
+    seatId: "300128",
+    sourceKey: "roster:300128",
+    isActive: true,
+    domain: "Data & Analytics",
+    subDomain: "Architecture",
+    funding: "D&T Run",
+    pillar: "Architecture",
+    costCenter: "D6861",
+    projectCode: "L68610001",
+    resourceType: "Internal",
+    team: "Architecture",
+    inSeat: "Jane Doe",
+    description: "Engineer",
+    band: "Band 5",
+    ppid: null,
+    location: "Denmark",
+    vendor: null,
+    dailyRate: null,
+    ritm: null,
+    sow: null,
+    spendPlanId: null,
+    status: "Active",
+    allocation: 1,
+    startDate: null,
+    endDate: null,
+    notes: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    months: Array.from({ length: 12 }, (_, monthIndex) => ({
+      id: `month-forecast-${monthIndex}`,
+      trackerSeatId: "seat-forecast",
+      monthIndex,
+      actualAmount: monthIndex === 0 ? 150000 : 0,
+      actualAmountRaw: monthIndex === 0 ? 150000 : null,
+      actualCurrency: "DKK",
+      exchangeRateUsed: monthIndex === 0 ? 1 : null,
+      forecastOverrideAmount: null,
+      forecastIncluded: monthIndex > 0,
+      usedForecastAmount: monthIndex === 0 ? 100000 : null,
+      notes: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })),
+    override: null,
+    budgetArea: null,
+  } satisfies SeatWithRelations
+
+  const currentForecast = deriveSeatMetrics(seat, lookup, [], 2026).monthlyForecast[0]
+  const preservedForecast = getMonthForecastWithForecastIncluded(
+    seat,
+    lookup,
+    [],
+    2026,
+    0
+  )
+
+  assert.equal(currentForecast, 0)
+  assert.equal(preservedForecast, 100000)
 })
 
 test("deriveSeatMetrics returns zero forecast when start and end dates are the same", () => {

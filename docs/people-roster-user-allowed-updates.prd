@@ -1,0 +1,23 @@
+	                        Internal	                                                                External
+Domain	                    Automatically based on Manager or Delivery Lead	                            Automatically based on Manager or Delivery Lead
+Sub-Domain	                Manual	                                                                    Manual
+Team	                    Manual	                                                                    Manual
+Seat ID	                    System generated	                                                        System generated
+Title	                    People Portal	                                                            SNOW
+Band	                    People Portal	                                                            Set to "external" automatically
+Position	                People Portal	                                                            -
+Name	                    People Portal	                                                            SNOW
+Email	                    People Portal	                                                            SNOW
+FTE	                        People Portal	                                                            Manual
+Status	                    From default it's set to Active, can be then edited manually	            Default value is set to Active, can be then edited manually
+Resource type	            Set to "Internal" automatically	Default value from Joiner form, 
+                            can be edited manually
+Manager	                    Automatically from AD	                                                    Automatically from AD
+Start date	                Newly onboarded - from People Portal, can be edited manually	            Newly onboarded - from Joiner form, can be edited manually
+End date	                If there is value in People Portal, then that one is used, if not - manual  Default - Joiner form, Leaver form date on top, otherwise manual
+Vendor	                    -	                                                                        SNOW, can be edited manually
+Daily rate (if external)	-	                                                                        Manual
+Location	                People Portal	                                                            Joiner form, can be edited manually
+Funding type	            Manual	                                                                    Manual
+Cost Center Code	        People Portal	                                                            -
+Cost Center Name	        People Portal	                                                            -

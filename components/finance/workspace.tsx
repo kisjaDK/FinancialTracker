@@ -109,8 +109,13 @@ type SeatRow = {
 	sow: string | null;
 	notes: string | null;
 	startDate?: string | Date | null;
+	originalStartDate?: string | Date | null;
 	endDate?: string | Date | null;
 	monthlyForecast: number[];
+	baseTotalForecast?: number;
+	baseMonthlyForecast?: number[];
+	annualizedFullYearBudget?: number;
+	originalTotalForecast?: number;
 	months: {
 		monthIndex: number;
 		actualAmountDkk: number;
@@ -1850,13 +1855,15 @@ export function FinanceWorkspace({
 												0,
 												seat.totalForecast - seat.totalSpent,
 											);
-											const fullYearForecast = seat.months.reduce(
-												(sum, month) =>
-													sum + (month.comparisonForecastAmount ?? 0),
+											const forecastMonthCount = seat.monthlyForecast.reduce(
+												(count, amount) => count + (amount > 0 ? 1 : 0),
 												0,
 											);
-											const yearEndSpentDeviation =
-												seat.totalForecast - fullYearForecast;
+											const fullYearBudget =
+												forecastMonthCount > 0
+													? (remainingForecast / forecastMonthCount) * 12
+													: seat.totalForecast;
+											const yearEndSpentDeviation = fullYearBudget - seat.totalForecast;
 											const quarterlyForecast = Array.from(
 												{ length: 4 },
 												(_, quarterIndex) =>
@@ -1973,19 +1980,20 @@ export function FinanceWorkspace({
 													) : null}
 													<TableCell>
 														<div>{formatBudgetSummaryAmount(seat.totalForecast)}</div>
-														<div
-															className={cn(
-																"text-xs",
-																yearEndSpentDeviation < 0
-																	? "text-emerald-700/80"
-																	: yearEndSpentDeviation > 0
-																		? "text-rose-700/80"
-																		: "text-muted-foreground",
-															)}
-														>
-															vs full year {formatBudgetSummaryAmount(yearEndSpentDeviation)}
-														</div>
-													</TableCell>
+															<div
+																className={cn(
+																	"text-xs",
+																	yearEndSpentDeviation > 0
+																		? "text-emerald-700/80"
+																		: yearEndSpentDeviation < 0
+																			? "text-rose-700/80"
+																			: "text-muted-foreground",
+																)}
+															>
+																vs full-year budget{" "}
+																{formatBudgetSummaryAmount(yearEndSpentDeviation)}
+															</div>
+														</TableCell>
 													<TableCell className="align-top text-right">
 														<div className="flex flex-col items-end gap-2">
 															<Button
@@ -2105,6 +2113,10 @@ export function FinanceWorkspace({
 							</div>
 							<div className="rounded-2xl border border-dashed border-border px-4 py-3 text-sm">
 								<div className="flex items-center justify-between">
+									<span className="text-muted-foreground">Original Start</span>
+									<span>{formatOptionalDate(detailDialogSeat.originalStartDate)}</span>
+								</div>
+								<div className="mt-2 flex items-center justify-between">
 									<span className="text-muted-foreground">Start</span>
 									<span>{formatOptionalDate(detailDialogSeat.startDate)}</span>
 								</div>
