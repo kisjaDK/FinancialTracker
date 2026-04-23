@@ -2,7 +2,12 @@ import { buildAccrualsPageModel, resolveAccrualAccount } from "@/lib/finance/acc
 import test from "node:test"
 import assert from "node:assert/strict"
 import { parseCsv, serializeCsv } from "@/lib/finance/csv"
-import { normalizeRosterVendor, parseDate, parseNumber } from "@/lib/finance/imports"
+import {
+  normalizeRosterVendor,
+  parseDate,
+  parseNumber,
+  parseRosterCsvDate,
+} from "@/lib/finance/imports"
 import {
   buildCostAssumptionLookup,
   deriveSeatMetrics,
@@ -101,6 +106,15 @@ test("parseDate supports roster timestamps with dot-separated time values", () =
   assert.equal(parsed?.getFullYear(), 2026)
   assert.equal(parsed?.getMonth(), 0)
   assert.equal(parsed?.getDate(), 31)
+})
+
+test("parseRosterCsvDate treats slash-separated dates as MM/DD/YYYY", () => {
+  const parsed = parseRosterCsvDate("03/04/2026")
+
+  assert.notEqual(parsed, null)
+  assert.equal(parsed?.getFullYear(), 2026)
+  assert.equal(parsed?.getMonth(), 2)
+  assert.equal(parsed?.getDate(), 4)
 })
 
 test("parsePastedInvoiceAmount preserves dot decimals in pasted invoice totals", () => {

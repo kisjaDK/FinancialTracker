@@ -101,7 +101,51 @@ function parseExcelSerialDate(value: number) {
   return isSupportedImportDate(date) ? date : null
 }
 
-export function parseDate(value: string | undefined) {
+function normalizeImportedDateValue(value: string) {
+  return value
+    .replace(/\s+/g, " ")
+    .replace(
+      /^(\d{1,2}\/\d{1,2}\/\d{4})\s+(\d{1,2})\.(\d{2})(?:\.(\d{2}))?$/,
+      (_, datePart: string, hours: string, minutes: string, seconds?: string) =>
+        `${datePart} ${hours}:${minutes}${seconds ? `:${seconds}` : ""}`
+    )
+}
+
+function parseSlashSeparatedDate(value: string, monthFirst: boolean) {
+  const normalized = normalizeImportedDateValue(value)
+
+  const dateMatch = normalized.match(
+    /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/
+  )
+
+  if (!dateMatch) {
+    return { matched: false, date: null as Date | null }
+  }
+
+  const [, firstRaw, secondRaw, yearRaw, hourRaw, minuteRaw, secondSecondsRaw] = dateMatch
+  const first = Number(firstRaw)
+  const second = Number(secondRaw)
+  const year = Number(yearRaw)
+  const hours = hourRaw ? Number(hourRaw) : 0
+  const minutes = minuteRaw ? Number(minuteRaw) : 0
+  const seconds = secondSecondsRaw ? Number(secondSecondsRaw) : 0
+  const monthIndex = monthFirst ? first - 1 : second - 1
+  const day = monthFirst ? second : first
+
+  const date = new Date(year, monthIndex, day, hours, minutes, seconds)
+  if (
+    date.getFullYear() === year &&
+    date.getMonth() === monthIndex &&
+    date.getDate() === day &&
+    isSupportedImportDate(date)
+  ) {
+    return { matched: true, date }
+  }
+
+  return { matched: true, date: null }
+}
+
+function parseDateInternal(value: string | undefined, monthFirst: boolean) {
   if (!value || value.trim().length === 0) {
     return null
   }
@@ -111,34 +155,15 @@ export function parseDate(value: string | undefined) {
     return parseExcelSerialDate(Number(trimmed))
   }
 
-  const normalized = trimmed
-    .replace(/\s+/g, " ")
-    .replace(
-      /^(\d{1,2}\/\d{1,2}\/\d{4})\s+(\d{1,2})\.(\d{2})(?:\.(\d{2}))?$/,
-      (_, datePart: string, hours: string, minutes: string, seconds?: string) =>
-        `${datePart} ${hours}:${minutes}${seconds ? `:${seconds}` : ""}`
-    )
+  const normalized = normalizeImportedDateValue(trimmed)
+  const parsedSlashDate = parseSlashSeparatedDate(trimmed, monthFirst)
+  if (parsedSlashDate.matched) {
+    if (parsedSlashDate.date) {
+      return parsedSlashDate.date
+    }
 
-  const dayFirstMatch = normalized.match(
-    /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/
-  )
-  if (dayFirstMatch) {
-    const [, dayRaw, monthRaw, yearRaw, hourRaw, minuteRaw, secondRaw] = dayFirstMatch
-    const day = Number(dayRaw)
-    const monthIndex = Number(monthRaw) - 1
-    const year = Number(yearRaw)
-    const hours = hourRaw ? Number(hourRaw) : 0
-    const minutes = minuteRaw ? Number(minuteRaw) : 0
-    const seconds = secondRaw ? Number(secondRaw) : 0
-
-    const date = new Date(year, monthIndex, day, hours, minutes, seconds)
-    if (
-      date.getFullYear() === year &&
-      date.getMonth() === monthIndex &&
-      date.getDate() === day &&
-      isSupportedImportDate(date)
-    ) {
-      return date
+    if (monthFirst) {
+      return null
     }
   }
 
@@ -148,6 +173,14 @@ export function parseDate(value: string | undefined) {
   }
 
   return isSupportedImportDate(parsed) ? parsed : null
+}
+
+export function parseDate(value: string | undefined) {
+  return parseDateInternal(value, false)
+}
+
+export function parseRosterCsvDate(value: string | undefined) {
+  return parseDateInternal(value, true)
 }
 
 async function getOrCreateTrackingYear(year: number) {
@@ -518,10 +551,10 @@ function isHistoricalRosterRow(
   year: number
 ) {
   const yearStart = new Date(Date.UTC(year, 0, 1))
-  const startDate = parseDate(
+  const startDate = parseRosterCsvDate(
     rosterHeaderValue(row, "Expected start date", "Start date")
   )
-  const endDate = parseDate(
+  const endDate = parseRosterCsvDate(
     rosterHeaderValue(row, "Expected end date", "End date")
   )
 
@@ -851,10 +884,10 @@ export async function importRosterCsv(
         location: rosterHeaderValue(row, "Location") || null,
         expectedFunding: rosterHeaderValue(row, "Expected funding") || null,
         expectedFunding2025: rosterHeaderValue(row, "Expected funding 2025") || null,
-        expectedStartDate: parseDate(
+        expectedStartDate: parseRosterCsvDate(
           rosterHeaderValue(row, "Expected start date", "Start date")
         ),
-        expectedEndDate: parseDate(
+        expectedEndDate: parseRosterCsvDate(
           rosterHeaderValue(row, "Expected end date", "End date")
         ),
         fundingType: rosterHeaderValue(row, "Funding type") || null,
